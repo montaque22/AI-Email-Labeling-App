@@ -1,0 +1,27 @@
+{
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "typescript": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "@react-oauth/google": "latest",
+    "jwt-decode": "latest",
+    "lucide-react": "latest",
+    "@radix-ui/react-slot": "latest",
+    "clsx": "latest",
+    "tailwind-merge": "latest",
+    "class-variance-authority": "latest",
+    "tailwindcss": "latest",
+    "@tailwindcss/vite": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest"
+  }
+}
