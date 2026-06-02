@@ -1,8 +1,6 @@
-import { useMemo, useState } from "react";
-import { GoogleLogin, GoogleOAuthProvider, type CredentialResponse } from "@react-oauth/google";
-import { jwtDecode } from "jwt-decode";
+import { useEffect, useMemo, useState, type ComponentType } from "react";
+import { authentication, createDirectus, readMe, rest } from "@directus/sdk";
 import {
-  BarChart3,
   CheckCircle2,
   ChevronRight,
   FileCheck2,
@@ -27,13 +25,33 @@ type AuthUser = {
   picture?: string;
 };
 
-type GoogleJwtPayload = {
-  email?: string;
-  name?: string;
-  picture?: string;
+type DirectusUser = {
+  email?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  avatar?: string | null;
 };
 
-const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+const DIRECTUS_URL = "https://directus-p8kk8ck8wogws40kg08w4wcs.212.38.95.147.sslip.io";
+const PRODUCTION_APP_URL = "https://n0o0o4okgc0o0s0gkw4g8kcw.212.38.95.147.sslip.io";
+const STORAGE_USER_KEY = "email-labeling-user";
+
+const directusClient = createDirectus(DIRECTUS_URL)
+  .with(authentication("cookie", { credentials: "include" }))
+  .with(rest({ credentials: "include" }));
+
+const loginUrl = `${DIRECTUS_URL}/auth/login/google?redirect=${encodeURIComponent(`${getAppUrl()}/auth/callback`)}`;
+
+function getAppUrl() {
+  if (typeof window === "undefined") {
+    return PRODUCTION_APP_URL;
+  }
+
+  const { hostname, origin } = window.location;
+  const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+
+  return isLocalhost ? origin : PRODUCTION_APP_URL;
+}
 
 const navItems = [
   { id: "overview" as const, label: "Overview", icon: Gauge },
@@ -42,51 +60,38 @@ const navItems = [
 ];
 
 export function App() {
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(() => readStoredUser());
   const [activePage, setActivePage] = useState<Page>("overview");
 
-  const content = user ? (
+  useEffect(() => {
+    if (window.location.pathname === "/auth/callback") {
+      return;
+    }
+
+    void hydrateUserFromDirectus(setUser);
+  }, []);
+
+  if (window.location.pathname === "/auth/callback") {
+    return <AuthCallback onAuthenticated={setUser} />;
+  }
+
+  return user ? (
     <AuthenticatedLayout
       activePage={activePage}
       onNavigate={setActivePage}
-      onSignOut={() => {
+      onSignOut={async () => {
+        await signOut();
         setUser(null);
         setActivePage("overview");
       }}
       user={user}
     />
   ) : (
-    <HomePage onSignIn={setUser} />
+    <HomePage />
   );
-
-  if (!googleClientId) {
-    return content;
-  }
-
-  return <GoogleOAuthProvider clientId={googleClientId}>{content}</GoogleOAuthProvider>;
 }
 
-function HomePage({ onSignIn }: { onSignIn: (user: AuthUser) => void }) {
-  const signInDemoUser = () =>
-    onSignIn({
-      email: "you@example.com",
-      name: "Demo User",
-    });
-
-  const handleGoogleSuccess = (credentialResponse: CredentialResponse) => {
-    if (!credentialResponse.credential) {
-      signInDemoUser();
-      return;
-    }
-
-    const payload = jwtDecode<GoogleJwtPayload>(credentialResponse.credential);
-    onSignIn({
-      email: payload.email ?? "you@example.com",
-      name: payload.name ?? "Gmail User",
-      picture: payload.picture,
-    });
-  };
-
+function HomePage() {
   return (
     <main className="min-h-screen bg-stone-50 text-zinc-950">
       <header className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-5">
@@ -96,8 +101,8 @@ function HomePage({ onSignIn }: { onSignIn: (user: AuthUser) => void }) {
           </div>
           <span className="text-sm font-semibold">AI Email Labeling Assistant</span>
         </div>
-        <Button variant="ghost" onClick={signInDemoUser}>
-          Login
+        <Button asChild variant="ghost">
+          <a href={loginUrl}>Login</a>
         </Button>
       </header>
 
@@ -112,30 +117,30 @@ function HomePage({ onSignIn }: { onSignIn: (user: AuthUser) => void }) {
             assistant built for transparent decisions.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <Button size="lg" onClick={signInDemoUser}>
-              Continue with Gmail
-              <ChevronRight className="h-4 w-4" />
+            <Button asChild size="lg">
+              <a href={loginUrl}>
+                Login with Google
+                <ChevronRight className="h-4 w-4" />
+              </a>
             </Button>
-            <Button size="lg" variant="outline" onClick={signInDemoUser}>
-              Sign up
+            <Button asChild size="lg" variant="outline">
+              <a href={loginUrl}>
+                Sign up
+                <ChevronRight className="h-4 w-4" />
+              </a>
             </Button>
           </div>
-          {googleClientId ? (
-            <div className="mt-4">
-              <GoogleLogin onSuccess={handleGoogleSuccess} onError={signInDemoUser} useOneTap />
-            </div>
-          ) : (
-            <p className="mt-4 text-sm text-zinc-500">
-              Add a Google OAuth client ID to enable live Gmail SSO.
-            </p>
-          )}
+          <div className="mt-4 flex items-center gap-2 text-sm text-zinc-500">
+            <ShieldCheck className="h-4 w-4 text-emerald-600" />
+            Google sign-in is handled securely through Directus.
+          </div>
         </div>
 
         <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between border-b border-zinc-100 pb-4">
             <div>
               <p className="text-sm font-medium">Inbox labeling preview</p>
-              <p className="text-xs text-zinc-500">Connected as you@example.com</p>
+              <p className="text-xs text-zinc-500">Connected through your Gmail account</p>
             </div>
             <ShieldCheck className="h-5 w-5 text-emerald-600" />
           </div>
@@ -156,6 +161,63 @@ function HomePage({ onSignIn }: { onSignIn: (user: AuthUser) => void }) {
           </div>
         </div>
       </section>
+    </main>
+  );
+}
+
+function AuthCallback({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => void }) {
+  const [status, setStatus] = useState<"loading" | "error">("loading");
+
+  useEffect(() => {
+    async function finishLogin() {
+      try {
+        await directusClient.refresh();
+        const me = await directusClient.request(readMe());
+        const user = mapDirectusUser(me as DirectusUser);
+
+        storeUser(user);
+        onAuthenticated(user);
+
+        window.history.replaceState({}, "", "/");
+        window.location.href = "/";
+      } catch (err) {
+        console.error("Auth failed:", err);
+        setStatus("error");
+      }
+    }
+
+    void finishLogin();
+  }, [onAuthenticated]);
+
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-stone-50 px-5 text-zinc-950">
+      <Card className="w-full max-w-md">
+        <CardHeader>
+          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-md bg-zinc-950 text-white">
+            {status === "loading" ? <Sparkles className="h-5 w-5" /> : <ShieldCheck className="h-5 w-5" />}
+          </div>
+          <CardTitle>{status === "loading" ? "Finishing login" : "Login failed"}</CardTitle>
+          <CardDescription>
+            {status === "loading"
+              ? "We are confirming your Directus session and preparing your dashboard."
+              : "We could not confirm your session. Please try signing in again."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {status === "loading" ? (
+            <div className="h-2 overflow-hidden rounded-full bg-zinc-100">
+              <div className="h-full w-1/2 animate-pulse rounded-full bg-zinc-950" />
+            </div>
+          ) : (
+            <Button asChild className="w-full">
+              <a href={loginUrl}>
+                Try again
+                <ChevronRight className="h-4 w-4" />
+              </a>
+            </Button>
+          )}
+        </CardContent>
+      </Card>
     </main>
   );
 }
@@ -313,7 +375,7 @@ function MetricCard({
   label,
   value,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
+  icon: ComponentType<{ className?: string }>;
   label: string;
   value: string;
 }) {
@@ -328,4 +390,53 @@ function MetricCard({
       </CardContent>
     </Card>
   );
+}
+
+function mapDirectusUser(user: DirectusUser): AuthUser {
+  const name = [user.first_name, user.last_name].filter(Boolean).join(" ").trim();
+
+  return {
+    email: user.email ?? "Gmail user",
+    name: name || user.email || "Gmail user",
+    picture: user.avatar ? `${DIRECTUS_URL}/assets/${user.avatar}` : undefined,
+  };
+}
+
+async function hydrateUserFromDirectus(setUser: (user: AuthUser | null) => void) {
+  try {
+    const me = await directusClient.request(readMe());
+    const user = mapDirectusUser(me as DirectusUser);
+    storeUser(user);
+    setUser(user);
+  } catch {
+    clearStoredUser();
+    setUser(null);
+  }
+}
+
+async function signOut() {
+  try {
+    await directusClient.logout();
+  } catch {
+    // Local state still needs to clear even if the remote session is already gone.
+  } finally {
+    clearStoredUser();
+  }
+}
+
+function readStoredUser(): AuthUser | null {
+  try {
+    const stored = window.localStorage.getItem(STORAGE_USER_KEY);
+    return stored ? (JSON.parse(stored) as AuthUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeUser(user: AuthUser) {
+  window.localStorage.setItem(STORAGE_USER_KEY, JSON.stringify(user));
+}
+
+function clearStoredUser() {
+  window.localStorage.removeItem(STORAGE_USER_KEY);
 }
