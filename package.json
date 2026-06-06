@@ -7,19 +7,23 @@
   },
   "scripts": {
     "dev": "vite",
-    "dev:server": "node server/index.js",
+    "dev:server": "node --env-file-if-exists=.env.local --env-file-if-exists=.env server/index.js",
     "build": "tsc -b && vite build",
-    "start": "node server/index.js",
+    "start": "node --env-file-if-exists=.env.local --env-file-if-exists=.env server/index.js",
+    "auth:migrate": "npx auth@latest migrate --config server/auth.js --yes",
+    "db:pull": "prisma db pull",
+    "db:studio": "prisma studio",
     "preview": "vite preview"
   },
   "dependencies": {
+    "better-auth": "latest",
     "express": "latest",
+    "pg": "latest",
     "@vitejs/plugin-react": "latest",
     "vite": "latest",
     "typescript": "latest",
-    "react": "latest",
-    "react-dom": "latest",
-    "@directus/sdk": "latest",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "lucide-react": "latest",
     "@radix-ui/react-slot": "latest",
     "clsx": "latest",
@@ -29,7 +33,8 @@
     "@tailwindcss/vite": "latest"
   },
   "devDependencies": {
-    "@types/react": "latest",
-    "@types/react-dom": "latest"
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "prisma": "latest"
   }
 }

@@ -1,6 +1,13 @@
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { toNodeHandler } from "better-auth/node";
+import { auth, googleOAuthEnabled } from "./auth.js";
+import { dbPool } from "./db.js";
+import { ensureEmailAccountsTable, registerEmailAccountRoutes } from "./email-accounts.js";
+import { ensureIntegrationTables, registerIntegrationRoutes } from "./integrations.js";
+import { ensureLabelsTable, registerLabelRoutes } from "./labels.js";
+import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,6 +18,14 @@ const indexHtmlPath = path.join(distDir, "index.html");
 const app = express();
 const port = process.env.PORT || 3000;
 
+app.get("/api/auth-settings", (_req, res) => {
+  res.json({
+    googleOAuthEnabled,
+    emailAndPasswordEnabled: true,
+  });
+});
+
+app.all("/api/auth/*splat", toNodeHandler(auth));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
@@ -19,6 +34,36 @@ app.get("/api/health", (_req, res) => {
     service: "ai-email-labeling-app",
   });
 });
+
+app.get("/api/db/health", async (_req, res) => {
+  if (!dbPool) {
+    res.status(503).json({
+      ok: false,
+      error: "DATABASE_URL is not configured",
+    });
+    return;
+  }
+
+  try {
+    const result = await dbPool.query("select 1 as ok");
+
+    res.json({
+      ok: result.rows[0]?.ok === 1,
+      database: "postgres",
+    });
+  } catch (error) {
+    console.error("Database health check failed:", error);
+    res.status(503).json({
+      ok: false,
+      error: "Database connection failed",
+    });
+  }
+});
+
+registerLabelRoutes(app);
+registerSettingsRoutes(app);
+registerEmailAccountRoutes(app);
+registerIntegrationRoutes(app);
 
 app.use(express.static(distDir));
 
@@ -35,6 +80,19 @@ app.get(/.*/, (_req, res) => {
   res.sendFile(indexHtmlPath);
 });
 
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
-});
+async function startServer() {
+  try {
+    await ensureEmailAccountsTable();
+    await ensureLabelsTable();
+    await ensureSettingsTable();
+    await ensureIntegrationTables();
+  } catch (error) {
+    console.error("Failed to initialize database tables:", error);
+  }
+
+  app.listen(port, () => {
+    console.log(`Server listening on port ${port}`);
+  });
+}
+
+void startServer();

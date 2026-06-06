@@ -22,5 +22,18 @@ body {
 }
 
 button {
+  cursor: pointer;
   font: inherit;
+}
+
+button:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
+a,
+summary,
+select,
+[draggable="true"] {
+  cursor: pointer;
 }

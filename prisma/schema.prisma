@@ -1,0 +1,168 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(6)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(6)
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime  @db.Timestamptz(6)
+  user                  user      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId])
+}
+
+model session {
+  id        String   @id
+  expiresAt DateTime @db.Timestamptz(6)
+  token     String   @unique
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @db.Timestamptz(6)
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      user     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId])
+}
+
+model user {
+  id                   String                 @id
+  name                 String
+  email                String                 @unique
+  emailVerified        Boolean
+  image                String?
+  createdAt            DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime               @default(now()) @db.Timestamptz(6)
+  account              account[]
+  email_accounts       email_accounts[]
+  email_rules          email_rules[]
+  integration_api_keys integration_api_keys[]
+  labels               labels[]
+  session              session[]
+  user_settings        user_settings?
+}
+
+model verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([identifier])
+}
+
+model labels {
+  id                  String                @id @db.Uuid
+  user_id             String
+  name                String
+  description         String                @default("")
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime              @default(now()) @db.Timestamptz(6)
+  label_account_syncs label_account_syncs[]
+  user                user                  @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model user_settings {
+  user_id              String   @id
+  confidence_threshold Decimal  @default(0.90) @db.Decimal(3, 2)
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime @default(now()) @db.Timestamptz(6)
+  user                 user     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model email_accounts {
+  id                  String                @id @db.Uuid
+  user_id             String
+  provider            String
+  provider_account_id String
+  email               String
+  display_name        String?
+  access_token        String?
+  refresh_token       String?
+  scopes              String[]              @default([])
+  token_expires_at    DateTime?             @db.Timestamptz(6)
+  metadata            Json                  @default("{}")
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime              @default(now()) @db.Timestamptz(6)
+  source              String                @default("connected")
+  user                user                  @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  label_account_syncs label_account_syncs[]
+
+  @@unique([user_id, provider, provider_account_id])
+  @@index([user_id])
+}
+
+model label_account_syncs {
+  id                String         @id @db.Uuid
+  label_id          String         @db.Uuid
+  email_account_id  String         @db.Uuid
+  provider          String
+  provider_label_id String?
+  sync_status       String         @default("pending")
+  pending_action    String?
+  last_error        String?
+  last_attempt_at   DateTime?      @db.Timestamptz(6)
+  created_at        DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime       @default(now()) @db.Timestamptz(6)
+  email_accounts    email_accounts @relation(fields: [email_account_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  labels            labels         @relation(fields: [label_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([label_id, email_account_id])
+  @@index([email_account_id])
+  @@index([label_id])
+}
+
+model integration_api_keys {
+  id           String    @id @db.Uuid
+  user_id      String
+  name         String
+  key_hash     String    @unique
+  key_prefix   String
+  last_used_at DateTime? @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  user         user      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id])
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model email_rules {
+  id             String   @id @db.Uuid
+  user_id        String
+  email_id       String
+  thread_id      String
+  from_email     String
+  from_name      String
+  subject        String
+  snippet        String
+  confidence     Float
+  labels_applied String[] @default([])
+  is_pending     Boolean
+  metadata       Json     @default("{}")
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime @default(now()) @db.Timestamptz(6)
+  user           user     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, email_id])
+  @@index([user_id, is_pending], map: "email_rules_is_pending_idx")
+  @@index([user_id])
+}
