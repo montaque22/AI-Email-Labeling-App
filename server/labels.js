@@ -58,6 +58,27 @@ export function registerLabelRoutes(app) {
     }
   });
 
+  app.post("/api/labels/import", requireSession, async (req, res) => {
+    const input = parseLabelImportInput(req.body);
+
+    if (!input.ok) {
+      res.status(400).json({ error: input.error });
+      return;
+    }
+
+    try {
+      const labels = await createLabels(req.user.id, input.labels);
+
+      for (const label of labels) {
+        await syncLabelToConnectedAccounts(req.user.id, label, "create");
+      }
+
+      res.status(201).json({ imported: labels.length, labels });
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
+
   app.put("/api/labels/:id", requireSession, async (req, res) => {
     const input = parseLabelInput(req.body);
 
@@ -181,19 +202,52 @@ function parseLabelInput(body) {
     return { ok: false, error: "Label name is required" };
   }
 
-  if (name.length > 15) {
-    return { ok: false, error: "Label name must be 15 characters or less" };
+  if (name.length > 25) {
+    return { ok: false, error: "Label name must be 25 characters or less" };
   }
 
   if (!/^[A-Za-z0-9 _-]+$/.test(name)) {
     return { ok: false, error: "Label name can only use letters, numbers, spaces, hyphens, and underscores" };
   }
 
-  if (description.length > 150) {
-    return { ok: false, error: "Label description must be 150 characters or less" };
+  if (description.length > 200) {
+    return { ok: false, error: "Label description must be 200 characters or less" };
   }
 
   return { ok: true, name, description };
+}
+
+function parseLabelImportInput(body) {
+  const labels = Array.isArray(body?.labels) ? body.labels : null;
+
+  if (!labels) {
+    return { ok: false, error: "labels must be an array" };
+  }
+
+  if (labels.length === 0) {
+    return { ok: false, error: "CSV must include at least one label row" };
+  }
+
+  if (labels.length > 20) {
+    return { ok: false, error: "CSV can include at most 20 label rows" };
+  }
+
+  const parsedLabels = [];
+
+  for (const [index, label] of labels.entries()) {
+    const input = parseLabelInput({
+      name: label?.name,
+      description: label?.description,
+    });
+
+    if (!input.ok) {
+      return { ok: false, error: `Row ${index + 2}: ${input.error}` };
+    }
+
+    parsedLabels.push({ name: input.name, description: input.description });
+  }
+
+  return { ok: true, labels: parsedLabels };
 }
 
 async function listLabels(userId) {
@@ -221,6 +275,36 @@ async function createLabel(userId, name, description) {
   );
 
   return result.rows[0];
+}
+
+async function createLabels(userId, labels) {
+  const client = await dbPool.connect();
+
+  try {
+    await client.query("begin");
+    const createdLabels = [];
+
+    for (const label of labels) {
+      const result = await client.query(
+        `
+          insert into labels (id, user_id, name, description)
+          values ($1, $2, $3, $4)
+          returning id, name, description, created_at as "createdAt", updated_at as "updatedAt"
+        `,
+        [randomUUID(), userId, label.name, label.description],
+      );
+
+      createdLabels.push(result.rows[0]);
+    }
+
+    await client.query("commit");
+    return createdLabels;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function updateLabel(userId, id, name, description) {

@@ -15,7 +15,6 @@ const EMAIL_RULE_REQUIRED_FIELDS = [
   "snippet",
   "confidence",
   "labelsApplied",
-  "isPending",
 ];
 const EMAIL_RULE_COLUMNS = {
   emailId: "email_id",
@@ -255,6 +254,28 @@ export function registerIntegrationRoutes(app) {
     }
   });
 
+  app.delete("/api/email-rules", requireSession, async (req, res) => {
+    const emailIds = Array.isArray(req.body?.emailIds)
+      ? req.body.emailIds.filter((emailId) => typeof emailId === "string" && emailId.trim()).map((emailId) => emailId.trim())
+      : [];
+
+    if (emailIds.length === 0) {
+      res.status(400).json({ error: "Select at least one email rule to delete" });
+      return;
+    }
+
+    try {
+      const result = await dbPool.query("delete from email_rules where user_id = $1 and email_id = any($2::text[])", [
+        req.user.id,
+        [...new Set(emailIds)],
+      ]);
+
+      res.json({ deleted: result.rowCount });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   app.delete("/api/email-rules/:emailId", requireSession, async (req, res) => {
     try {
       const result = await dbPool.query("delete from email_rules where user_id = $1 and email_id = $2", [
@@ -301,10 +322,10 @@ export function registerIntegrationRoutes(app) {
   });
 
   app.post("/api/integrations/email-rules", requireApiKey, async (req, res) => {
-    const input = parseEmailRuleInput(req.body, { partial: false });
+    const input = await parseEmailRuleInput(req.integrationUser.id, req.body, { partial: false });
 
     if (!input.ok) {
-      res.status(400).json({ error: input.error });
+      res.status(400).json({ error: input.error, labels: input.labels });
       return;
     }
 
@@ -317,10 +338,10 @@ export function registerIntegrationRoutes(app) {
   });
 
   app.put("/api/integrations/email-rules/:emailId", requireApiKey, async (req, res) => {
-    const input = parseEmailRuleInput(req.body, { partial: true });
+    const input = await parseEmailRuleInput(req.integrationUser.id, req.body, { partial: true });
 
     if (!input.ok) {
-      res.status(400).json({ error: input.error });
+      res.status(400).json({ error: input.error, labels: input.labels });
       return;
     }
 
@@ -552,7 +573,37 @@ function parseDraftInput(body) {
   return { ok: true, accountEmail, emailId, bodyText, bodyHtml, replyAll };
 }
 
-function parseEmailRuleInput(body, { partial }) {
+async function resolveAppLabelsByName(userId, labelsApplied) {
+  const requested = labelsApplied.map((label) => label.trim()).filter(Boolean);
+  const uniqueRequested = [...new Map(requested.map((label) => [label.toLowerCase(), label])).values()];
+
+  if (uniqueRequested.length === 0) {
+    return { ok: true, labels: [] };
+  }
+
+  const result = await dbPool.query(
+    `
+      select name
+      from labels
+      where user_id = $1 and lower(name) = any($2::text[])
+    `,
+    [userId, uniqueRequested.map((label) => label.toLowerCase())],
+  );
+  const labelsByLowerName = new Map(result.rows.map((label) => [label.name.toLowerCase(), label.name]));
+  const missing = uniqueRequested.filter((label) => !labelsByLowerName.has(label.toLowerCase()));
+
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      error: "labelsApplied contains labels that do not exist",
+      labels: missing,
+    };
+  }
+
+  return { ok: true, labels: uniqueRequested.map((label) => labelsByLowerName.get(label.toLowerCase())) };
+}
+
+async function parseEmailRuleInput(userId, body, { partial }) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: "Request body must be an object" };
   }
@@ -593,7 +644,12 @@ function parseEmailRuleInput(body, { partial }) {
       return { ok: false, error: "labelsApplied must be an array of strings" };
     }
 
-    rule.labelsApplied = body.labelsApplied.map((label) => label.trim()).filter(Boolean);
+    const labels = await resolveAppLabelsByName(userId, body.labelsApplied);
+    if (!labels.ok) {
+      return labels;
+    }
+
+    rule.labelsApplied = labels.labels;
   }
 
   if ("isPending" in body) {
@@ -602,17 +658,8 @@ function parseEmailRuleInput(body, { partial }) {
     }
 
     rule.isPending = body.isPending;
-  }
-
-  const metadata = {};
-  for (const [key, value] of Object.entries(body)) {
-    if (!EMAIL_RULE_REQUIRED_FIELDS.includes(key) && key !== "id" && key !== "createdAt" && key !== "updatedAt") {
-      metadata[key] = value;
-    }
-  }
-
-  if (Object.keys(metadata).length > 0) {
-    rule.metadata = metadata;
+  } else if (!partial) {
+    rule.isPending = true;
   }
 
   if (partial && Object.keys(rule).length === 0) {

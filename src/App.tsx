@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentType, type ReactNode } from "react";
 import {
   CheckCircle2,
   ChevronRight,
@@ -17,6 +17,7 @@ import {
   Sparkles,
   Tag,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { Badge } from "./components/ui/badge";
@@ -105,8 +106,8 @@ type EmailRule = {
 type RulePendingFilter = "all" | "pending" | "not-pending";
 type RuleGroupBy = "none" | "isPending" | "fromEmail";
 
-const LABEL_NAME_MAX_LENGTH = 15;
-const LABEL_DESCRIPTION_MAX_LENGTH = 150;
+const LABEL_NAME_MAX_LENGTH = 25;
+const LABEL_DESCRIPTION_MAX_LENGTH = 200;
 const LABEL_NAME_PATTERN = /^[A-Za-z0-9 _-]+$/;
 const CONFIDENCE_THRESHOLD_TEMPLATE = "{confidenceThreshold}";
 
@@ -535,10 +536,14 @@ function LabelsPage() {
   const [editDescription, setEditDescription] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [labelAction, setLabelAction] = useState<"create" | "update" | "delete" | "retry" | "sync" | "refresh" | null>(null);
+  const [labelAction, setLabelAction] = useState<
+    "create" | "update" | "delete" | "retry" | "sync" | "refresh" | "upload" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const newDescriptionRef = useRef<HTMLInputElement | null>(null);
   const editDescriptionRef = useRef<HTMLInputElement | null>(null);
+  const csvUploadRef = useRef<HTMLInputElement | null>(null);
   const syncedLabelCount = labels.filter((label) => isLabelFullySynced(label, connectedAccountCount)).length;
   const unsyncedLabelCount = labels.length - syncedLabelCount;
 
@@ -618,6 +623,95 @@ function LabelsPage() {
       await loadLabels();
     } catch {
       setError("Could not create label.");
+    } finally {
+      setIsSaving(false);
+      setLabelAction(null);
+    }
+  }
+
+  async function handleCsvUpload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    setError(null);
+    setUploadError(null);
+
+    let rows: string[][];
+
+    try {
+      rows = parseCsvRows(await file.text());
+    } catch (parseError) {
+      setUploadError(parseError instanceof Error ? parseError.message : "Could not parse the CSV file.");
+      return;
+    }
+
+    if (rows.length === 0) {
+      setUploadError("CSV must include the header: Name, Description.");
+      return;
+    }
+
+    const [header, ...dataRows] = rows;
+    const normalizedHeader = header.map((value) => value.trim());
+
+    if (normalizedHeader.length !== 2 || normalizedHeader[0] !== "Name" || normalizedHeader[1] !== "Description") {
+      setUploadError("CSV header must be exactly: Name, Description.");
+      return;
+    }
+
+    if (dataRows.length === 0) {
+      setUploadError("CSV must include at least one label row.");
+      return;
+    }
+
+    if (dataRows.length > 20) {
+      setUploadError(`CSV upload supports at most 20 label rows. This file has ${dataRows.length}.`);
+      return;
+    }
+
+    const labelsToImport = [];
+
+    for (const [index, row] of dataRows.entries()) {
+      if (row.length !== 2) {
+        setUploadError(`Row ${index + 2}: Each row must include Name and Description only.`);
+        return;
+      }
+
+      const name = row[0].trim();
+      const description = row[1].trim();
+      const validationError = validateLabelInput(name, description);
+
+      if (validationError) {
+        setUploadError(`Row ${index + 2}: ${validationError}`);
+        return;
+      }
+
+      labelsToImport.push({ name, description });
+    }
+
+    setIsSaving(true);
+    setLabelAction("upload");
+
+    try {
+      const response = await fetch("/api/labels/import", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ labels: labelsToImport }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setUploadError(data.error ?? "Could not upload labels.");
+        return;
+      }
+
+      await loadLabels();
+    } catch {
+      setUploadError("Could not upload labels.");
     } finally {
       setIsSaving(false);
       setLabelAction(null);
@@ -834,6 +928,22 @@ function LabelsPage() {
 
   return (
     <div className="space-y-6">
+      {uploadError ? (
+        <div
+          className="fixed right-5 top-5 z-50 w-[min(420px,calc(100vw-2.5rem))] rounded-md border border-red-200 bg-white p-4 text-sm text-red-700 shadow-lg"
+          role="alert"
+        >
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-red-800">CSV upload failed</p>
+              <p className="mt-1 leading-5">{uploadError}</p>
+            </div>
+            <Button aria-label="Dismiss upload error" onClick={() => setUploadError(null)} size="icon" type="button" variant="ghost">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      ) : null}
       <div className="grid gap-4 md:grid-cols-[220px_260px_1fr]">
         <Card>
           <CardHeader className="items-center text-center">
@@ -860,9 +970,24 @@ function LabelsPage() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader>
-            <CardTitle>Add Label</CardTitle>
-            <CardDescription>Create labels that can be used by rules and reviews.</CardDescription>
+          <CardHeader className="gap-3 md:flex-row md:items-start md:justify-between md:space-y-0">
+            <div>
+              <CardTitle>Add Label</CardTitle>
+              <CardDescription>Create labels that can be used by rules and reviews.</CardDescription>
+            </div>
+            <div>
+              <input
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={(event) => void handleCsvUpload(event)}
+                ref={csvUploadRef}
+                type="file"
+              />
+              <Button disabled={isSaving} onClick={() => csvUploadRef.current?.click()} type="button" variant="outline">
+                {labelAction === "upload" ? <Loader /> : <Upload className="h-4 w-4" />}
+                {labelAction === "upload" ? "Uploading..." : "Upload CSV"}
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <form className="grid gap-3 md:grid-cols-[minmax(0,220px)_1fr_auto]" onSubmit={handleAddLabel}>
@@ -1122,6 +1247,7 @@ function RuleReviewPage() {
   const [pendingFilter, setPendingFilter] = useState<RulePendingFilter>("all");
   const [groupBy, setGroupBy] = useState<RuleGroupBy>("none");
   const [selectedRule, setSelectedRule] = useState<EmailRule | null>(null);
+  const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
   const [recommendedAction, setRecommendedAction] = useState("");
   const [draggingLabel, setDraggingLabel] = useState<string | null>(null);
@@ -1133,6 +1259,8 @@ function RuleReviewPage() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const hasLabelChanges = selectedRule ? !sameStringSet(draftLabels, selectedRule.labelsApplied) : false;
   const groupedRules = groupRules(rules, groupBy);
+  const visibleRuleIds = rules.map((rule) => rule.emailId);
+  const allVisibleRulesSelected = visibleRuleIds.length > 0 && visibleRuleIds.every((emailId) => selectedRuleIds.includes(emailId));
 
   useEffect(() => {
     void loadRuleReviewData();
@@ -1167,6 +1295,7 @@ function RuleReviewPage() {
       setTotal(rulesData.total ?? 0);
       setLabels(labelsData.labels ?? []);
       setConfidenceThreshold(Number(thresholdData.threshold ?? 0.9));
+      setSelectedRuleIds((current) => current.filter((emailId) => rulesData.rules?.some((rule: EmailRule) => rule.emailId === emailId)));
     } catch {
       setError("Could not load rule review data.");
     } finally {
@@ -1187,6 +1316,22 @@ function RuleReviewPage() {
 
   function removeDraftLabel(labelName: string) {
     setDraftLabels((current) => current.filter((label) => label !== labelName));
+  }
+
+  function toggleRuleSelection(emailId: string) {
+    setSelectedRuleIds((current) =>
+      current.includes(emailId) ? current.filter((selectedEmailId) => selectedEmailId !== emailId) : [...current, emailId],
+    );
+  }
+
+  function toggleAllVisibleRules() {
+    setSelectedRuleIds((current) => {
+      if (allVisibleRulesSelected) {
+        return current.filter((emailId) => !visibleRuleIds.includes(emailId));
+      }
+
+      return [...new Set([...current, ...visibleRuleIds])];
+    });
   }
 
   async function saveRuleReview() {
@@ -1245,6 +1390,50 @@ function RuleReviewPage() {
       selectRule(null);
     } catch {
       setError("Could not delete rule.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function deleteSelectedRules() {
+    if (selectedRuleIds.length === 0) {
+      return;
+    }
+
+    setIsSaving(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/email-rules", {
+        method: "DELETE",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailIds: selectedRuleIds }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not delete selected rules.");
+        return;
+      }
+
+      const deletedIds = new Set(selectedRuleIds);
+      setSelectedRuleIds([]);
+
+      if (selectedRule && deletedIds.has(selectedRule.emailId)) {
+        selectRule(null);
+      }
+
+      const nextTotal = Math.max(0, total - Number(data.deleted ?? 0));
+      const nextTotalPages = Math.max(1, Math.ceil(nextTotal / pageSize));
+
+      if (page > nextTotalPages) {
+        setPage(nextTotalPages);
+      } else {
+        await loadRuleReviewData();
+      }
+    } catch {
+      setError("Could not delete selected rules.");
     } finally {
       setIsSaving(false);
     }
@@ -1357,9 +1546,28 @@ function RuleReviewPage() {
 
       <div className={cn("grid gap-5 transition-all duration-300", selectedRule ? "xl:grid-cols-[minmax(0,1fr)_460px]" : "grid-cols-1")}>
         <Card>
-          <CardHeader>
-            <CardTitle>Email Rules</CardTitle>
-            <CardDescription>{total} total rules</CardDescription>
+          <CardHeader className="gap-4 md:flex-row md:items-start md:justify-between md:space-y-0">
+            <div>
+              <CardTitle>Email Rules</CardTitle>
+              <CardDescription>
+                {total} total rules
+                {selectedRuleIds.length > 0 ? ` · ${selectedRuleIds.length} selected` : ""}
+              </CardDescription>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={rules.length === 0 || isSaving} onClick={toggleAllVisibleRules} type="button" variant="outline">
+                {allVisibleRulesSelected ? "Clear selection" : "Select all"}
+              </Button>
+              <Button
+                disabled={selectedRuleIds.length === 0 || isSaving}
+                onClick={() => void deleteSelectedRules()}
+                type="button"
+                variant="outline"
+              >
+                {isSaving && selectedRuleIds.length > 0 ? <Loader /> : <Trash2 className="h-4 w-4" />}
+                Delete selected
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             {isLoading ? (
@@ -1376,39 +1584,53 @@ function RuleReviewPage() {
                   <div key={group.label}>
                     {groupBy !== "none" ? <p className="mb-2 text-xs font-medium uppercase text-zinc-500">{group.label}</p> : null}
                     <div className="divide-y divide-zinc-200 overflow-hidden rounded-md border border-zinc-200">
-                      {group.rules.map((rule) => (
-                        <button
+                      {group.rules.map((rule) => {
+                        const isRuleSelected = selectedRuleIds.includes(rule.emailId);
+
+                        return (
+                        <div
                           className={cn(
-                            "grid w-full cursor-pointer gap-3 px-4 py-3 text-left transition-colors hover:bg-zinc-50 md:grid-cols-[1fr_140px]",
+                            "grid w-full gap-3 px-4 py-3 text-left transition-colors hover:bg-zinc-50 md:grid-cols-[32px_1fr_140px]",
                             selectedRule?.emailId === rule.emailId && "bg-zinc-50",
+                            isRuleSelected && "bg-blue-50/50",
                           )}
                           key={rule.emailId}
-                          onClick={() => selectRule(rule)}
-                          type="button"
                         >
+                          <input
+                            aria-label={`Select rule from ${rule.fromEmail}`}
+                            checked={isRuleSelected}
+                            className="mt-1 h-4 w-4 cursor-pointer"
+                            onChange={() => toggleRuleSelection(rule.emailId)}
+                            type="checkbox"
+                          />
                           <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Badge className={rule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
-                                {rule.isPending ? "Pending" : "Reviewed"}
-                              </Badge>
-                              <p className="truncate text-sm font-medium text-zinc-950">{rule.fromEmail}</p>
-                            </div>
-                            <p className="mt-2 line-clamp-2 text-sm leading-5 text-zinc-600">{rule.reason || "No reason provided."}</p>
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {rule.labelsApplied.map((label) => (
-                                <span className="rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-600" key={label}>
-                                  {label}
-                                </span>
-                              ))}
-                            </div>
+                            <button className="block w-full cursor-pointer text-left" onClick={() => selectRule(rule)} type="button">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge className={rule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
+                                  {rule.isPending ? "Pending" : "Reviewed"}
+                                </Badge>
+                                <p className="truncate text-sm font-medium text-zinc-950">{rule.fromEmail}</p>
+                              </div>
+                              <p className="mt-2 line-clamp-2 text-sm leading-5 text-zinc-600">
+                                {rule.recommendedAction || rule.reason || "No reason provided."}
+                              </p>
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {rule.labelsApplied.map((label) => (
+                                  <span className="rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-600" key={label}>
+                                    {label}
+                                  </span>
+                                ))}
+                              </div>
+                            </button>
                           </div>
                           <div className="flex items-start justify-end">
                             <span className={cn("rounded px-2 py-1 text-sm font-semibold", confidenceClass(rule.confidence, confidenceThreshold))}>
                               {Math.round(rule.confidence * 100)}% <span className="text-xs font-medium">confident</span>
                             </span>
                           </div>
-                        </button>
-                      ))}
+                        </div>
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -1954,6 +2176,7 @@ function EndpointsPage() {
             method="POST"
             path="/api/integrations/email-rules"
             title="Add an email rule"
+            notes={["isPending is optional. If omitted, the API sets it to true."]}
             payload={{
               emailId: "19e394a85255976b",
               threadId: "19e394a85255976b",
@@ -2347,6 +2570,58 @@ function validateLabelInput(name: string, description: string) {
   }
 
   return null;
+}
+
+function parseCsvRows(text: string) {
+  const normalizedText = text.replace(/^\uFEFF/, "");
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let isQuoted = false;
+
+  for (let index = 0; index < normalizedText.length; index += 1) {
+    const char = normalizedText[index];
+    const nextChar = normalizedText[index + 1];
+
+    if (char === '"') {
+      if (isQuoted && nextChar === '"') {
+        field += '"';
+        index += 1;
+      } else {
+        isQuoted = !isQuoted;
+      }
+      continue;
+    }
+
+    if (char === "," && !isQuoted) {
+      row.push(field);
+      field = "";
+      continue;
+    }
+
+    if ((char === "\n" || char === "\r") && !isQuoted) {
+      if (char === "\r" && nextChar === "\n") {
+        index += 1;
+      }
+
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+      continue;
+    }
+
+    field += char;
+  }
+
+  if (isQuoted) {
+    throw new Error("CSV has an unterminated quoted value.");
+  }
+
+  row.push(field);
+  rows.push(row);
+
+  return rows.filter((csvRow, index) => index === 0 || csvRow.some((value) => value.trim() !== ""));
 }
 
 function renderLabelDescription(description: string, confidenceThreshold: string) {
