@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentType, type ReactNode } from "react";
 import {
+  BarChart3,
   CheckCircle2,
   ChevronRight,
   Download,
@@ -12,6 +13,7 @@ import {
   Pencil,
   Plus,
   Save,
+  Search,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -26,7 +28,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./com
 import { authClient } from "./lib/auth-client";
 import { cn } from "./lib/utils";
 
-type Page = "overview" | "labels" | "rules" | "settings" | "confidence-threshold" | "email-accounts" | "endpoints";
+type Page = "overview" | "labels" | "rules" | "metrics" | "settings" | "confidence-threshold" | "email-accounts" | "endpoints";
 type AuthMode = "login" | "signup";
 
 type AuthUser = {
@@ -106,6 +108,29 @@ type EmailRule = {
 type RulePendingFilter = "all" | "pending" | "not-pending";
 type RuleGroupBy = "none" | "isPending" | "fromEmail";
 
+type TimelinePoint = {
+  date: string;
+  value: number;
+};
+
+type MetricsData = {
+  rulesCreated: TimelinePoint[];
+  ruleStatus: {
+    pending: number;
+    nonPending: number;
+  };
+  emailsLabeled: TimelinePoint[];
+  draftsCreated: TimelinePoint[];
+};
+
+type OverviewData = {
+  todayLabeled: number;
+  syncedLabels: number;
+  pendingRules: number;
+  nonPendingRules: number;
+  recentRules: EmailRule[];
+};
+
 const LABEL_NAME_MAX_LENGTH = 25;
 const LABEL_DESCRIPTION_MAX_LENGTH = 200;
 const LABEL_NAME_PATTERN = /^[A-Za-z0-9 _-]+$/;
@@ -115,6 +140,7 @@ const navItems = [
   { id: "overview" as const, label: "Overview", icon: Gauge },
   { id: "labels" as const, label: "Labels", icon: Tag },
   { id: "rules" as const, label: "Rule Review", icon: FileCheck2 },
+  { id: "metrics" as const, label: "Metrics", icon: BarChart3 },
   { id: "settings" as const, label: "Settings", icon: Settings },
 ];
 
@@ -127,7 +153,20 @@ const settingsSubItems = [
 export function App() {
   const session = authClient.useSession();
   const [activePage, setActivePage] = useState<Page>("overview");
+  const [ruleToOpen, setRuleToOpen] = useState<string | null>(null);
   const user = session.data?.user ? mapAuthUser(session.data.user) : null;
+
+  function navigate(page: Page) {
+    setActivePage(page);
+    if (page !== "rules") {
+      setRuleToOpen(null);
+    }
+  }
+
+  function openRuleReview(emailId: string) {
+    setRuleToOpen(emailId);
+    setActivePage("rules");
+  }
 
   if (session.isPending) {
     return <LoadingScreen />;
@@ -136,12 +175,14 @@ export function App() {
   return user ? (
     <AuthenticatedLayout
       activePage={activePage}
-      onNavigate={setActivePage}
+      onNavigate={navigate}
+      onOpenRuleReview={openRuleReview}
       onSignOut={async () => {
         await authClient.signOut();
         await session.refetch();
-        setActivePage("overview");
+        navigate("overview");
       }}
+      ruleToOpen={ruleToOpen}
       user={user}
     />
   ) : (
@@ -385,12 +426,16 @@ function LoadingScreen() {
 function AuthenticatedLayout({
   activePage,
   onNavigate,
+  onOpenRuleReview,
   onSignOut,
+  ruleToOpen,
   user,
 }: {
   activePage: Page;
   onNavigate: (page: Page) => void;
+  onOpenRuleReview: (emailId: string) => void;
   onSignOut: () => void;
+  ruleToOpen: string | null;
   user: AuthUser;
 }) {
   const title = useMemo(() => getPageTitle(activePage), [activePage]);
@@ -483,9 +528,10 @@ function AuthenticatedLayout({
           </div>
         </header>
         <main className="p-5 lg:p-8">
-          {activePage === "overview" && <OverviewPage />}
+          {activePage === "overview" && <OverviewPage onNavigate={onNavigate} onOpenRuleReview={onOpenRuleReview} />}
           {activePage === "labels" && <LabelsPage />}
-          {activePage === "rules" && <RuleReviewPage />}
+          {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} />}
+          {activePage === "metrics" && <MetricsPage />}
           {activePage === "settings" && <SettingsPage onNavigate={onNavigate} />}
           {activePage === "confidence-threshold" && <ConfidenceThresholdPage />}
           {activePage === "email-accounts" && <EmailAccountsPage />}
@@ -496,27 +542,108 @@ function AuthenticatedLayout({
   );
 }
 
-function OverviewPage() {
+function OverviewPage({
+  onNavigate,
+  onOpenRuleReview,
+}: {
+  onNavigate: (page: Page) => void;
+  onOpenRuleReview: (emailId: string) => void;
+}) {
+  const [overview, setOverview] = useState<OverviewData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function loadOverview() {
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const response = await fetch("/api/overview", { credentials: "include" });
+        const data = await response.json();
+
+        if (!response.ok) {
+          setError(data.error ?? "Could not load overview.");
+          return;
+        }
+
+        setOverview(data);
+      } catch {
+        setError("Could not load overview.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    void loadOverview();
+  }, []);
+
+  const pendingRules = overview?.pendingRules ?? 0;
+  const nonPendingRules = overview?.nonPendingRules ?? 0;
+
   return (
     <div className="space-y-6">
+      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
       <div className="grid gap-4 md:grid-cols-3">
-        <MetricCard icon={MailCheck} label="Emails analyzed" value="1,284" />
-        <MetricCard icon={Sparkles} label="Suggested labels" value="42" />
-        <MetricCard icon={CheckCircle2} label="Rules approved" value="18" />
+        <MetricCard
+          icon={MailCheck}
+          label="Number of emails labeled today"
+          loading={isLoading}
+          value={formatNumber(overview?.todayLabeled ?? 0)}
+        />
+        <MetricCard
+          actionLabel="View labels"
+          icon={Sparkles}
+          label="Number of labels"
+          loading={isLoading}
+          onAction={() => onNavigate("labels")}
+          value={formatNumber(overview?.syncedLabels ?? 0)}
+        />
+        <MetricCard
+          actionLabel="Review rules"
+          icon={CheckCircle2}
+          label="Non-pending vs pending rules"
+          loading={isLoading}
+          onAction={() => onNavigate("rules")}
+          value={`${formatNumber(nonPendingRules)} / ${formatNumber(pendingRules)}`}
+        />
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Recent activity</CardTitle>
-          <CardDescription>Latest Gmail labeling recommendations and approvals.</CardDescription>
+          <CardTitle>Recent Activity</CardTitle>
+          <CardDescription>Latest rules created or modified.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {["Finance rule approved", "Urgent customer email detected", "Newsletter pattern found"].map((item) => (
-            <div className="flex items-center justify-between rounded-md border border-zinc-100 p-3" key={item}>
-              <span className="text-sm font-medium">{item}</span>
-              <Badge>Today</Badge>
+          {isLoading ? (
+            <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
+              Loading recent activity...
             </div>
-          ))}
+          ) : overview?.recentRules.length ? (
+            overview.recentRules.map((rule) => (
+              <button
+                className="flex w-full cursor-pointer items-start justify-between gap-4 rounded-md border border-zinc-100 p-3 text-left transition-colors hover:bg-zinc-50"
+                key={rule.emailId}
+                onClick={() => onOpenRuleReview(rule.emailId)}
+                type="button"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-zinc-950">{rule.subject}</p>
+                  <p className="mt-1 truncate text-sm text-zinc-500">{rule.fromEmail}</p>
+                  <p className="mt-1 line-clamp-2 text-sm text-zinc-600">
+                    {rule.recommendedAction || rule.reason || "No recommendation provided."}
+                  </p>
+                </div>
+                <Badge className={rule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
+                  {rule.isPending ? "Pending" : "Reviewed"}
+                </Badge>
+              </button>
+            ))
+          ) : (
+            <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
+              No recent rules yet.
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -1237,7 +1364,74 @@ function LabelsPage() {
   );
 }
 
-function RuleReviewPage() {
+function MetricsPage() {
+  const [metrics, setMetrics] = useState<MetricsData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function loadMetrics() {
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const response = await fetch("/api/metrics", { credentials: "include" });
+        const data = await response.json();
+
+        if (!response.ok) {
+          setError(data.error ?? "Could not load metrics.");
+          return;
+        }
+
+        setMetrics(data);
+      } catch {
+        setError("Could not load metrics.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    void loadMetrics();
+  }, []);
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Metrics</CardTitle>
+          <CardDescription>Track rule volume, review status, labeled emails, and draft creation.</CardDescription>
+        </CardHeader>
+      </Card>
+
+      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <TimelineChartCard
+          data={metrics?.rulesCreated ?? []}
+          isLoading={isLoading}
+          title="Rules Created"
+        />
+        <RuleStatusDonut
+          isLoading={isLoading}
+          pending={metrics?.ruleStatus.pending ?? 0}
+          nonPending={metrics?.ruleStatus.nonPending ?? 0}
+        />
+        <TimelineChartCard
+          data={metrics?.emailsLabeled ?? []}
+          isLoading={isLoading}
+          title="Emails Labeled"
+        />
+        <TimelineChartCard
+          data={metrics?.draftsCreated ?? []}
+          isLoading={isLoading}
+          title="Drafts Created"
+        />
+      </div>
+    </div>
+  );
+}
+
+function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
   const [rules, setRules] = useState<EmailRule[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.9);
@@ -1246,6 +1440,8 @@ function RuleReviewPage() {
   const [total, setTotal] = useState(0);
   const [pendingFilter, setPendingFilter] = useState<RulePendingFilter>("all");
   const [groupBy, setGroupBy] = useState<RuleGroupBy>("none");
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
   const [selectedRule, setSelectedRule] = useState<EmailRule | null>(null);
   const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
@@ -1264,7 +1460,13 @@ function RuleReviewPage() {
 
   useEffect(() => {
     void loadRuleReviewData();
-  }, [page, pageSize, pendingFilter]);
+  }, [page, pageSize, pendingFilter, search]);
+
+  useEffect(() => {
+    if (initialEmailId) {
+      void loadRuleDetails(initialEmailId);
+    }
+  }, [initialEmailId]);
 
   useEffect(() => {
     if (selectedRule && !rules.some((rule) => rule.emailId === selectedRule.emailId)) {
@@ -1278,7 +1480,10 @@ function RuleReviewPage() {
 
     try {
       const [rulesResponse, labelsResponse, thresholdResponse] = await Promise.all([
-        fetch(`/api/email-rules?page=${page}&pageSize=${pageSize}&status=${pendingFilter}`, { credentials: "include" }),
+        fetch(
+          `/api/email-rules?page=${page}&pageSize=${pageSize}&status=${pendingFilter}&search=${encodeURIComponent(search)}`,
+          { credentials: "include" },
+        ),
         fetch("/api/labels", { credentials: "include" }),
         fetch("/api/settings/confidence-threshold", { credentials: "include" }),
       ]);
@@ -1300,6 +1505,24 @@ function RuleReviewPage() {
       setError("Could not load rule review data.");
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function loadRuleDetails(emailId: string) {
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/email-rules/${encodeURIComponent(emailId)}`, { credentials: "include" });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not open rule.");
+        return;
+      }
+
+      selectRule(data.rule);
+    } catch {
+      setError("Could not open rule.");
     }
   }
 
@@ -1332,6 +1555,18 @@ function RuleReviewPage() {
 
       return [...new Set([...current, ...visibleRuleIds])];
     });
+  }
+
+  function applyRuleSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPage(1);
+    setSearch(searchInput.trim());
+  }
+
+  function clearRuleSearch() {
+    setSearchInput("");
+    setSearch("");
+    setPage(1);
   }
 
   async function saveRuleReview() {
@@ -1484,7 +1719,26 @@ function RuleReviewPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-          <div className="grid gap-3 md:grid-cols-4">
+          <form className="grid gap-3 md:grid-cols-[1fr_160px_170px_220px]" onSubmit={applyRuleSearch}>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Search</span>
+              <div className="flex gap-2">
+                <input
+                  className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                  onChange={(event) => setSearchInput(event.target.value)}
+                  placeholder="Search sender, subject, labels..."
+                  value={searchInput}
+                />
+                <Button aria-label="Search rules" size="icon" type="submit" variant="outline">
+                  <Search className="h-4 w-4" />
+                </Button>
+                {search ? (
+                  <Button aria-label="Clear search" onClick={clearRuleSearch} size="icon" type="button" variant="outline">
+                    <X className="h-4 w-4" />
+                  </Button>
+                ) : null}
+              </div>
+            </label>
             <label className="block">
               <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Rules shown</span>
               <select
@@ -1540,7 +1794,7 @@ function RuleReviewPage() {
                 Next
               </Button>
             </div>
-          </div>
+          </form>
         </CardContent>
       </Card>
 
@@ -2505,12 +2759,18 @@ function ConfidenceThresholdPage() {
 }
 
 function MetricCard({
+  actionLabel,
   icon: Icon,
   label,
+  loading,
+  onAction,
   value,
 }: {
+  actionLabel?: string;
   icon: ComponentType<{ className?: string }>;
   label: string;
+  loading?: boolean;
+  onAction?: () => void;
   value: string;
 }) {
   return (
@@ -2519,8 +2779,113 @@ function MetricCard({
         <CardDescription>{label}</CardDescription>
         <Icon className="h-4 w-4 text-zinc-500" />
       </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-2xl font-semibold">{loading ? "..." : value}</p>
+        {actionLabel && onAction ? (
+          <Button onClick={onAction} size="sm" type="button" variant="outline">
+            {actionLabel}
+          </Button>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TimelineChartCard({ data, isLoading, title }: { data: TimelinePoint[]; isLoading: boolean; title: string }) {
+  const maxValue = Math.max(1, ...data.map((point) => Number(point.value)));
+  const points = data.map((point, index) => {
+    const x = data.length <= 1 ? 50 : (index / (data.length - 1)) * 100;
+    const y = 100 - (Number(point.value) / maxValue) * 82 - 8;
+    return { ...point, x, y };
+  });
+  const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+  const total = data.reduce((sum, point) => sum + Number(point.value), 0);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>Last 14 days</CardDescription>
+      </CardHeader>
       <CardContent>
-        <p className="text-2xl font-semibold">{value}</p>
+        {isLoading ? (
+          <div className="flex h-56 items-center justify-center rounded-md border border-dashed border-zinc-300 text-sm text-zinc-500">
+            Loading chart...
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-3xl font-semibold">{formatNumber(total)}</p>
+            <svg className="h-44 w-full overflow-visible" preserveAspectRatio="none" viewBox="0 0 100 100" role="img">
+              <title>{title}</title>
+              {[20, 40, 60, 80].map((line) => (
+                <line className="stroke-zinc-100" key={line} x1="0" x2="100" y1={line} y2={line} />
+              ))}
+              {path ? <path className="fill-none stroke-zinc-950" d={path} strokeLinecap="round" strokeWidth="2.5" vectorEffect="non-scaling-stroke" /> : null}
+              {points.map((point) => (
+                <circle className="fill-white stroke-zinc-950" cx={point.x} cy={point.y} key={point.date} r="2.5" vectorEffect="non-scaling-stroke" />
+              ))}
+            </svg>
+            <div className="flex justify-between text-xs text-zinc-500">
+              <span>{formatShortDate(data[0]?.date)}</span>
+              <span>{formatShortDate(data[data.length - 1]?.date)}</span>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RuleStatusDonut({ isLoading, pending, nonPending }: { isLoading: boolean; pending: number; nonPending: number }) {
+  const total = pending + nonPending;
+  const reviewedPercent = total > 0 ? Math.round((nonPending / total) * 100) : 0;
+  const circumference = 2 * Math.PI * 44;
+  const reviewedDash = total > 0 ? (nonPending / total) * circumference : 0;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Pending vs Non-Pending Rules</CardTitle>
+        <CardDescription>Current rule review status</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="flex h-56 items-center justify-center rounded-md border border-dashed border-zinc-300 text-sm text-zinc-500">
+            Loading chart...
+          </div>
+        ) : (
+          <div className="grid items-center gap-6 md:grid-cols-[220px_1fr]">
+            <div className="relative h-56 w-56">
+              <svg className="h-56 w-56 -rotate-90" viewBox="0 0 100 100" role="img">
+                <title>Pending vs non-pending rules</title>
+                <circle className="fill-none stroke-amber-200" cx="50" cy="50" r="44" strokeWidth="12" />
+                <circle
+                  className="fill-none stroke-emerald-500"
+                  cx="50"
+                  cy="50"
+                  r="44"
+                  strokeDasharray={`${reviewedDash} ${circumference - reviewedDash}`}
+                  strokeLinecap="round"
+                  strokeWidth="12"
+                />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <p className="text-3xl font-semibold">{reviewedPercent}%</p>
+                <p className="text-xs uppercase text-zinc-500">Reviewed</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between rounded-md bg-emerald-50 px-3 py-2 text-sm">
+                <span className="text-emerald-800">Non-pending</span>
+                <span className="font-semibold text-emerald-900">{formatNumber(nonPending)}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-md bg-amber-50 px-3 py-2 text-sm">
+                <span className="text-amber-800">Pending</span>
+                <span className="font-semibold text-amber-900">{formatNumber(pending)}</span>
+              </div>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -2717,6 +3082,18 @@ function validateConfidenceThreshold(value: string) {
 
 function formatThreshold(value: number | string) {
   return Number(value).toFixed(2);
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatShortDate(value?: string) {
+  if (!value) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(`${value}T00:00:00`));
 }
 
 function formatDate(value: string) {

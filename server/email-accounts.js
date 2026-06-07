@@ -136,9 +136,9 @@ export function registerEmailAccountRoutes(app) {
       const tokenSet = await exchangeCodeForTokens(provider, req.query.code, redirectUri);
       const profile = await fetchProviderProfile(provider, tokenSet.access_token);
 
-      await upsertEmailAccount(req.user.id, providerId, profile, tokenSet);
-      const { syncAllLabelsToConnectedAccounts } = await import("./label-sync.js");
-      await syncAllLabelsToConnectedAccounts(req.user.id);
+      const account = await upsertEmailAccount(req.user.id, providerId, profile, tokenSet);
+      const { syncAllLabelsToEmailAccount } = await import("./label-sync.js");
+      await syncAllLabelsToEmailAccount(req.user.id, account.id);
       res.redirect("/?emailAccountStatus=connected");
     } catch (error) {
       console.error("Email account OAuth callback failed:", error);
@@ -190,7 +190,12 @@ function toWebHeaders(headers) {
 }
 
 async function listEmailAccounts(user) {
-  await ensureSsoEmailAccount(user.id);
+  const ssoAccount = await ensureSsoEmailAccount(user.id);
+
+  if (ssoAccount?.isNew) {
+    const { syncAllLabelsToEmailAccount } = await import("./label-sync.js");
+    await syncAllLabelsToEmailAccount(user.id, ssoAccount.id);
+  }
 
   const connected = await dbPool.query(
     `
@@ -210,7 +215,7 @@ async function listEmailAccounts(user) {
 }
 
 export async function ensureSsoEmailAccount(userId) {
-  const result = await dbPool.query(
+  const authAccountResult = await dbPool.query(
     `
       select a."accountId",
              a."accessToken",
@@ -227,7 +232,7 @@ export async function ensureSsoEmailAccount(userId) {
     `,
     [userId],
   );
-  const account = result.rows[0];
+  const account = authAccountResult.rows[0];
 
   if (!account) {
     return;
@@ -237,7 +242,17 @@ export async function ensureSsoEmailAccount(userId) {
   const refreshToken = account.refreshToken ? encryptToken(account.refreshToken) : null;
   const scopes = parseScopes(account.scope);
 
-  await dbPool.query(
+  const existing = await dbPool.query(
+    `
+      select id
+      from email_accounts
+      where user_id = $1 and provider = 'gmail' and provider_account_id = $2
+      limit 1
+    `,
+    [userId, account.accountId],
+  );
+
+  const upserted = await dbPool.query(
     `
       insert into email_accounts (
         id, user_id, provider, provider_account_id, email, display_name, source,
@@ -254,6 +269,7 @@ export async function ensureSsoEmailAccount(userId) {
           token_expires_at = excluded.token_expires_at,
           metadata = excluded.metadata,
           updated_at = now()
+      returning id
     `,
     [
       crypto.randomUUID(),
@@ -268,6 +284,8 @@ export async function ensureSsoEmailAccount(userId) {
       JSON.stringify({ source: "better-auth-google-sso" }),
     ],
   );
+
+  return { id: upserted.rows[0].id, isNew: existing.rowCount === 0 };
 }
 
 async function exchangeCodeForTokens(provider, code, redirectUri) {
@@ -328,7 +346,7 @@ async function upsertEmailAccount(userId, provider, profile, tokenSet) {
   const scopes =
     typeof tokenSet.scope === "string" ? tokenSet.scope.split(" ") : EMAIL_ACCOUNT_PROVIDERS[provider].scopes;
 
-  await dbPool.query(
+  const result = await dbPool.query(
     `
       insert into email_accounts (
         id, user_id, provider, provider_account_id, email, display_name,
@@ -344,6 +362,7 @@ async function upsertEmailAccount(userId, provider, profile, tokenSet) {
           token_expires_at = excluded.token_expires_at,
           metadata = excluded.metadata,
           updated_at = now()
+      returning id
     `,
     [
       crypto.randomUUID(),
@@ -359,6 +378,8 @@ async function upsertEmailAccount(userId, provider, profile, tokenSet) {
       JSON.stringify(profile.raw),
     ],
   );
+
+  return { id: result.rows[0].id };
 }
 
 function getRedirectUri(req, providerId) {
@@ -420,7 +441,12 @@ export function decryptToken(encryptedToken) {
 }
 
 export async function getConnectedEmailAccounts(userId) {
-  await ensureSsoEmailAccount(userId);
+  const ssoAccount = await ensureSsoEmailAccount(userId);
+
+  if (ssoAccount?.isNew) {
+    const { syncAllLabelsToEmailAccount } = await import("./label-sync.js");
+    await syncAllLabelsToEmailAccount(userId, ssoAccount.id);
+  }
 
   const result = await dbPool.query(
     `

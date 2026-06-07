@@ -47,6 +47,18 @@ export async function syncAllLabelsToConnectedAccounts(userId) {
   }
 }
 
+export async function syncAllLabelsToEmailAccount(userId, emailAccountId) {
+  const [labels, account] = await Promise.all([getUserLabels(userId), getUserEmailAccount(userId, emailAccountId)]);
+
+  if (!account) {
+    return;
+  }
+
+  for (const label of labels) {
+    await syncLabelToAccount(label, account, "update");
+  }
+}
+
 export async function refreshAllLabelSyncStatus(userId) {
   const [labels, accounts] = await Promise.all([getUserLabels(userId), getConnectedEmailAccounts(userId)]);
 
@@ -461,6 +473,20 @@ async function getUserLabel(userId, labelId) {
       where user_id = $1 and id = $2
     `,
     [userId, labelId],
+  );
+
+  return result.rows[0] ?? null;
+}
+
+async function getUserEmailAccount(userId, emailAccountId) {
+  const result = await dbPool.query(
+    `
+      select id, provider, email, access_token, refresh_token, token_expires_at as "tokenExpiresAt"
+      from email_accounts
+      where user_id = $1 and id = $2
+      limit 1
+    `,
+    [userId, emailAccountId],
   );
 
   return result.rows[0] ?? null;

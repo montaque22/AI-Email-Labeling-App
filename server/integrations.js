@@ -92,6 +92,22 @@ export async function ensureIntegrationTables() {
   await dbPool.query("create index if not exists email_rules_from_name_idx on email_rules(user_id, lower(from_name))");
   await dbPool.query("create index if not exists email_rules_subject_idx on email_rules(user_id, lower(subject))");
   await dbPool.query("create index if not exists email_rules_is_pending_idx on email_rules(user_id, is_pending)");
+
+  await dbPool.query(`
+    create table if not exists integration_metric_events (
+      id uuid primary key,
+      user_id text not null references "user"(id) on delete cascade,
+      event_type text not null,
+      email_id text,
+      account_email text,
+      metadata jsonb not null default '{}',
+      created_at timestamptz not null default now()
+    )
+  `);
+  await dbPool.query("create index if not exists integration_metric_events_user_id_idx on integration_metric_events(user_id)");
+  await dbPool.query(
+    "create index if not exists integration_metric_events_type_created_idx on integration_metric_events(user_id, event_type, created_at)",
+  );
 }
 
 export function registerIntegrationRoutes(app) {
@@ -151,6 +167,7 @@ export function registerIntegrationRoutes(app) {
     const pageSize = parseRulePageSize(req.query.pageSize);
     const page = parseRulePage(req.query.page);
     const pendingFilter = parsePendingFilter(req.query.status);
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
     const conditions = ["user_id = $1"];
     const values = [req.user.id];
 
@@ -158,6 +175,8 @@ export function registerIntegrationRoutes(app) {
       values.push(pendingFilter);
       conditions.push(`is_pending = $${values.length}`);
     }
+
+    addRuleSearchConditions(search, conditions, values);
 
     try {
       const count = await dbPool.query(
@@ -190,6 +209,47 @@ export function registerIntegrationRoutes(app) {
     }
   });
 
+  app.get("/api/overview", requireSession, async (req, res) => {
+    try {
+      const [todayLabeled, syncedLabels, ruleCounts, recentRules] = await Promise.all([
+        getMetricEventCountForToday(req.user.id, "email_labeled"),
+        getSyncedLabelCount(req.user.id),
+        getRuleStatusCounts(req.user.id),
+        getRecentRules(req.user.id, 7),
+      ]);
+
+      res.json({
+        todayLabeled,
+        syncedLabels,
+        pendingRules: ruleCounts.pending,
+        nonPendingRules: ruleCounts.nonPending,
+        recentRules,
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/metrics", requireSession, async (req, res) => {
+    try {
+      const [rulesCreated, ruleStatus, emailsLabeled, draftsCreated] = await Promise.all([
+        getRulesCreatedTimeline(req.user.id),
+        getRuleStatusCounts(req.user.id),
+        getMetricEventTimeline(req.user.id, "email_labeled"),
+        getMetricEventTimeline(req.user.id, "draft_created"),
+      ]);
+
+      res.json({
+        rulesCreated,
+        ruleStatus,
+        emailsLabeled,
+        draftsCreated,
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   app.get("/api/email-rules/export", requireSession, async (req, res) => {
     try {
       const result = await dbPool.query(
@@ -206,6 +266,21 @@ export function registerIntegrationRoutes(app) {
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader("Content-Disposition", 'attachment; filename="email-rules.csv"');
       res.send(csv);
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/email-rules/:emailId", requireSession, async (req, res) => {
+    try {
+      const rule = await getEmailRuleByEmailId(req.user.id, req.params.emailId);
+
+      if (!rule) {
+        res.status(404).json({ error: "Email rule not found" });
+        return;
+      }
+
+      res.json({ rule });
     } catch (error) {
       handleError(res, error);
     }
@@ -428,6 +503,11 @@ export function registerIntegrationRoutes(app) {
 
       const accessToken = await getValidEmailAccountAccessToken(account);
       const draft = await createGmailReplyDraft({ accessToken, account, input });
+      await recordMetricEvent(req.integrationUser.id, "draft_created", {
+        emailId: input.emailId,
+        accountEmail: account.email,
+        metadata: { provider: account.provider, draftId: draft.id },
+      });
 
       res.status(201).json({
         accountEmail: account.email,
@@ -475,6 +555,14 @@ async function modifyMessageLabels(req, res, action) {
       addLabelIds: action === "add" ? labels.labels.map((label) => label.providerLabelId) : [],
       removeLabelIds: action === "remove" ? labels.labels.map((label) => label.providerLabelId) : [],
     });
+
+    if (action === "add") {
+      await recordMetricEvent(req.integrationUser.id, "email_labeled", {
+        emailId: input.emailId,
+        accountEmail: account.email,
+        metadata: { provider: account.provider, labels: labels.labels.map((label) => label.name) },
+      });
+    }
 
     res.json({
       accountEmail: account.email,
@@ -669,6 +757,22 @@ async function parseEmailRuleInput(userId, body, { partial }) {
   return { ok: true, rule };
 }
 
+function addRuleSearchConditions(search, conditions, values) {
+  const terms = search.split(/\s+/).map((term) => term.trim()).filter(Boolean).slice(0, 8);
+
+  for (const term of terms) {
+    values.push(`%${escapeLike(term)}%`);
+    conditions.push(`(
+      from_email ilike $${values.length} escape '\\'
+      or from_name ilike $${values.length} escape '\\'
+      or subject ilike $${values.length} escape '\\'
+      or snippet ilike $${values.length} escape '\\'
+      or array_to_string(labels_applied, ' ') ilike $${values.length} escape '\\'
+      or metadata::text ilike $${values.length} escape '\\'
+    )`);
+  }
+}
+
 async function upsertEmailRule(userId, rule) {
   const result = await dbPool.query(
     `
@@ -744,6 +848,148 @@ async function updateEmailRule(userId, emailId, rule) {
   );
 
   return result.rows[0] ? mapEmailRuleRow(result.rows[0]) : null;
+}
+
+async function getEmailRuleByEmailId(userId, emailId) {
+  const result = await dbPool.query(
+    `
+      select ${EMAIL_RULE_SELECT}
+      from email_rules
+      where user_id = $1 and email_id = $2
+      limit 1
+    `,
+    [userId, emailId],
+  );
+
+  return result.rows[0] ? mapEmailRuleRow(result.rows[0]) : null;
+}
+
+async function getRecentRules(userId, limit) {
+  const result = await dbPool.query(
+    `
+      select ${EMAIL_RULE_SELECT}
+      from email_rules
+      where user_id = $1
+      order by updated_at desc
+      limit $2
+    `,
+    [userId, limit],
+  );
+
+  return result.rows.map(mapEmailRuleRow);
+}
+
+async function getRuleStatusCounts(userId) {
+  const result = await dbPool.query(
+    `
+      select
+        count(*) filter (where is_pending = true)::int as pending,
+        count(*) filter (where is_pending = false)::int as "nonPending"
+      from email_rules
+      where user_id = $1
+    `,
+    [userId],
+  );
+
+  return {
+    pending: result.rows[0]?.pending ?? 0,
+    nonPending: result.rows[0]?.nonPending ?? 0,
+  };
+}
+
+async function getSyncedLabelCount(userId) {
+  const result = await dbPool.query(
+    `
+      with account_count as (
+        select count(*)::int as total
+        from email_accounts
+        where user_id = $1
+      )
+      select count(*)::int as count
+      from labels l
+      cross join account_count ac
+      where l.user_id = $1
+        and ac.total > 0
+        and (
+          select count(distinct las.email_account_id)::int
+          from label_account_syncs las
+          where las.label_id = l.id
+            and las.sync_status = 'synced'
+            and las.provider_label_id is not null
+        ) >= ac.total
+    `,
+    [userId],
+  );
+
+  return result.rows[0]?.count ?? 0;
+}
+
+async function getMetricEventCountForToday(userId, eventType) {
+  const result = await dbPool.query(
+    `
+      select count(*)::int as count
+      from integration_metric_events
+      where user_id = $1
+        and event_type = $2
+        and created_at >= date_trunc('day', now())
+    `,
+    [userId, eventType],
+  );
+
+  return result.rows[0]?.count ?? 0;
+}
+
+async function getRulesCreatedTimeline(userId) {
+  const result = await dbPool.query(
+    `
+      with days as (
+        select generate_series(date_trunc('day', now()) - interval '13 days', date_trunc('day', now()), interval '1 day') as day
+      )
+      select to_char(days.day, 'YYYY-MM-DD') as date,
+             count(email_rules.id)::int as value
+      from days
+      left join email_rules
+        on email_rules.user_id = $1
+       and date_trunc('day', email_rules.created_at) = days.day
+      group by days.day
+      order by days.day
+    `,
+    [userId],
+  );
+
+  return result.rows;
+}
+
+async function getMetricEventTimeline(userId, eventType) {
+  const result = await dbPool.query(
+    `
+      with days as (
+        select generate_series(date_trunc('day', now()) - interval '13 days', date_trunc('day', now()), interval '1 day') as day
+      )
+      select to_char(days.day, 'YYYY-MM-DD') as date,
+             count(integration_metric_events.id)::int as value
+      from days
+      left join integration_metric_events
+        on integration_metric_events.user_id = $1
+       and integration_metric_events.event_type = $2
+       and date_trunc('day', integration_metric_events.created_at) = days.day
+      group by days.day
+      order by days.day
+    `,
+    [userId, eventType],
+  );
+
+  return result.rows;
+}
+
+async function recordMetricEvent(userId, eventType, { emailId = null, accountEmail = null, metadata = {} } = {}) {
+  await dbPool.query(
+    `
+      insert into integration_metric_events (id, user_id, event_type, email_id, account_email, metadata)
+      values ($1, $2, $3, $4, $5, $6)
+    `,
+    [crypto.randomUUID(), userId, eventType, emailId, accountEmail, JSON.stringify(metadata)],
+  );
 }
 
 function buildEmailRuleQuery(query, parameterOffset = 2) {
