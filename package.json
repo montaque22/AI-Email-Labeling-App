@@ -16,21 +16,22 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "better-auth": "latest",
-    "express": "latest",
-    "pg": "latest",
+    "@radix-ui/react-slot": "latest",
+    "@tailwindcss/vite": "latest",
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "typescript": "latest",
+    "better-auth": "latest",
+    "class-variance-authority": "latest",
+    "clsx": "latest",
+    "express": "latest",
+    "lucide-react": "latest",
+    "pg": "latest",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "lucide-react": "latest",
-    "@radix-ui/react-slot": "latest",
-    "clsx": "latest",
+    "recharts": "^3.8.1",
     "tailwind-merge": "latest",
-    "class-variance-authority": "latest",
     "tailwindcss": "latest",
-    "@tailwindcss/vite": "latest"
+    "typescript": "latest",
+    "vite": "latest"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

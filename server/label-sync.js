@@ -318,6 +318,11 @@ async function syncGmailLabel({ action, accessToken, label, providerLabelId }) {
 }
 
 async function createGmailLabel({ accessToken, label }) {
+  const existing = await findGmailLabelByName({ accessToken, name: label.name });
+  if (existing) {
+    return existing.id;
+  }
+
   try {
     const response = await providerFetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", accessToken, {
       method: "POST",
@@ -373,12 +378,7 @@ async function syncMicrosoftFolder({ action, accessToken, label, providerLabelId
   }
 
   if (action === "create" || !providerLabelId) {
-    const response = await providerFetch(baseUrl, accessToken, {
-      method: "POST",
-      body: JSON.stringify({ displayName: label.name }),
-    });
-    const created = await response.json();
-    return created.id;
+    return createMicrosoftFolder({ accessToken, label });
   }
 
   if (action === "update") {
@@ -396,12 +396,7 @@ async function syncMicrosoftFolder({ action, accessToken, label, providerLabelId
         throw error;
       }
 
-      const response = await providerFetch(baseUrl, accessToken, {
-        method: "POST",
-        body: JSON.stringify({ displayName: label.name }),
-      });
-      const created = await response.json();
-      return created.id;
+      return createMicrosoftFolder({ accessToken, label });
     }
 
     return providerLabelId;
@@ -415,6 +410,30 @@ async function syncMicrosoftFolder({ action, accessToken, label, providerLabelId
   }
 
   throw new Error(`Unsupported folder sync action: ${action}`);
+}
+
+async function createMicrosoftFolder({ accessToken, label }) {
+  const existing = await findMicrosoftFolderByName({ accessToken, name: label.name });
+  if (existing) {
+    return existing.id;
+  }
+
+  const response = await providerFetch("https://graph.microsoft.com/v1.0/me/mailFolders", accessToken, {
+    method: "POST",
+    body: JSON.stringify({ displayName: label.name }),
+  });
+  const created = await response.json();
+  return created.id;
+}
+
+async function findMicrosoftFolderByName({ accessToken, name }) {
+  const response = await providerFetch(
+    "https://graph.microsoft.com/v1.0/me/mailFolders?$top=100",
+    accessToken,
+    { method: "GET" },
+  );
+  const data = await response.json();
+  return (data.value ?? []).find((folder) => folder.displayName === name) ?? null;
 }
 
 async function getMicrosoftFolder({ accessToken, providerLabelId }) {

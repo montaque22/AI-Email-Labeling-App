@@ -1,5 +1,16 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentType, type ReactNode } from "react";
 import {
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
   BarChart3,
   CheckCircle2,
   ChevronRight,
@@ -447,9 +458,9 @@ function AuthenticatedLayout({
           <div className="flex h-9 w-9 items-center justify-center rounded-md bg-zinc-950 text-white">
             <Inbox className="h-5 w-5" />
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-sm font-semibold">Email Labeling</p>
-            <p className="text-xs text-zinc-500">{user.email}</p>
+            <p className="truncate text-xs text-zinc-500">{user.email}</p>
           </div>
         </div>
         <nav className="flex-1 space-y-1 px-3 py-4">
@@ -497,17 +508,17 @@ function AuthenticatedLayout({
         </div>
       </aside>
 
-      <div className="md:pl-64">
+      <div className="min-w-0 md:pl-64">
         <header className="sticky top-0 z-10 flex min-h-16 flex-col gap-3 border-b border-zinc-200 bg-white/95 px-5 py-3 backdrop-blur md:h-16 md:flex-row md:items-center md:justify-between md:py-0">
-          <div>
+          <div className="min-w-0">
             <p className="text-xs font-medium uppercase text-zinc-500">Dashboard</p>
-            <h2 className="text-xl font-semibold">{title}</h2>
+            <h2 className="truncate text-xl font-semibold">{title}</h2>
           </div>
-          <div className="hidden items-center gap-3 md:flex">
+          <div className="hidden min-w-0 items-center gap-3 md:flex">
             {user.picture ? <img alt="" className="h-8 w-8 rounded-full" src={user.picture} /> : null}
-            <div className="text-right">
-              <p className="text-sm font-medium">{user.name}</p>
-              <p className="text-xs text-zinc-500">{user.email}</p>
+            <div className="min-w-0 text-right">
+              <p className="truncate text-sm font-medium">{user.name}</p>
+              <p className="truncate text-xs text-zinc-500">{user.email}</p>
             </div>
           </div>
           <div className="flex gap-2 overflow-x-auto md:hidden">
@@ -527,7 +538,7 @@ function AuthenticatedLayout({
             ))}
           </div>
         </header>
-        <main className="p-5 lg:p-8">
+        <main className="min-w-0 overflow-x-hidden p-4 sm:p-5 lg:p-8">
           {activePage === "overview" && <OverviewPage onNavigate={onNavigate} onOpenRuleReview={onOpenRuleReview} />}
           {activePage === "labels" && <LabelsPage />}
           {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} />}
@@ -584,7 +595,7 @@ function OverviewPage({
   return (
     <div className="space-y-6">
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <MetricCard
           icon={MailCheck}
           label="Number of emails labeled today"
@@ -1071,7 +1082,7 @@ function LabelsPage() {
           </div>
         </div>
       ) : null}
-      <div className="grid gap-4 md:grid-cols-[220px_260px_1fr]">
+      <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-[220px_260px_minmax(0,1fr)]">
         <Card>
           <CardHeader className="items-center text-center">
             <CardDescription>Synced Labels</CardDescription>
@@ -1096,13 +1107,13 @@ function LabelsPage() {
             ) : null}
           </CardContent>
         </Card>
-        <Card>
+        <Card className="min-w-0 lg:col-span-2 xl:col-span-1">
           <CardHeader className="gap-3 md:flex-row md:items-start md:justify-between md:space-y-0">
-            <div>
+            <div className="min-w-0">
               <CardTitle>Add Label</CardTitle>
               <CardDescription>Create labels that can be used by rules and reviews.</CardDescription>
             </div>
-            <div>
+            <div className="shrink-0">
               <input
                 accept=".csv,text/csv"
                 className="hidden"
@@ -1110,14 +1121,14 @@ function LabelsPage() {
                 ref={csvUploadRef}
                 type="file"
               />
-              <Button disabled={isSaving} onClick={() => csvUploadRef.current?.click()} type="button" variant="outline">
+              <Button className="w-full sm:w-auto" disabled={isSaving} onClick={() => csvUploadRef.current?.click()} type="button" variant="outline">
                 {labelAction === "upload" ? <Loader /> : <Upload className="h-4 w-4" />}
                 {labelAction === "upload" ? "Uploading..." : "Upload CSV"}
               </Button>
             </div>
           </CardHeader>
           <CardContent>
-            <form className="grid gap-3 md:grid-cols-[minmax(0,220px)_1fr_auto]" onSubmit={handleAddLabel}>
+            <form className="grid gap-3 2xl:grid-cols-[minmax(0,220px)_1fr_auto]" onSubmit={handleAddLabel}>
               <div>
                 <input
                   className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
@@ -1167,7 +1178,7 @@ function LabelsPage() {
                   </span>
                 </div>
               </div>
-              <Button className="self-start" disabled={isSaving} type="submit">
+              <Button className="self-start 2xl:w-auto" disabled={isSaving} type="submit">
                 {labelAction === "create" ? <Loader /> : <Plus className="h-4 w-4" />}
                 {labelAction === "create" ? "Adding..." : "Add Label"}
               </Button>
@@ -1177,8 +1188,8 @@ function LabelsPage() {
       </div>
 
       <Card>
-        <CardHeader className="gap-4 md:flex-row md:items-center md:justify-between md:space-y-0">
-          <div>
+        <CardHeader className="gap-4 lg:flex-row lg:items-center lg:justify-between lg:space-y-0">
+          <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-3">
               <CardTitle>Labels</CardTitle>
               <Badge>{labels.length} total</Badge>
@@ -1211,8 +1222,8 @@ function LabelsPage() {
               No labels yet.
             </div>
           ) : (
-            <div className="overflow-hidden rounded-md border border-zinc-200">
-              <div className="grid grid-cols-[44px_1fr_1.5fr_160px] gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-xs font-medium uppercase text-zinc-500">
+            <div className="overflow-x-auto rounded-md border border-zinc-200">
+              <div className="grid min-w-[720px] grid-cols-[44px_1fr_1.5fr_160px] gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-xs font-medium uppercase text-zinc-500">
                 <span />
                 <span>Name</span>
                 <span>Description</span>
@@ -1227,7 +1238,7 @@ function LabelsPage() {
 
                   return (
                     <div
-                      className="grid grid-cols-[44px_1fr_1.5fr_160px] items-start gap-3 px-4 py-3"
+                      className="grid min-w-[720px] grid-cols-[44px_1fr_1.5fr_160px] items-start gap-3 px-4 py-3"
                       key={label.id}
                     >
                       <input
@@ -1405,7 +1416,7 @@ function MetricsPage() {
 
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
-      <div className="grid gap-5 xl:grid-cols-2">
+      <div className="grid gap-5 2xl:grid-cols-2">
         <TimelineChartCard
           data={metrics?.rulesCreated ?? []}
           isLoading={isLoading}
@@ -1707,19 +1718,19 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
   return (
     <div className="space-y-5">
       <Card>
-        <CardHeader className="gap-4 md:flex-row md:items-start md:justify-between md:space-y-0">
-          <div>
+        <CardHeader className="gap-4 lg:flex-row lg:items-start lg:justify-between lg:space-y-0">
+          <div className="min-w-0">
             <CardTitle>Rule Review</CardTitle>
             <CardDescription>Review suggested email labeling rules and export the rule table.</CardDescription>
           </div>
-          <Button disabled={isExporting} onClick={() => void exportRules()} type="button">
+          <Button className="w-full sm:w-auto" disabled={isExporting} onClick={() => void exportRules()} type="button">
             <Download className="h-4 w-4" />
             {isExporting ? "Exporting..." : "Export CSV"}
           </Button>
         </CardHeader>
         <CardContent className="space-y-4">
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-          <form className="grid gap-3 md:grid-cols-[1fr_160px_170px_220px]" onSubmit={applyRuleSearch}>
+          <form className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-[minmax(0,1fr)_160px_170px_220px]" onSubmit={applyRuleSearch}>
             <label className="block">
               <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Search</span>
               <div className="flex gap-2">
@@ -1783,14 +1794,14 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
                 <option value="fromEmail">From email</option>
               </select>
             </label>
-            <div className="flex items-end justify-between gap-2">
-              <Button disabled={page <= 1 || isLoading} onClick={() => setPage((value) => Math.max(1, value - 1))} type="button" variant="outline">
+            <div className="flex items-end justify-between gap-2 lg:col-span-2 2xl:col-span-1">
+              <Button className="min-w-0 flex-1 2xl:flex-none" disabled={page <= 1 || isLoading} onClick={() => setPage((value) => Math.max(1, value - 1))} type="button" variant="outline">
                 Previous
               </Button>
-              <span className="pb-2 text-sm text-zinc-500">
+              <span className="shrink-0 pb-2 text-sm text-zinc-500">
                 {page}/{totalPages}
               </span>
-              <Button disabled={page >= totalPages || isLoading} onClick={() => setPage((value) => value + 1)} type="button" variant="outline">
+              <Button className="min-w-0 flex-1 2xl:flex-none" disabled={page >= totalPages || isLoading} onClick={() => setPage((value) => value + 1)} type="button" variant="outline">
                 Next
               </Button>
             </div>
@@ -1798,10 +1809,10 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
         </CardContent>
       </Card>
 
-      <div className={cn("grid gap-5 transition-all duration-300", selectedRule ? "xl:grid-cols-[minmax(0,1fr)_460px]" : "grid-cols-1")}>
-        <Card>
-          <CardHeader className="gap-4 md:flex-row md:items-start md:justify-between md:space-y-0">
-            <div>
+      <div className={cn("grid gap-5 transition-all duration-300", selectedRule ? "2xl:grid-cols-[minmax(0,1fr)_460px]" : "grid-cols-1")}>
+        <Card className="min-w-0">
+          <CardHeader className="gap-4 lg:flex-row lg:items-start lg:justify-between lg:space-y-0">
+            <div className="min-w-0">
               <CardTitle>Email Rules</CardTitle>
               <CardDescription>
                 {total} total rules
@@ -1844,7 +1855,7 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
                         return (
                         <div
                           className={cn(
-                            "grid w-full gap-3 px-4 py-3 text-left transition-colors hover:bg-zinc-50 md:grid-cols-[32px_1fr_140px]",
+                            "grid w-full gap-3 px-4 py-3 text-left transition-colors hover:bg-zinc-50 lg:grid-cols-[32px_minmax(0,1fr)_140px]",
                             selectedRule?.emailId === rule.emailId && "bg-zinc-50",
                             isRuleSelected && "bg-blue-50/50",
                           )}
@@ -1877,7 +1888,7 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
                               </div>
                             </button>
                           </div>
-                          <div className="flex items-start justify-end">
+                          <div className="flex items-start justify-start lg:justify-end">
                             <span className={cn("rounded px-2 py-1 text-sm font-semibold", confidenceClass(rule.confidence, confidenceThreshold))}>
                               {Math.round(rule.confidence * 100)}% <span className="text-xs font-medium">confident</span>
                             </span>
@@ -1894,9 +1905,9 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
         </Card>
 
         {selectedRule ? (
-        <Card className="transition-all duration-300 xl:sticky xl:top-5">
-          <CardHeader className="gap-3 md:flex-row md:items-start md:justify-between md:space-y-0">
-            <div>
+        <Card className="min-w-0 transition-all duration-300 2xl:sticky 2xl:top-5">
+          <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+            <div className="min-w-0">
               <CardTitle>Rule Details</CardTitle>
               <CardDescription>Review labels and guidance.</CardDescription>
             </div>
@@ -1907,10 +1918,10 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
           <CardContent>
               <div className="space-y-5">
                 <div>
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
                       <p className="text-sm font-medium text-zinc-950">{selectedRule.fromName}</p>
-                      <p className="text-sm text-zinc-500">{selectedRule.fromEmail}</p>
+                      <p className="truncate text-sm text-zinc-500">{selectedRule.fromEmail}</p>
                     </div>
                     <Badge className={selectedRule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
                       {selectedRule.isPending ? "Pending" : "Reviewed"}
@@ -1931,7 +1942,7 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
                   </div>
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-1 min-[1680px]:grid-cols-2">
                   <div>
                     <p className="mb-2 text-xs font-medium uppercase text-zinc-500">Available labels</p>
                     <div
@@ -2016,7 +2027,7 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
                   <span className="mt-1 block text-right text-xs text-zinc-500">{recommendedAction.length}/200</span>
                 </label>
 
-                <div className="flex justify-end gap-2">
+                <div className="flex flex-wrap justify-end gap-2">
                   <Button disabled={isSaving} onClick={() => selectRule(selectedRule)} type="button" variant="outline">
                     Cancel
                   </Button>
@@ -2792,14 +2803,12 @@ function MetricCard({
 }
 
 function TimelineChartCard({ data, isLoading, title }: { data: TimelinePoint[]; isLoading: boolean; title: string }) {
-  const maxValue = Math.max(1, ...data.map((point) => Number(point.value)));
-  const points = data.map((point, index) => {
-    const x = data.length <= 1 ? 50 : (index / (data.length - 1)) * 100;
-    const y = 100 - (Number(point.value) / maxValue) * 82 - 8;
-    return { ...point, x, y };
-  });
-  const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
   const total = data.reduce((sum, point) => sum + Number(point.value), 0);
+  const chartData = data.map((point) => ({
+    ...point,
+    label: formatShortDate(point.date),
+    value: Number(point.value),
+  }));
 
   return (
     <Card>
@@ -2815,19 +2824,43 @@ function TimelineChartCard({ data, isLoading, title }: { data: TimelinePoint[]; 
         ) : (
           <div className="space-y-4">
             <p className="text-3xl font-semibold">{formatNumber(total)}</p>
-            <svg className="h-44 w-full overflow-visible" preserveAspectRatio="none" viewBox="0 0 100 100" role="img">
-              <title>{title}</title>
-              {[20, 40, 60, 80].map((line) => (
-                <line className="stroke-zinc-100" key={line} x1="0" x2="100" y1={line} y2={line} />
-              ))}
-              {path ? <path className="fill-none stroke-zinc-950" d={path} strokeLinecap="round" strokeWidth="2.5" vectorEffect="non-scaling-stroke" /> : null}
-              {points.map((point) => (
-                <circle className="fill-white stroke-zinc-950" cx={point.x} cy={point.y} key={point.date} r="2.5" vectorEffect="non-scaling-stroke" />
-              ))}
-            </svg>
-            <div className="flex justify-between text-xs text-zinc-500">
-              <span>{formatShortDate(data[0]?.date)}</span>
-              <span>{formatShortDate(data[data.length - 1]?.date)}</span>
+            <div className="h-48 w-full">
+              <ResponsiveContainer height="100%" width="100%">
+                <LineChart data={chartData} margin={{ bottom: 4, left: -24, right: 10, top: 8 }}>
+                  <XAxis
+                    axisLine={false}
+                    dataKey="label"
+                    interval="preserveStartEnd"
+                    tick={{ fill: "#71717a", fontSize: 12 }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    allowDecimals={false}
+                    axisLine={false}
+                    tick={{ fill: "#71717a", fontSize: 12 }}
+                    tickLine={false}
+                    width={36}
+                  />
+                  <RechartsTooltip
+                    contentStyle={{
+                      border: "1px solid #e4e4e7",
+                      borderRadius: 6,
+                      boxShadow: "0 8px 24px rgba(24, 24, 27, 0.08)",
+                      fontSize: 12,
+                    }}
+                    labelFormatter={(_, payload) => formatShortDate(payload?.[0]?.payload?.date)}
+                    formatter={(value) => [formatNumber(Number(value)), title]}
+                  />
+                  <Line
+                    activeDot={{ r: 5, stroke: "#18181b", strokeWidth: 2 }}
+                    dataKey="value"
+                    dot={{ r: 3, stroke: "#18181b", strokeWidth: 2, fill: "#ffffff" }}
+                    stroke="#18181b"
+                    strokeWidth={2.5}
+                    type="monotone"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
             </div>
           </div>
         )}
@@ -2839,8 +2872,10 @@ function TimelineChartCard({ data, isLoading, title }: { data: TimelinePoint[]; 
 function RuleStatusDonut({ isLoading, pending, nonPending }: { isLoading: boolean; pending: number; nonPending: number }) {
   const total = pending + nonPending;
   const reviewedPercent = total > 0 ? Math.round((nonPending / total) * 100) : 0;
-  const circumference = 2 * Math.PI * 44;
-  const reviewedDash = total > 0 ? (nonPending / total) * circumference : 0;
+  const chartData = [
+    { name: "Non-pending", value: nonPending, color: "#10b981" },
+    { name: "Pending", value: pending, color: "#f59e0b" },
+  ];
 
   return (
     <Card>
@@ -2856,19 +2891,33 @@ function RuleStatusDonut({ isLoading, pending, nonPending }: { isLoading: boolea
         ) : (
           <div className="grid items-center gap-6 md:grid-cols-[220px_1fr]">
             <div className="relative h-56 w-56">
-              <svg className="h-56 w-56 -rotate-90" viewBox="0 0 100 100" role="img">
-                <title>Pending vs non-pending rules</title>
-                <circle className="fill-none stroke-amber-200" cx="50" cy="50" r="44" strokeWidth="12" />
-                <circle
-                  className="fill-none stroke-emerald-500"
-                  cx="50"
-                  cy="50"
-                  r="44"
-                  strokeDasharray={`${reviewedDash} ${circumference - reviewedDash}`}
-                  strokeLinecap="round"
-                  strokeWidth="12"
-                />
-              </svg>
+              <ResponsiveContainer height="100%" width="100%">
+                <PieChart>
+                  <Pie
+                    data={total > 0 ? chartData : [{ name: "No rules", value: 1, color: "#e4e4e7" }]}
+                    dataKey="value"
+                    endAngle={-270}
+                    innerRadius={70}
+                    outerRadius={98}
+                    paddingAngle={total > 0 ? 2 : 0}
+                    startAngle={90}
+                    stroke="none"
+                  >
+                    {(total > 0 ? chartData : [{ name: "No rules", value: 1, color: "#e4e4e7" }]).map((entry) => (
+                      <Cell fill={entry.color} key={entry.name} />
+                    ))}
+                  </Pie>
+                  <RechartsTooltip
+                    contentStyle={{
+                      border: "1px solid #e4e4e7",
+                      borderRadius: 6,
+                      boxShadow: "0 8px 24px rgba(24, 24, 27, 0.08)",
+                      fontSize: 12,
+                    }}
+                    formatter={(value, name) => [formatNumber(Number(value)), name]}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
               <div className="absolute inset-0 flex flex-col items-center justify-center">
                 <p className="text-3xl font-semibold">{reviewedPercent}%</p>
                 <p className="text-xs uppercase text-zinc-500">Reviewed</p>
