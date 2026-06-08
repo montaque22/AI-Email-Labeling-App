@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { dbPool } from "./db.js";
 import { getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
+import { getImapFolder, syncImapFolder } from "./imap-provider.js";
 
 export async function ensureLabelSyncTable() {
   if (!dbPool) {
@@ -78,7 +79,8 @@ export async function ensureLabelSyncedToAccount(userId, labelId, emailAccountId
              ea.email,
              ea.access_token,
              ea.refresh_token,
-             ea.token_expires_at as "tokenExpiresAt"
+             ea.token_expires_at as "tokenExpiresAt",
+             ea.metadata
       from labels l
       join email_accounts ea on ea.user_id = l.user_id
       where l.user_id = $1
@@ -102,6 +104,7 @@ export async function ensureLabelSyncedToAccount(userId, labelId, emailAccountId
     access_token: row.access_token,
     refresh_token: row.refresh_token,
     tokenExpiresAt: row.tokenExpiresAt,
+    metadata: row.metadata,
   };
 
   await syncLabelToAccount(label, account, "update");
@@ -122,7 +125,8 @@ export async function retryLabelSync(userId, labelId) {
              ea.email,
              ea.access_token,
              ea.refresh_token,
-             ea.token_expires_at as "tokenExpiresAt"
+             ea.token_expires_at as "tokenExpiresAt",
+             ea.metadata
       from label_account_syncs las
       join email_accounts ea on ea.id = las.email_account_id
       where las.label_id = $1
@@ -254,8 +258,8 @@ async function runProviderAction({ account, action, accessToken, label, provider
     return syncGmailLabel({ action, accessToken, label, providerLabelId });
   }
 
-  if (account.provider === "microsoft") {
-    return syncMicrosoftFolder({ action, accessToken, label, providerLabelId });
+  if (account.provider === "imap") {
+    return syncImapFolder({ action, account, label, providerLabelId });
   }
 
   throw new Error(`${account.provider} label sync is not implemented yet`);
@@ -266,8 +270,8 @@ async function getProviderLabel({ account, accessToken, providerLabelId }) {
     return getGmailLabel({ accessToken, providerLabelId });
   }
 
-  if (account.provider === "microsoft") {
-    return getMicrosoftFolder({ accessToken, providerLabelId });
+  if (account.provider === "imap") {
+    return getImapFolder(account, providerLabelId);
   }
 
   throw new Error(`${account.provider} label validation is not implemented yet`);
@@ -377,93 +381,6 @@ async function getGmailLabel({ accessToken, providerLabelId }) {
   return { id: label.id, name: label.name };
 }
 
-async function syncMicrosoftFolder({ action, accessToken, label, providerLabelId }) {
-  const baseUrl = "https://graph.microsoft.com/v1.0/me/mailFolders";
-
-  if (action === "delete" && !providerLabelId) {
-    return null;
-  }
-
-  if (action === "create" || !providerLabelId) {
-    return createMicrosoftFolder({ accessToken, label });
-  }
-
-  if (action === "update") {
-    try {
-      const current = await getMicrosoftFolder({ accessToken, providerLabelId });
-
-      if (!current || current.name !== label.name) {
-        await providerFetch(`${baseUrl}/${encodeURIComponent(providerLabelId)}`, accessToken, {
-          method: "PATCH",
-          body: JSON.stringify({ displayName: label.name }),
-        });
-      }
-    } catch (error) {
-      if (error.status !== 404) {
-        throw error;
-      }
-
-      return createMicrosoftFolder({ accessToken, label });
-    }
-
-    return providerLabelId;
-  }
-
-  if (action === "delete") {
-    try {
-      await providerFetch(`${baseUrl}/${encodeURIComponent(providerLabelId)}`, accessToken, {
-        method: "DELETE",
-      });
-    } catch (error) {
-      if (error.status !== 404) {
-        throw error;
-      }
-    }
-
-    return providerLabelId;
-  }
-
-  throw new Error(`Unsupported folder sync action: ${action}`);
-}
-
-async function createMicrosoftFolder({ accessToken, label }) {
-  const existing = await findMicrosoftFolderByName({ accessToken, name: label.name });
-  if (existing) {
-    return existing.id;
-  }
-
-  const response = await providerFetch("https://graph.microsoft.com/v1.0/me/mailFolders", accessToken, {
-    method: "POST",
-    body: JSON.stringify({ displayName: label.name }),
-  });
-  const created = await response.json();
-  return created.id;
-}
-
-async function findMicrosoftFolderByName({ accessToken, name }) {
-  const response = await providerFetch(
-    "https://graph.microsoft.com/v1.0/me/mailFolders?$top=100",
-    accessToken,
-    { method: "GET" },
-  );
-  const data = await response.json();
-  return (data.value ?? []).find((folder) => folder.displayName === name) ?? null;
-}
-
-async function getMicrosoftFolder({ accessToken, providerLabelId }) {
-  if (!providerLabelId) {
-    return null;
-  }
-
-  const response = await providerFetch(
-    `https://graph.microsoft.com/v1.0/me/mailFolders/${encodeURIComponent(providerLabelId)}`,
-    accessToken,
-    { method: "GET" },
-  );
-  const folder = await response.json();
-  return { id: folder.id, name: folder.displayName };
-}
-
 async function providerFetch(url, accessToken, options) {
   const response = await fetch(url, {
     ...options,
@@ -514,7 +431,7 @@ async function getUserLabel(userId, labelId) {
 async function getUserEmailAccount(userId, emailAccountId) {
   const result = await dbPool.query(
     `
-      select id, provider, email, access_token, refresh_token, token_expires_at as "tokenExpiresAt"
+      select id, provider, email, access_token, refresh_token, token_expires_at as "tokenExpiresAt", metadata
       from email_accounts
       where user_id = $1 and id = $2
       limit 1

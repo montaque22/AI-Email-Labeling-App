@@ -10,6 +10,7 @@ import {
   syncLabelToConnectedAccounts,
   tryDeleteLabelEverywhere,
 } from "./label-sync.js";
+import { emitWebhookEvent } from "./webhooks.js";
 
 export const SYSTEM_LABEL_KEY = "processed";
 const SYSTEM_LABEL_DEFAULT_NAME = "emailable";
@@ -64,6 +65,7 @@ export function registerLabelRoutes(app) {
       await ensureSystemDefaultLabel(req.user.id);
       const label = await createLabel(req.user.id, input.name, input.description);
       await syncLabelToConnectedAccounts(req.user.id, label, "create");
+      await emitWebhookEvent(req.user.id, "label.created", { label });
       res.status(201).json({ label });
     } catch (error) {
       handleDbError(res, error);
@@ -84,6 +86,7 @@ export function registerLabelRoutes(app) {
 
       for (const label of labels) {
         await syncLabelToConnectedAccounts(req.user.id, label, "create");
+        await emitWebhookEvent(req.user.id, "label.created", { label });
       }
 
       res.status(201).json({ imported: labels.length, labels });
@@ -127,6 +130,11 @@ export function registerLabelRoutes(app) {
         await renameLabelInEmailRules(req.user.id, existingLabel.name, label.name);
       }
 
+      await emitWebhookEvent(req.user.id, "label.modified", {
+        label,
+        changes: buildChangedFields(existingLabel, label, ["name", "description"]),
+        previous: existingLabel,
+      });
       res.json({ label });
     } catch (error) {
       handleDbError(res, error);
@@ -155,6 +163,7 @@ export function registerLabelRoutes(app) {
         const result = await tryDeleteLabelEverywhere(req.user.id, id);
         if (result.deleted && label?.name) {
           await removeLabelFromEmailRules(req.user.id, label.name);
+          await emitWebhookEvent(req.user.id, "label.deleted", { label });
         }
         results.push(result);
       }
@@ -182,6 +191,7 @@ export function registerLabelRoutes(app) {
 
       if (result.deleted && label?.name) {
         await removeLabelFromEmailRules(req.user.id, label.name);
+        await emitWebhookEvent(req.user.id, "label.deleted", { label });
       }
 
       res.json(result);
@@ -463,6 +473,21 @@ async function isSystemDefaultLabelId(userId, id) {
 
 function isSystemDefaultLabel(label) {
   return label?.systemKey === SYSTEM_LABEL_KEY;
+}
+
+function buildChangedFields(previous, current, fields) {
+  const changes = {};
+
+  for (const field of fields) {
+    if (previous?.[field] !== current?.[field]) {
+      changes[field] = {
+        from: previous?.[field] ?? null,
+        to: current?.[field] ?? null,
+      };
+    }
+  }
+
+  return changes;
 }
 
 async function labelHasFailedSync(labelId) {

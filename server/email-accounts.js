@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
+import { testImapConnection } from "./imap-provider.js";
 
 export const EMAIL_ACCOUNT_PROVIDERS = {
   gmail: {
@@ -13,15 +14,6 @@ export const EMAIL_ACCOUNT_PROVIDERS = {
     clientSecret: process.env.GOOGLE_EMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET,
     extraAuthParams: { access_type: "offline", prompt: "consent" },
   },
-  microsoft: {
-    label: "Microsoft",
-    authUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-    tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-    userInfoUrl: "https://graph.microsoft.com/oidc/userinfo",
-    scopes: ["openid", "email", "profile", "offline_access", "Mail.ReadWrite", "MailboxSettings.ReadWrite"],
-    clientId: process.env.MICROSOFT_CLIENT_ID,
-    clientSecret: process.env.MICROSOFT_CLIENT_SECRET,
-  },
   yahoo: {
     label: "Yahoo",
     authUrl: "https://api.login.yahoo.com/oauth2/request_auth",
@@ -31,6 +23,10 @@ export const EMAIL_ACCOUNT_PROVIDERS = {
     clientId: process.env.YAHOO_CLIENT_ID,
     clientSecret: process.env.YAHOO_CLIENT_SECRET,
     useBasicAuthForToken: true,
+  },
+  imap: {
+    label: "IMAP",
+    manual: true,
   },
 };
 
@@ -80,7 +76,8 @@ export function registerEmailAccountRoutes(app) {
       providers: Object.entries(EMAIL_ACCOUNT_PROVIDERS).map(([id, provider]) => ({
         id,
         label: provider.label,
-        configured: Boolean(provider.clientId && provider.clientSecret),
+        configured: provider.manual || Boolean(provider.clientId && provider.clientSecret),
+        manual: Boolean(provider.manual),
       })),
     });
   });
@@ -89,7 +86,7 @@ export function registerEmailAccountRoutes(app) {
     const providerId = req.params.provider;
     const provider = EMAIL_ACCOUNT_PROVIDERS[providerId];
 
-    if (!provider) {
+    if (!provider || provider.manual) {
       res.status(404).json({ error: "Email provider not found" });
       return;
     }
@@ -146,6 +143,26 @@ export function registerEmailAccountRoutes(app) {
     }
   });
 
+  app.post("/api/email-accounts/imap", requireSession, async (req, res) => {
+    const input = parseImapAccountInput(req.body);
+
+    if (!input.ok) {
+      res.status(400).json({ error: input.error });
+      return;
+    }
+
+    try {
+      await testImapConnection(input.account);
+      const account = await upsertImapEmailAccount(req.user.id, input.account);
+      const { syncAllLabelsToEmailAccount } = await import("./label-sync.js");
+      await syncAllLabelsToEmailAccount(req.user.id, account.id);
+      res.status(201).json({ account });
+    } catch (error) {
+      console.error("IMAP account connection failed:", error);
+      res.status(400).json({ error: error.message || "Could not connect IMAP account" });
+    }
+  });
+
   app.delete("/api/email-accounts/:id", requireSession, async (req, res) => {
     try {
       const result = await dbPool.query("delete from email_accounts where user_id = $1 and id = $2 and source <> 'sso'", [
@@ -199,7 +216,7 @@ async function listEmailAccounts(user) {
 
   const connected = await dbPool.query(
     `
-      select id, provider, email, display_name as "displayName", scopes, source, created_at as "createdAt", updated_at as "updatedAt"
+      select id, provider, email, display_name as "displayName", scopes, source, metadata, created_at as "createdAt", updated_at as "updatedAt"
       from email_accounts
       where user_id = $1
       order by case when source = 'sso' then 0 else 1 end, created_at desc
@@ -212,6 +229,39 @@ async function listEmailAccounts(user) {
   }));
 
   return accounts;
+}
+
+function parseImapAccountInput(body) {
+  const account = {
+    email: typeof body?.email === "string" ? body.email.trim().toLowerCase() : "",
+    displayName: typeof body?.displayName === "string" ? body.displayName.trim() : "",
+    imapHost: typeof body?.imapHost === "string" ? body.imapHost.trim() : "",
+    imapPort: Number(body?.imapPort ?? 993),
+    imapSecure: body?.imapSecure !== false,
+    imapUsername: typeof body?.imapUsername === "string" ? body.imapUsername.trim() : "",
+    appPassword: typeof body?.appPassword === "string" ? body.appPassword : "",
+    defaultMailbox: typeof body?.defaultMailbox === "string" && body.defaultMailbox.trim() ? body.defaultMailbox.trim() : "INBOX",
+    sentMailbox: typeof body?.sentMailbox === "string" && body.sentMailbox.trim() ? body.sentMailbox.trim() : "Sent",
+    draftsMailbox: typeof body?.draftsMailbox === "string" && body.draftsMailbox.trim() ? body.draftsMailbox.trim() : "Drafts",
+  };
+
+  if (!account.email || !account.email.includes("@")) {
+    return { ok: false, error: "Email address is required" };
+  }
+
+  if (!account.imapHost) {
+    return { ok: false, error: "IMAP host is required" };
+  }
+
+  if (!Number.isInteger(account.imapPort) || account.imapPort < 1 || account.imapPort > 65535) {
+    return { ok: false, error: "IMAP port must be between 1 and 65535" };
+  }
+
+  if (!account.appPassword) {
+    return { ok: false, error: "App password is required" };
+  }
+
+  return { ok: true, account };
 }
 
 export async function ensureSsoEmailAccount(userId) {
@@ -382,6 +432,46 @@ async function upsertEmailAccount(userId, provider, profile, tokenSet) {
   return { id: result.rows[0].id };
 }
 
+async function upsertImapEmailAccount(userId, account) {
+  const result = await dbPool.query(
+    `
+      insert into email_accounts (
+        id, user_id, provider, provider_account_id, email, display_name,
+        access_token, refresh_token, scopes, token_expires_at, metadata
+      )
+      values ($1, $2, 'imap', $3, $4, $5, $6, null, $7, null, $8)
+      on conflict (user_id, provider, provider_account_id) do update
+      set email = excluded.email,
+          display_name = excluded.display_name,
+          access_token = excluded.access_token,
+          scopes = excluded.scopes,
+          metadata = excluded.metadata,
+          updated_at = now()
+      returning id, provider, email, display_name as "displayName", source, metadata, created_at as "createdAt", updated_at as "updatedAt"
+    `,
+    [
+      crypto.randomUUID(),
+      userId,
+      account.email,
+      account.email,
+      account.displayName || account.email,
+      encryptToken(account.appPassword),
+      ["imap"],
+      JSON.stringify({
+        imapHost: account.imapHost,
+        imapPort: account.imapPort,
+        imapSecure: account.imapSecure,
+        imapUsername: account.imapUsername || account.email,
+        defaultMailbox: account.defaultMailbox,
+        sentMailbox: account.sentMailbox,
+        draftsMailbox: account.draftsMailbox,
+      }),
+    ],
+  );
+
+  return result.rows[0];
+}
+
 function getRedirectUri(req, providerId) {
   const configuredBaseUrl = process.env.APP_URL || process.env.BETTER_AUTH_URL;
   const origin = configuredBaseUrl || `${req.protocol}://${req.get("host")}`;
@@ -423,7 +513,7 @@ function sign(value) {
   return crypto.createHmac("sha256", TOKEN_SECRET).update(value).digest("base64url");
 }
 
-function encryptToken(token) {
+export function encryptToken(token) {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", tokenKey(), iv);
   const encrypted = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
@@ -451,6 +541,7 @@ export async function getConnectedEmailAccounts(userId) {
   const result = await dbPool.query(
     `
       select id, provider, email, access_token, refresh_token, token_expires_at as "tokenExpiresAt"
+             , metadata
       from email_accounts
       where user_id = $1
       order by created_at asc
@@ -478,6 +569,10 @@ export async function getValidEmailAccountAccessToken(account) {
   const shouldRefresh = account.refresh_token && (!expiresAt || expiresAt < Date.now() + 60_000);
 
   if (!shouldRefresh) {
+    return decryptToken(account.access_token);
+  }
+
+  if (account.provider === "imap") {
     return decryptToken(account.access_token);
   }
 

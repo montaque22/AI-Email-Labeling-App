@@ -41,9 +41,7 @@ EMAIL_ACCOUNT_TOKEN_SECRET=replace-with-a-strong-random-secret-for-email-account
 GOOGLE_EMAIL_CLIENT_ID=optional-separate-google-email-oauth-client-id
 GOOGLE_EMAIL_CLIENT_SECRET=optional-separate-google-email-oauth-client-secret
 
-# Optional provider connections.
-MICROSOFT_CLIENT_ID=your-microsoft-oauth-client-id
-MICROSOFT_CLIENT_SECRET=your-microsoft-oauth-client-secret
+# Optional Yahoo OAuth connection.
 YAHOO_CLIENT_ID=your-yahoo-oauth-client-id
 YAHOO_CLIENT_SECRET=your-yahoo-oauth-client-secret
 ```
@@ -296,27 +294,6 @@ GOOGLE_EMAIL_CLIENT_SECRET
 
 Gmail label operations require Gmail API scopes such as `https://www.googleapis.com/auth/gmail.modify`. If Google blocks access for external users, add test users during development or complete the required Google verification process.
 
-### Microsoft
-
-Use Microsoft Entra admin center.
-
-1. Create an app registration.
-2. Add a web redirect URI:
-
-```text
-http://127.0.0.1:3000/api/email-accounts/callback/microsoft
-https://your-production-domain.example/api/email-accounts/callback/microsoft
-```
-
-3. Create a client secret.
-4. Configure delegated Microsoft Graph permissions needed by your email workflow.
-5. Set:
-
-```text
-MICROSOFT_CLIENT_ID
-MICROSOFT_CLIENT_SECRET
-```
-
 ### Yahoo
 
 Use Yahoo Developer Network.
@@ -336,7 +313,29 @@ YAHOO_CLIENT_ID
 YAHOO_CLIENT_SECRET
 ```
 
-Yahoo provider support is scaffolded in configuration, but provider-specific email operations may need more implementation before feature parity with Gmail.
+Yahoo OAuth account connection is kept for users who prefer Yahoo authorization. Users can also add Yahoo through the generic IMAP setup with a Yahoo app password.
+
+### IMAP
+
+IMAP accounts are added directly in the app from Settings > Email Accounts > Add Email Account > IMAP. Users provide their email address, IMAP host, port, username, app password, and mailbox names.
+
+Helpful setup pages:
+
+- Gmail IMAP: `https://support.google.com/mail/answer/7126229?hl=en`
+- Yahoo app passwords: `https://help.yahoo.com/kb/generate-manage-rd-party-passwords-sln15241.html`
+- Outlook.com IMAP settings: `https://support.microsoft.com/en-gb/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040`
+
+Common IMAP defaults:
+
+```text
+Gmail host: imap.gmail.com
+Yahoo host: imap.mail.yahoo.com
+Outlook host: outlook.office365.com
+Port: 993
+SSL/TLS: enabled
+```
+
+IMAP app passwords are encrypted before being stored in the database. The app uses IMAP folders as the label/folder abstraction for synced labels and email moves.
 
 ## Database Health
 

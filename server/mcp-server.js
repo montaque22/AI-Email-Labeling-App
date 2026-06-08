@@ -5,7 +5,9 @@ import { z } from "zod/v4";
 import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
 import { getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
+import { findImapMessageAccountMatch, moveImapMessageToFolders } from "./imap-provider.js";
 import {
+  buildDraftWebhookPayload,
   buildEmailRuleQuery,
   createProviderReplyDraft,
   EMAIL_RULE_SELECT,
@@ -22,6 +24,7 @@ import {
 } from "./integrations.js";
 import { ensureSystemDefaultLabel } from "./labels.js";
 import { getConfidenceThreshold } from "./settings.js";
+import { emitWebhookEvent } from "./webhooks.js";
 
 const MCP_KEY_PREFIX = "mcp";
 
@@ -227,6 +230,7 @@ async function createDraftReplyTool(userId, payload) {
     accountEmail: account.email,
     metadata: { provider: account.provider, draftId: draft.id, source: "mcp" },
   });
+  await emitWebhookEvent(userId, "email.drafted", buildDraftWebhookPayload({ account, input, draft }));
 
   return {
     accountEmail: account.email,
@@ -258,13 +262,24 @@ async function addLabelsOnEmailTool(userId, payload) {
     throw error;
   }
 
-  const accessToken = await getValidEmailAccountAccessToken(target.account);
-  await modifyGmailMessageLabels({
-    accessToken,
-    emailId: input.rule.emailId,
-    addLabelIds: labels.labels.map((label) => label.providerLabelId),
-    removeLabelIds: [],
-  });
+  if (target.account.provider === "gmail") {
+    const accessToken = await getValidEmailAccountAccessToken(target.account);
+    await modifyGmailMessageLabels({
+      accessToken,
+      emailId: input.rule.emailId,
+      addLabelIds: labels.labels.map((label) => label.providerLabelId),
+      removeLabelIds: [],
+    });
+  } else if (target.account.provider === "imap") {
+    await moveImapMessageToFolders({
+      account: target.account,
+      emailId: input.rule.emailId,
+      addFolders: labels.labels.map((label) => label.providerLabelId),
+      removeFolders: [],
+    });
+  } else {
+    throw new Error(`${target.account.provider} message labels are not implemented yet`);
+  }
 
   await recordMetricEvent(userId, "email_labeled", {
     emailId: input.rule.emailId,
@@ -274,6 +289,14 @@ async function addLabelsOnEmailTool(userId, payload) {
       labels: labels.labels.map((label) => label.name),
       source: "mcp",
     },
+  });
+  await emitWebhookEvent(userId, "email.labels_updated", {
+    emailId: input.rule.emailId,
+    accountEmail: target.account.email,
+    added: labels.labels.map((label) => label.name),
+    removed: [],
+    labels: labels.labels,
+    source: "mcp",
   });
 
   if (shouldAutoLabel) {
@@ -287,6 +310,7 @@ async function addLabelsOnEmailTool(userId, payload) {
     };
   }
 
+  const previousRule = await getMcpEmailRuleByEmailId(userId, input.rule.emailId);
   const rule = await upsertEmailRule(userId, {
     ...input.rule,
     isPending: true,
@@ -296,6 +320,11 @@ async function addLabelsOnEmailTool(userId, payload) {
       systemLabelApplied: true,
       accountEmail: target.account.email,
     },
+  });
+  await emitWebhookEvent(userId, previousRule ? "email_rule.modified" : "email_rule.created", {
+    rule,
+    payload: input.rule,
+    previous: previousRule,
   });
 
   return {
@@ -329,19 +358,40 @@ async function queryEmailRulesTool(userId, payload) {
   return { rules: result.rows.map(mapEmailRuleRow) };
 }
 
+async function getMcpEmailRuleByEmailId(userId, emailId) {
+  const result = await dbPool.query(
+    `
+      select ${EMAIL_RULE_SELECT}
+      from email_rules
+      where user_id = $1 and email_id = $2
+      limit 1
+    `,
+    [userId, emailId],
+  );
+
+  return result.rows[0] ? mapEmailRuleRow(result.rows[0]) : null;
+}
+
 async function findConnectedMessageById(userId, emailId, subject) {
   const accounts = await getConnectedEmailAccounts(userId);
   const matches = [];
 
   for (const account of accounts) {
-    if (account.provider !== "gmail") {
+    if (!["gmail", "imap"].includes(account.provider)) {
       continue;
     }
 
     try {
-      const accessToken = await getValidEmailAccountAccessToken(account);
-      const message = await fetchGmailMessageMetadata(accessToken, emailId);
-      matches.push({ account, message, subject: getHeaderValue(message, "subject") });
+      if (account.provider === "gmail") {
+        const accessToken = await getValidEmailAccountAccessToken(account);
+        const message = await fetchGmailMessageMetadata(accessToken, emailId);
+        matches.push({ account, message, subject: getHeaderValue(message, "subject") });
+      } else {
+        const match = await findImapMessageAccountMatch(account, emailId, subject);
+        if (match) {
+          matches.push({ account, message: match.message, subject: match.subject });
+        }
+      }
     } catch (error) {
       if (error.status !== 404) {
         console.warn(`MCP message lookup failed for ${account.provider} ${account.email}:`, error.message);

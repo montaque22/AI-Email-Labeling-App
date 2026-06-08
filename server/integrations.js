@@ -3,9 +3,15 @@ import { getRenderedAiPromptBundle } from "./ai-prompts.js";
 import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
 import { ensureSsoEmailAccount, getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
+import {
+  createImapDraft,
+  findImapMessageAccountMatch,
+  moveImapMessageToFolders,
+} from "./imap-provider.js";
 import { ensureLabelSyncedToAccount } from "./label-sync.js";
 import { ensureSystemDefaultLabel } from "./labels.js";
 import { getConfidenceThreshold } from "./settings.js";
+import { emitWebhookEvent } from "./webhooks.js";
 
 const API_KEY_PREFIX = "n8n";
 const EMAIL_RULE_REQUIRED_FIELDS = [
@@ -327,7 +333,18 @@ export function registerIntegrationRoutes(app) {
         return;
       }
 
-      res.json({ rule: mapEmailRuleRow(result.rows[0]) });
+      const rule = mapEmailRuleRow(result.rows[0]);
+      await emitWebhookEvent(req.user.id, "email_rule.modified", {
+        rule,
+        changes: {
+          labelsApplied,
+          recommendedAction,
+          isPending: false,
+          confidence: 1,
+          clearedFields: ["reason", "userQuestion"],
+        },
+      });
+      res.json({ rule });
     } catch (error) {
       handleError(res, error);
     }
@@ -344,12 +361,21 @@ export function registerIntegrationRoutes(app) {
     }
 
     try {
-      const result = await dbPool.query("delete from email_rules where user_id = $1 and email_id = any($2::text[])", [
-        req.user.id,
-        [...new Set(emailIds)],
-      ]);
+      const deletedResult = await dbPool.query(
+        `
+          delete from email_rules
+          where user_id = $1 and email_id = any($2::text[])
+          returning ${EMAIL_RULE_SELECT}
+        `,
+        [req.user.id, [...new Set(emailIds)]],
+      );
+      const deletedRules = deletedResult.rows.map(mapEmailRuleRow);
 
-      res.json({ deleted: result.rowCount });
+      for (const rule of deletedRules) {
+        await emitWebhookEvent(req.user.id, "email_rule.deleted", { rule });
+      }
+
+      res.json({ deleted: deletedResult.rowCount });
     } catch (error) {
       handleError(res, error);
     }
@@ -357,10 +383,19 @@ export function registerIntegrationRoutes(app) {
 
   app.delete("/api/email-rules/:emailId", requireSession, async (req, res) => {
     try {
-      const result = await dbPool.query("delete from email_rules where user_id = $1 and email_id = $2", [
-        req.user.id,
-        req.params.emailId,
-      ]);
+      const result = await dbPool.query(
+        `
+          delete from email_rules
+          where user_id = $1 and email_id = $2
+          returning ${EMAIL_RULE_SELECT}
+        `,
+        [req.user.id, req.params.emailId],
+      );
+      const rule = result.rows[0] ? mapEmailRuleRow(result.rows[0]) : null;
+
+      if (rule) {
+        await emitWebhookEvent(req.user.id, "email_rule.deleted", { rule });
+      }
 
       res.json({ deleted: result.rowCount });
     } catch (error) {
@@ -418,7 +453,9 @@ export function registerIntegrationRoutes(app) {
     }
 
     try {
+      const previousRule = await getEmailRuleByEmailId(req.integrationUser.id, input.rule.emailId);
       const rule = await upsertEmailRule(req.integrationUser.id, input.rule);
+      await emitEmailRuleUpsertWebhook(req.integrationUser.id, previousRule, rule, input.rule);
       res.status(201).json({ rule });
     } catch (error) {
       handleError(res, error);
@@ -434,6 +471,7 @@ export function registerIntegrationRoutes(app) {
     }
 
     try {
+      const previousRule = await getEmailRuleByEmailId(req.integrationUser.id, req.params.emailId);
       const rule = await updateEmailRule(req.integrationUser.id, req.params.emailId, input.rule);
 
       if (!rule) {
@@ -441,6 +479,11 @@ export function registerIntegrationRoutes(app) {
         return;
       }
 
+      await emitWebhookEvent(req.integrationUser.id, "email_rule.modified", {
+        rule,
+        changes: input.rule,
+        previous: previousRule,
+      });
       res.json({ rule });
     } catch (error) {
       handleError(res, error);
@@ -449,10 +492,19 @@ export function registerIntegrationRoutes(app) {
 
   app.delete("/api/integrations/email-rules/:emailId", requireApiKey, async (req, res) => {
     try {
-      const result = await dbPool.query("delete from email_rules where user_id = $1 and email_id = $2", [
-        req.integrationUser.id,
-        req.params.emailId,
-      ]);
+      const result = await dbPool.query(
+        `
+          delete from email_rules
+          where user_id = $1 and email_id = $2
+          returning ${EMAIL_RULE_SELECT}
+        `,
+        [req.integrationUser.id, req.params.emailId],
+      );
+      const rule = result.rows[0] ? mapEmailRuleRow(result.rows[0]) : null;
+
+      if (rule) {
+        await emitWebhookEvent(req.integrationUser.id, "email_rule.deleted", { rule });
+      }
 
       res.json({ deleted: result.rowCount });
     } catch (error) {
@@ -531,14 +583,16 @@ export function registerIntegrationRoutes(app) {
         accountEmail: account.email,
         metadata: { provider: account.provider, draftId: draft.id },
       });
-
-      res.status(201).json({
+      const draftResponse = {
         accountEmail: account.email,
         emailId: input.emailId,
         draftId: draft.id,
         messageId: draft.message?.id ?? draft.id ?? null,
         threadId: draft.message?.threadId ?? draft.conversationId ?? null,
-      });
+      };
+      await emitWebhookEvent(req.integrationUser.id, "email.drafted", buildDraftWebhookPayload({ account, input, draft }));
+
+      res.status(201).json(draftResponse);
     } catch (error) {
       handleProviderError(res, error);
     }
@@ -560,7 +614,7 @@ async function modifyMessageLabels(req, res, action) {
       return;
     }
 
-    if (account.provider !== "gmail") {
+    if (!["gmail", "imap"].includes(account.provider)) {
       res.status(501).json({ error: `${account.provider} message labels are not implemented yet` });
       return;
     }
@@ -572,13 +626,22 @@ async function modifyMessageLabels(req, res, action) {
       return;
     }
 
-    const accessToken = await getValidEmailAccountAccessToken(account);
-    await modifyGmailMessageLabels({
-      accessToken,
-      emailId: input.emailId,
-      addLabelIds: action === "add" ? labels.labels.map((label) => label.providerLabelId) : [],
-      removeLabelIds: action === "remove" ? labels.labels.map((label) => label.providerLabelId) : [],
-    });
+    if (account.provider === "gmail") {
+      const accessToken = await getValidEmailAccountAccessToken(account);
+      await modifyGmailMessageLabels({
+        accessToken,
+        emailId: input.emailId,
+        addLabelIds: action === "add" ? labels.labels.map((label) => label.providerLabelId) : [],
+        removeLabelIds: action === "remove" ? labels.labels.map((label) => label.providerLabelId) : [],
+      });
+    } else {
+      await moveImapMessageToFolders({
+        account,
+        emailId: input.emailId,
+        addFolders: action === "add" ? labels.labels.map((label) => label.providerLabelId) : [],
+        removeFolders: action === "remove" ? labels.labels.map((label) => label.providerLabelId) : [],
+      });
+    }
 
     if (action === "add") {
       await recordMetricEvent(req.integrationUser.id, "email_labeled", {
@@ -588,11 +651,20 @@ async function modifyMessageLabels(req, res, action) {
       });
     }
 
-    res.json({
+    const responsePayload = {
       accountEmail: account.email,
       emailId: input.emailId,
       [action === "add" ? "added" : "removed"]: labels.labels,
+    };
+    await emitWebhookEvent(req.integrationUser.id, "email.labels_updated", {
+      emailId: input.emailId,
+      accountEmail: account.email,
+      added: action === "add" ? labels.labels.map((label) => label.name) : [],
+      removed: action === "remove" ? labels.labels.map((label) => label.name) : [],
+      labels: labels.labels,
     });
+
+    res.json(responsePayload);
   } catch (error) {
     handleProviderError(res, error);
   }
@@ -619,7 +691,7 @@ async function evaluateAndApplyLabels(userId, rule) {
     throw error;
   }
 
-  if (target.account.provider !== "gmail") {
+  if (!["gmail", "imap"].includes(target.account.provider)) {
     const error = new Error(`${target.account.provider} message labels are not implemented yet`);
     error.status = 501;
     throw error;
@@ -637,18 +709,35 @@ async function evaluateAndApplyLabels(userId, rule) {
     throw error;
   }
 
-  const accessToken = await getValidEmailAccountAccessToken(target.account);
-  await modifyGmailMessageLabels({
-    accessToken,
-    emailId: rule.emailId,
-    addLabelIds: labels.labels.map((label) => label.providerLabelId),
-    removeLabelIds: [],
-  });
+  if (target.account.provider === "gmail") {
+    const accessToken = await getValidEmailAccountAccessToken(target.account);
+    await modifyGmailMessageLabels({
+      accessToken,
+      emailId: rule.emailId,
+      addLabelIds: labels.labels.map((label) => label.providerLabelId),
+      removeLabelIds: [],
+    });
+  } else {
+    await moveImapMessageToFolders({
+      account: target.account,
+      emailId: rule.emailId,
+      addFolders: labels.labels.map((label) => label.providerLabelId),
+      removeFolders: [],
+    });
+  }
 
   await recordMetricEvent(userId, "email_labeled", {
     emailId: rule.emailId,
     accountEmail: target.account.email,
     metadata: { provider: target.account.provider, labels: labels.labels.map((label) => label.name), source: "integration" },
+  });
+  await emitWebhookEvent(userId, "email.labels_updated", {
+    emailId: rule.emailId,
+    accountEmail: target.account.email,
+    added: labels.labels.map((label) => label.name),
+    removed: [],
+    labels: labels.labels,
+    source: "integration",
   });
 
   if (shouldAutoLabel) {
@@ -662,6 +751,7 @@ async function evaluateAndApplyLabels(userId, rule) {
     };
   }
 
+  const previousRule = await getEmailRuleByEmailId(userId, rule.emailId);
   const pendingRule = await upsertEmailRule(userId, {
     ...rule,
     isPending: true,
@@ -672,6 +762,7 @@ async function evaluateAndApplyLabels(userId, rule) {
       accountEmail: target.account.email,
     },
   });
+  await emitEmailRuleUpsertWebhook(userId, previousRule, pendingRule, rule);
 
   return {
     action: "pending_rule_created",
@@ -689,16 +780,21 @@ async function findConnectedMessageById(userId, emailId, subject) {
   const matches = [];
 
   for (const account of accounts) {
-    if (!["gmail", "microsoft"].includes(account.provider)) {
+    if (!["gmail", "imap"].includes(account.provider)) {
       continue;
     }
 
     try {
-      const accessToken = await getValidEmailAccountAccessToken(account);
-      const message = account.provider === "gmail"
-        ? await fetchGmailMessageMetadata(accessToken, emailId)
-        : await fetchMicrosoftMessageMetadata(accessToken, emailId);
-      matches.push({ account, subject: getProviderMessageSubject(account.provider, message) });
+      if (account.provider === "gmail") {
+        const accessToken = await getValidEmailAccountAccessToken(account);
+        const message = await fetchGmailMessageMetadata(accessToken, emailId);
+        matches.push({ account, subject: getProviderMessageSubject(account.provider, message) });
+      } else {
+        const match = await findImapMessageAccountMatch(account, emailId, subject);
+        if (match) {
+          matches.push({ account, subject: match.subject });
+        }
+      }
     } catch (error) {
       if (error.status !== 404) {
         console.warn(`Integration message lookup failed for ${account.provider} ${account.email}:`, error.message);
@@ -786,6 +882,8 @@ function parseLabelMutationInput(body) {
 export function parseDraftInput(body) {
   const accountEmail = typeof body?.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : "";
   const emailId = typeof body?.emailId === "string" ? body.emailId.trim() : "";
+  const to = typeof body?.to === "string" ? body.to.trim() : "";
+  const subject = typeof body?.subject === "string" ? body.subject.trim() : "";
   const bodyText = typeof body?.bodyText === "string" ? body.bodyText : "";
   const bodyHtml = typeof body?.bodyHtml === "string" ? body.bodyHtml : "";
   const replyAll = Boolean(body?.replyAll);
@@ -802,7 +900,7 @@ export function parseDraftInput(body) {
     return { ok: false, error: "bodyText or bodyHtml is required" };
   }
 
-  return { ok: true, accountEmail, emailId, bodyText, bodyHtml, replyAll };
+  return { ok: true, accountEmail, emailId, to, subject, bodyText, bodyHtml, replyAll };
 }
 
 async function resolveAppLabelsByName(userId, labelsApplied) {
@@ -967,6 +1065,15 @@ export async function upsertEmailRule(userId, rule) {
   );
 
   return mapEmailRuleRow(result.rows[0]);
+}
+
+async function emitEmailRuleUpsertWebhook(userId, previousRule, rule, payload) {
+  const eventName = previousRule ? "email_rule.modified" : "email_rule.created";
+  await emitWebhookEvent(userId, eventName, {
+    rule,
+    payload,
+    previous: previousRule,
+  });
 }
 
 async function resolveRuleAccountEmailForSave(userId, rule) {
@@ -1426,7 +1533,7 @@ export async function getUserEmailAccount(userId, accountEmail) {
 
   const result = await dbPool.query(
     `
-      select id, provider, email, access_token, refresh_token, token_expires_at as "tokenExpiresAt"
+      select id, provider, email, access_token, refresh_token, token_expires_at as "tokenExpiresAt", metadata
       from email_accounts
       where user_id = $1 and lower(email) = lower($2)
       limit 1
@@ -1511,8 +1618,8 @@ export async function createProviderReplyDraft({ accessToken, account, input }) 
     return createGmailReplyDraft({ accessToken, account, input });
   }
 
-  if (account.provider === "microsoft") {
-    return createMicrosoftReplyDraft({ accessToken, input });
+  if (account.provider === "imap") {
+    return createImapDraft({ account, input });
   }
 
   throw new Error(`${account.provider} draft replies are not implemented yet`);
@@ -1534,38 +1641,34 @@ async function createGmailReplyDraft({ accessToken, account, input }) {
   return response.json();
 }
 
-async function createMicrosoftReplyDraft({ accessToken, input }) {
-  const action = input.replyAll ? "createReplyAll" : "createReply";
-  const createResponse = await providerFetch(
-    `https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(input.emailId)}/${action}`,
-    accessToken,
-    { method: "POST", body: JSON.stringify({}) },
-  );
-  const draft = await createResponse.json();
-  const bodyHtml = input.bodyHtml.trim();
-  const bodyText = input.bodyText.trim();
+export function buildDraftWebhookPayload({ account, input, draft }) {
+  return {
+    to: extractDraftRecipients(draft),
+    from: account.email,
+    subject: draft?.message?.subject ?? draft?.subject ?? null,
+    body: {
+      text: input.bodyText,
+      html: input.bodyHtml,
+    },
+    accountEmail: account.email,
+    emailId: input.emailId,
+    draftId: draft?.id ?? null,
+    provider: account.provider,
+  };
+}
 
-  if (bodyHtml || bodyText) {
-    const patchResponse = await providerFetch(
-      `https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(draft.id)}`,
-      accessToken,
-      {
-        method: "PATCH",
-        body: JSON.stringify({
-          body: {
-            contentType: bodyHtml ? "HTML" : "Text",
-            content: bodyHtml || bodyText,
-          },
-        }),
-      },
-    );
-
-    if (patchResponse.status !== 204) {
-      return patchResponse.json();
-    }
+function extractDraftRecipients(draft) {
+  if (Array.isArray(draft?.toRecipients)) {
+    return draft.toRecipients
+      .map((recipient) => recipient.emailAddress?.address ?? recipient.emailAddress?.name)
+      .filter(Boolean);
   }
 
-  return draft;
+  if (draft?.message?.to) {
+    return draft.message.to;
+  }
+
+  return [];
 }
 
 async function fetchGmailMessageMetadata(accessToken, emailId) {
@@ -1582,21 +1685,9 @@ async function fetchGmailMessageMetadata(accessToken, emailId) {
   return response.json();
 }
 
-async function fetchMicrosoftMessageMetadata(accessToken, emailId) {
-  const url = new URL(`https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(emailId)}`);
-  url.searchParams.set("$select", "id,subject");
-
-  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
-  return response.json();
-}
-
 function getProviderMessageSubject(provider, message) {
   if (provider === "gmail") {
     return getGmailHeaders(message).subject ?? "";
-  }
-
-  if (provider === "microsoft") {
-    return message.subject ?? "";
   }
 
   return "";

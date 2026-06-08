@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
 import { getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
+import { searchImapSentEmailContexts } from "./imap-provider.js";
 import { getConfidenceThreshold } from "./settings.js";
 
 export const PROMPT_DEFINITIONS = {
@@ -320,6 +321,9 @@ async function searchSentEmailContexts(userId, filters) {
 
       if (account.provider === "gmail") {
         const emails = await searchGmailSentEmailContexts(accessToken, filters, 10 - results.length);
+        results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
+      } else if (account.provider === "imap") {
+        const emails = await searchImapSentEmailContexts(account, filters, 10 - results.length);
         results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
       }
     } catch (error) {

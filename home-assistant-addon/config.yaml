@@ -29,8 +29,6 @@ options:
   google_client_secret: ""
   google_email_client_id: ""
   google_email_client_secret: ""
-  microsoft_client_id: ""
-  microsoft_client_secret: ""
   yahoo_client_id: ""
   yahoo_client_secret: ""
   email_account_token_secret: ""
@@ -44,8 +42,6 @@ schema:
   google_client_secret: password?
   google_email_client_id: str?
   google_email_client_secret: password?
-  microsoft_client_id: str?
-  microsoft_client_secret: password?
   yahoo_client_id: str?
   yahoo_client_secret: password?
   email_account_token_secret: password?

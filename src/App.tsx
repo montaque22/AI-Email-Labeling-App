@@ -52,6 +52,7 @@ type Page =
   | "confidence-threshold"
   | "email-accounts"
   | "endpoints"
+  | "webhook"
   | "mcp-server";
 type AuthMode = "login" | "signup";
 
@@ -101,6 +102,7 @@ type EmailProvider = {
   id: string;
   label: string;
   configured: boolean;
+  manual?: boolean;
 };
 
 type IntegrationApiKey = {
@@ -199,6 +201,7 @@ const settingsSubItems = [
   { id: "confidence-threshold" as const, label: "Confidence Threshold" },
   { id: "email-accounts" as const, label: "Email Accounts" },
   { id: "endpoints" as const, label: "Endpoints" },
+  { id: "webhook" as const, label: "Webhook" },
   { id: "mcp-server" as const, label: "MCP Server" },
 ];
 
@@ -637,6 +640,7 @@ function AuthenticatedLayout({
           {activePage === "confidence-threshold" && <ConfidenceThresholdPage />}
           {activePage === "email-accounts" && <EmailAccountsPage />}
           {activePage === "endpoints" && <EndpointsPage />}
+          {activePage === "webhook" && <WebhookPage />}
           {activePage === "mcp-server" && <McpServerPage />}
         </main>
       </div>
@@ -2754,11 +2758,22 @@ function SettingsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
               </div>
 	              <ChevronRight className="h-4 w-4 text-zinc-400" />
 	            </button>
-	            <button
-	              className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
-	              onClick={() => onNavigate("mcp-server")}
-	              type="button"
-	            >
+            <button
+              className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
+              onClick={() => onNavigate("webhook")}
+              type="button"
+            >
+              <div>
+                <p className="text-sm font-medium text-zinc-950">Webhook</p>
+                <p className="mt-1 text-sm text-zinc-500">Send app events to an external automation endpoint.</p>
+              </div>
+              <ChevronRight className="h-4 w-4 text-zinc-400" />
+            </button>
+            <button
+              className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
+              onClick={() => onNavigate("mcp-server")}
+              type="button"
+            >
 	              <div>
 	                <p className="text-sm font-medium text-zinc-950">MCP Server</p>
 	                <p className="mt-1 text-sm text-zinc-500">Create MCP bearer keys and view Streamable HTTP tool details.</p>
@@ -2772,12 +2787,256 @@ function SettingsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
   );
 }
 
+function WebhookPage() {
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [savedWebhookUrl, setSavedWebhookUrl] = useState("");
+  const [bearerToken, setBearerToken] = useState("");
+  const [savedBearerToken, setSavedBearerToken] = useState("");
+  const [showAuth, setShowAuth] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const urlValidationError = validateWebhookUrl(webhookUrl);
+  const hasChanges = webhookUrl !== savedWebhookUrl || bearerToken !== savedBearerToken;
+
+  useEffect(() => {
+    async function loadWebhookSettings() {
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const response = await fetch("/api/settings/webhook", { credentials: "include" });
+        const data = await response.json();
+
+        if (!response.ok) {
+          setError(data.error ?? "Could not load webhook settings.");
+          return;
+        }
+
+        setWebhookUrl(data.webhookUrl ?? "");
+        setSavedWebhookUrl(data.webhookUrl ?? "");
+        setBearerToken(data.bearerToken ?? "");
+        setSavedBearerToken(data.bearerToken ?? "");
+        setShowAuth(Boolean(data.bearerToken));
+      } catch {
+        setError("Could not load webhook settings.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    void loadWebhookSettings();
+  }, []);
+
+  async function saveWebhookSettings() {
+    const currentValidationError = validateWebhookUrl(webhookUrl);
+    if (currentValidationError) {
+      setError(currentValidationError);
+      setMessage(null);
+      return;
+    }
+
+    setIsSaving(true);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/settings/webhook", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ webhookUrl, bearerToken: showAuth ? bearerToken : "" }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not save webhook settings.");
+        return;
+      }
+
+      setWebhookUrl(data.webhookUrl ?? "");
+      setSavedWebhookUrl(data.webhookUrl ?? "");
+      setBearerToken(data.bearerToken ?? "");
+      setSavedBearerToken(data.bearerToken ?? "");
+      setShowAuth(Boolean(data.bearerToken));
+      setMessage("Webhook settings saved successfully.");
+    } catch {
+      setError("Could not save webhook settings.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+          <div>
+            <CardTitle>Webhook</CardTitle>
+            <CardDescription>Send Emailable events to an external workflow or automation endpoint.</CardDescription>
+          </div>
+          <Button disabled={isLoading || isSaving || !hasChanges || Boolean(urlValidationError)} onClick={() => void saveWebhookSettings()} type="button">
+            <Save className="h-4 w-4" />
+            {isSaving ? "Saving..." : "Save"}
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-zinc-700">Webhook URL</span>
+            <input
+              className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+              disabled={isLoading}
+              onChange={(event) => {
+                setWebhookUrl(event.target.value);
+                setMessage(null);
+              }}
+              placeholder="https://example.com/emailable-webhook"
+              type="url"
+              value={webhookUrl}
+            />
+            <span className="mt-1 block text-xs text-zinc-500">Leave this blank to disable webhook delivery.</span>
+          </label>
+
+          <label className="flex items-center gap-2 text-sm text-zinc-700">
+            <input
+              checked={showAuth}
+              className="h-4 w-4"
+              disabled={isLoading}
+              onChange={(event) => {
+                setShowAuth(event.target.checked);
+                if (!event.target.checked) {
+                  setBearerToken("");
+                }
+                setMessage(null);
+              }}
+              type="checkbox"
+            />
+            Send Authorization bearer token
+          </label>
+
+          {showAuth ? (
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-zinc-700">Bearer token</span>
+              <input
+                className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                disabled={isLoading}
+                onChange={(event) => {
+                  setBearerToken(event.target.value);
+                  setMessage(null);
+                }}
+                placeholder="Paste token"
+                type="password"
+                value={bearerToken}
+              />
+            </label>
+          ) : null}
+
+          {urlValidationError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{urlValidationError}</p> : null}
+          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          {message ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</p> : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Webhook Events</CardTitle>
+          <CardDescription>Every webhook is sent as JSON with the same outer event envelope.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <pre className="overflow-x-auto rounded-md bg-zinc-950 p-3 text-xs text-white">
+            {JSON.stringify({ event_name: "string", payload: {}, timestamp: new Date().toISOString() }, null, 2)}
+          </pre>
+          <EndpointDoc
+            method="EVENT"
+            path="email.drafted"
+            title="Email Drafted"
+            notes={["Fired when a draft reply is created through REST API or MCP."]}
+            response={{
+              event_name: "email.drafted",
+              payload: {
+                to: ["recipient@example.com"],
+                from: "user@example.com",
+                subject: "Re: Example subject",
+                body: { text: "Reply text", html: "" },
+                accountEmail: "user@example.com",
+                emailId: "message-id",
+                draftId: "draft-id",
+                provider: "gmail",
+              },
+              timestamp: "2026-06-08T12:00:00.000Z",
+            }}
+          />
+          <EndpointDoc
+            method="EVENT"
+            path="email_rule.created / email_rule.modified / email_rule.deleted"
+            title="Email Rule Events"
+            notes={["Created and modified events include the saved rule and submitted payload or changes. Deleted events include the deleted rule payload."]}
+            response={{
+              event_name: "email_rule.modified",
+              payload: {
+                rule: { emailId: "message-id", labelsApplied: ["Invoice"], isPending: false },
+                changes: { labelsApplied: ["Invoice"], recommendedAction: "Use this label for vendor invoices." },
+                previous: { emailId: "message-id", labelsApplied: [], isPending: true },
+              },
+              timestamp: "2026-06-08T12:00:00.000Z",
+            }}
+          />
+          <EndpointDoc
+            method="EVENT"
+            path="label.created / label.modified / label.deleted"
+            title="Label Events"
+            notes={["Created and modified events include the label. Modified events include changed fields. Deleted events include the deleted label payload."]}
+            response={{
+              event_name: "label.created",
+              payload: {
+                label: { id: "label-id", name: "Invoice", description: "Vendor invoices" },
+              },
+              timestamp: "2026-06-08T12:00:00.000Z",
+            }}
+          />
+          <EndpointDoc
+            method="EVENT"
+            path="email.labels_updated"
+            title="Email Labels Updated"
+            notes={["Fired when labels are added to or removed from an email through REST API or MCP."]}
+            response={{
+              event_name: "email.labels_updated",
+              payload: {
+                emailId: "message-id",
+                accountEmail: "user@example.com",
+                added: ["Invoice", "emailable"],
+                removed: [],
+              },
+              timestamp: "2026-06-08T12:00:00.000Z",
+            }}
+          />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function EmailAccountsPage() {
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [providers, setProviders] = useState<EmailProvider[]>([]);
+  const [imapForm, setImapForm] = useState({
+    email: "",
+    displayName: "",
+    imapHost: "",
+    imapPort: "993",
+    imapSecure: true,
+    imapUsername: "",
+    appPassword: "",
+    defaultMailbox: "INBOX",
+    sentMailbox: "Sent",
+    draftsMailbox: "Drafts",
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
+  const [isConnectingImap, setIsConnectingImap] = useState(false);
   const [showProviderChoices, setShowProviderChoices] = useState(false);
+  const [showImapModal, setShowImapModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -2811,7 +3070,55 @@ function EmailAccountsPage() {
   }
 
   function connectProvider(providerId: string) {
+    if (providerId === "imap") {
+      setShowImapModal(true);
+      return;
+    }
+
     window.location.href = getRuntimeUrl(`/api/email-accounts/connect/${providerId}`);
+  }
+
+  async function connectImapAccount() {
+    setIsConnectingImap(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/email-accounts/imap", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...imapForm,
+          imapPort: Number(imapForm.imapPort),
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not connect IMAP account.");
+        return;
+      }
+
+      setShowImapModal(false);
+      setShowProviderChoices(false);
+      setImapForm({
+        email: "",
+        displayName: "",
+        imapHost: "",
+        imapPort: "993",
+        imapSecure: true,
+        imapUsername: "",
+        appPassword: "",
+        defaultMailbox: "INBOX",
+        sentMailbox: "Sent",
+        draftsMailbox: "Drafts",
+      });
+      await loadEmailAccounts();
+    } catch {
+      setError("Could not connect IMAP account.");
+    } finally {
+      setIsConnectingImap(false);
+    }
   }
 
   async function removeAccount(accountId: string) {
@@ -2845,8 +3152,8 @@ function EmailAccountsPage() {
           <div>
             <CardTitle>Email Accounts</CardTitle>
             <CardDescription>
-              Connect Gmail, Microsoft, and Yahoo inboxes so the app can manage labels or folders, query emails, and
-              read account metadata.
+              Connect Gmail, Yahoo, and IMAP inboxes so the app can manage labels or folders, query emails, and read
+              account metadata.
             </CardDescription>
           </div>
           <Button onClick={() => setShowProviderChoices((value) => !value)} type="button">
@@ -2870,7 +3177,7 @@ function EmailAccountsPage() {
                 >
                   <p className="text-sm font-medium text-zinc-950">{provider.label}</p>
                   <p className="mt-1 text-sm text-zinc-500">
-                    {provider.configured ? "Connect account" : "OAuth credentials not configured"}
+                    {provider.manual ? "Use IMAP app password" : provider.configured ? "Connect account" : "OAuth credentials not configured"}
                   </p>
                 </button>
               ))}
@@ -2928,7 +3235,98 @@ function EmailAccountsPage() {
           )}
         </CardContent>
       </Card>
+
+      {showImapModal ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-md bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-4 border-b border-zinc-200 p-5">
+              <div>
+                <h3 className="text-lg font-semibold text-zinc-950">Connect IMAP Account</h3>
+                <p className="mt-1 text-sm text-zinc-500">
+                  Use an app password from your email provider. Do not use your main account password.
+                </p>
+              </div>
+              <Button aria-label="Close IMAP setup" onClick={() => setShowImapModal(false)} size="icon" type="button" variant="ghost">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="space-y-5 p-5">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <InputField label="Email address" value={imapForm.email} onChange={(value) => setImapForm((current) => ({ ...current, email: value }))} />
+                <InputField label="Display name" value={imapForm.displayName} onChange={(value) => setImapForm((current) => ({ ...current, displayName: value }))} />
+                <InputField label="IMAP host" value={imapForm.imapHost} placeholder="imap.mail.yahoo.com" onChange={(value) => setImapForm((current) => ({ ...current, imapHost: value }))} />
+                <InputField label="IMAP port" value={imapForm.imapPort} onChange={(value) => setImapForm((current) => ({ ...current, imapPort: value }))} />
+                <InputField label="IMAP username" value={imapForm.imapUsername} placeholder="Defaults to email address" onChange={(value) => setImapForm((current) => ({ ...current, imapUsername: value }))} />
+                <InputField label="App password" value={imapForm.appPassword} type="password" onChange={(value) => setImapForm((current) => ({ ...current, appPassword: value }))} />
+                <InputField label="Default mailbox" value={imapForm.defaultMailbox} onChange={(value) => setImapForm((current) => ({ ...current, defaultMailbox: value }))} />
+                <InputField label="Sent mailbox" value={imapForm.sentMailbox} onChange={(value) => setImapForm((current) => ({ ...current, sentMailbox: value }))} />
+                <InputField label="Drafts mailbox" value={imapForm.draftsMailbox} onChange={(value) => setImapForm((current) => ({ ...current, draftsMailbox: value }))} />
+                <label className="flex items-center gap-2 pt-7 text-sm text-zinc-700">
+                  <input
+                    checked={imapForm.imapSecure}
+                    className="h-4 w-4"
+                    onChange={(event) => setImapForm((current) => ({ ...current, imapSecure: event.target.checked }))}
+                    type="checkbox"
+                  />
+                  Use SSL/TLS
+                </label>
+              </div>
+
+              <div className="rounded-md border border-zinc-200 bg-zinc-50 p-4">
+                <p className="text-sm font-medium text-zinc-950">Provider setup help</p>
+                <div className="mt-2 flex flex-wrap gap-2 text-sm">
+                  <a className="text-blue-700 hover:underline" href="https://support.google.com/mail/answer/7126229?hl=en" rel="noreferrer" target="_blank">
+                    Gmail IMAP
+                  </a>
+                  <a className="text-blue-700 hover:underline" href="https://help.yahoo.com/kb/generate-manage-rd-party-passwords-sln15241.html" rel="noreferrer" target="_blank">
+                    Yahoo app password
+                  </a>
+                  <a className="text-blue-700 hover:underline" href="https://support.microsoft.com/en-gb/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040" rel="noreferrer" target="_blank">
+                    Outlook IMAP
+                  </a>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button disabled={isConnectingImap} onClick={() => setShowImapModal(false)} type="button" variant="outline">
+                  Cancel
+                </Button>
+                <Button disabled={isConnectingImap} onClick={() => void connectImapAccount()} type="button">
+                  {isConnectingImap ? "Connecting..." : "Connect IMAP Account"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function InputField({
+  label,
+  onChange,
+  placeholder,
+  type = "text",
+  value,
+}: {
+  label: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  type?: string;
+  value: string;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-sm font-medium text-zinc-700">{label}</span>
+      <input
+        className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        type={type}
+        value={value}
+      />
+    </label>
   );
 }
 
@@ -4043,6 +4441,26 @@ function validateConfidenceThreshold(value: string) {
   return null;
 }
 
+function validateWebhookUrl(value: string) {
+  const url = value.trim();
+
+  if (!url) {
+    return null;
+  }
+
+  try {
+    const parsedUrl = new URL(url);
+
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+      return "Webhook URL must use http or https.";
+    }
+  } catch {
+    return "Webhook URL must be a valid URL.";
+  }
+
+  return null;
+}
+
 function formatThreshold(value: number | string) {
   return Number(value).toFixed(2);
 }
@@ -4204,7 +4622,7 @@ function isAiPromptsPage(page: Page) {
 }
 
 function isSettingsPage(page: Page) {
-  return page === "settings" || page === "confidence-threshold" || page === "email-accounts" || page === "endpoints" || page === "mcp-server";
+  return page === "settings" || page === "confidence-threshold" || page === "email-accounts" || page === "endpoints" || page === "webhook" || page === "mcp-server";
 }
 
 function getPageTitle(page: Page) {
@@ -4228,6 +4646,10 @@ function getPageTitle(page: Page) {
     return "Endpoints";
   }
 
+  if (page === "webhook") {
+    return "Webhook";
+  }
+
   if (page === "mcp-server") {
     return "MCP Server";
   }
@@ -4240,12 +4662,12 @@ function providerLabel(provider: string) {
     return "Gmail";
   }
 
-  if (provider === "microsoft") {
-    return "Microsoft";
-  }
-
   if (provider === "yahoo") {
     return "Yahoo";
+  }
+
+  if (provider === "imap") {
+    return "IMAP";
   }
 
   return provider;
