@@ -49,4 +49,9 @@ The `custom_components/emailable/` integration exposes Home Assistant actions:
 - `emailable.add_labels_on_email`
 - `emailable.query_email_rules`
 
-Configure the integration with the app base URL and an Emailable API key from the app's Endpoints page.
+Install it by adding this GitHub repo to HACS as a custom repository with category `Integration`. Configure the integration with the app base URL and an Emailable API key from the app's Endpoints page.
+
+The same repo can be added twice in Home Assistant:
+
+- Add-on Store repository: installs and runs the Emailable app.
+- HACS custom integration repository: installs Home Assistant actions for an Emailable app instance.

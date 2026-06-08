@@ -1,0 +1,6 @@
+{
+  "name": "Emailable",
+  "render_readme": true,
+  "domains": ["emailable"],
+  "homeassistant": "2024.6.0"
+}

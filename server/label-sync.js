@@ -308,9 +308,16 @@ async function syncGmailLabel({ action, accessToken, label, providerLabelId }) {
   }
 
   if (action === "delete") {
-    await providerFetch(`${baseUrl}/${encodeURIComponent(providerLabelId)}`, accessToken, {
-      method: "DELETE",
-    });
+    try {
+      await providerFetch(`${baseUrl}/${encodeURIComponent(providerLabelId)}`, accessToken, {
+        method: "DELETE",
+      });
+    } catch (error) {
+      if (error.status !== 404) {
+        throw error;
+      }
+    }
+
     return providerLabelId;
   }
 
@@ -403,9 +410,16 @@ async function syncMicrosoftFolder({ action, accessToken, label, providerLabelId
   }
 
   if (action === "delete") {
-    await providerFetch(`${baseUrl}/${encodeURIComponent(providerLabelId)}`, accessToken, {
-      method: "DELETE",
-    });
+    try {
+      await providerFetch(`${baseUrl}/${encodeURIComponent(providerLabelId)}`, accessToken, {
+        method: "DELETE",
+      });
+    } catch (error) {
+      if (error.status !== 404) {
+        throw error;
+      }
+    }
+
     return providerLabelId;
   }
 

@@ -182,7 +182,7 @@ Basic install path:
 
 1. Push this repo to GitHub.
 2. In Home Assistant, go to Settings > Add-ons > Add-on Store.
-3. Open the menu and add this repository URL.
+3. Open the menu and add this GitHub repository URL as an add-on repository.
 4. Install the `Emailable` add-on.
 5. Open the add-on Configuration tab.
 6. Fill in the environment variable fields.
@@ -200,23 +200,37 @@ Home Assistant Ingress serves the frontend behind an internal base path. The fro
 
 Important packaging note: the current add-on Dockerfile is designed to build with the repository root as the Docker build context. If your Home Assistant build flow only uses the `home-assistant-addon/` folder as the Docker context, publish the root Docker image to a registry such as GHCR and point the add-on config at that image.
 
-## Home Assistant Actions
+## HACS Integration and Home Assistant Actions
 
-The `custom_components/emailable/` folder contains a custom integration scaffold. It exposes Home Assistant actions for:
+The same GitHub repository can also be added to HACS as a custom integration repository. This installs `custom_components/emailable` automatically, so users do not need to manually copy files into Home Assistant.
+
+The custom integration exposes Home Assistant actions for:
 
 - `emailable.get_prompts`
 - `emailable.create_draft_reply`
 - `emailable.add_labels_on_email`
 - `emailable.query_email_rules`
 
-To use it:
+HACS install path:
 
-1. Copy `custom_components/emailable` into your Home Assistant `custom_components` folder.
-2. Restart Home Assistant.
-3. Add the Emailable integration.
-4. Provide the app base URL and an Emailable API key.
+1. Install HACS if it is not already installed.
+2. In Home Assistant, open HACS > Integrations.
+3. Open the menu and choose Custom repositories.
+4. Add this GitHub repository URL.
+5. Set the repository category to `Integration`.
+6. Install `Emailable`.
+7. Restart Home Assistant.
+8. Add the Emailable integration from Settings > Devices & services.
+9. Provide the app base URL and an Emailable API key.
 
 Create API keys inside Emailable from the Endpoints or MCP Server settings pages, depending on the client you are configuring.
+
+The add-on and the HACS integration are separate installs:
+
+- Add-on Store repository: runs the Emailable Node app inside Home Assistant.
+- HACS integration repository: installs the Home Assistant actions that call an Emailable app instance.
+
+For a full Home Assistant setup, add this same GitHub repo URL in both places.
 
 ## MCP Server
 
