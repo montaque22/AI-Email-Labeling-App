@@ -1,0 +1,11 @@
+{
+  "domain": "emailable",
+  "name": "Emailable",
+  "codeowners": ["@montaque22"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/montaque22/AI-Email-Labeling-App",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "version": "0.1.0"
+}

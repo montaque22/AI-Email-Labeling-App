@@ -1,0 +1,10 @@
+.git
+.idea
+node_modules
+dist
+screenshots
+.env
+.env.local
+*.tsbuildinfo
+npm-debug.log
+Dockerfile

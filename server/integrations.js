@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
+import { getRenderedAiPromptBundle } from "./ai-prompts.js";
 import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
-import { ensureSsoEmailAccount, getValidEmailAccountAccessToken } from "./email-accounts.js";
+import { ensureSsoEmailAccount, getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
 import { ensureLabelSyncedToAccount } from "./label-sync.js";
+import { ensureSystemDefaultLabel } from "./labels.js";
 import { getConfidenceThreshold } from "./settings.js";
 
 const API_KEY_PREFIX = "n8n";
@@ -34,7 +36,7 @@ const EMAIL_RULE_QUERY_FIELDS = {
   subject: { column: "subject", type: "string" },
   isPending: { column: "is_pending", type: "boolean" },
 };
-const EMAIL_RULE_SELECT = `
+export const EMAIL_RULE_SELECT = `
   id,
   email_id as "emailId",
   thread_id as "threadId",
@@ -198,11 +200,13 @@ export function registerIntegrationRoutes(app) {
         values,
       );
 
+      const rules = await hydrateRuleAccountEmails(req.user.id, result.rows.map(mapEmailRuleRow));
+
       res.json({
         total: count.rows[0]?.count ?? 0,
         page,
         pageSize,
-        rules: result.rows.map(mapEmailRuleRow),
+        rules,
       });
     } catch (error) {
       handleError(res, error);
@@ -261,7 +265,7 @@ export function registerIntegrationRoutes(app) {
         `,
         [req.user.id],
       );
-      const csv = emailRulesToCsv(result.rows.map(mapEmailRuleRow));
+      const csv = emailRulesToCsv(await hydrateRuleAccountEmails(req.user.id, result.rows.map(mapEmailRuleRow)));
 
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader("Content-Disposition", 'attachment; filename="email-rules.csv"');
@@ -280,7 +284,7 @@ export function registerIntegrationRoutes(app) {
         return;
       }
 
-      res.json({ rule });
+      res.json({ rule: (await hydrateRuleAccountEmails(req.user.id, [rule]))[0] });
     } catch (error) {
       handleError(res, error);
     }
@@ -369,11 +373,12 @@ export function registerIntegrationRoutes(app) {
       const confidenceThreshold = await getConfidenceThreshold(req.integrationUser.id);
       const result = await dbPool.query(
         `
-          select name, description
-          from labels
-          where user_id = $1
-          order by lower(name), created_at desc
-        `,
+	          select name, description
+	          from labels
+	          where user_id = $1
+              and system_key is null
+	          order by lower(name), created_at desc
+	        `,
         [req.integrationUser.id],
       );
 
@@ -391,6 +396,14 @@ export function registerIntegrationRoutes(app) {
   app.get("/api/integrations/confidence-threshold", requireApiKey, async (req, res) => {
     try {
       res.json({ confidenceThreshold: await getConfidenceThreshold(req.integrationUser.id) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/integrations/ai-prompts", requireApiKey, async (req, res) => {
+    try {
+      res.json(await getRenderedAiPromptBundle(req.integrationUser.id));
     } catch (error) {
       handleError(res, error);
     }
@@ -467,7 +480,7 @@ export function registerIntegrationRoutes(app) {
         [req.integrationUser.id, ...query.values, parseQueryLimit(req.body?.limit)],
       );
 
-      res.json({ rules: result.rows.map(mapEmailRuleRow) });
+      res.json({ rules: await hydrateRuleAccountEmails(req.integrationUser.id, result.rows.map(mapEmailRuleRow)) });
     } catch (error) {
       handleError(res, error);
     }
@@ -479,6 +492,21 @@ export function registerIntegrationRoutes(app) {
 
   app.post("/api/integrations/email/labels/remove", requireApiKey, async (req, res) => {
     await modifyMessageLabels(req, res, "remove");
+  });
+
+  app.post("/api/integrations/email/labels/evaluate", requireApiKey, async (req, res) => {
+    const input = await parseEmailRuleInput(req.integrationUser.id, req.body, { partial: false });
+
+    if (!input.ok) {
+      res.status(400).json({ error: input.error, labels: input.labels });
+      return;
+    }
+
+    try {
+      res.json(await evaluateAndApplyLabels(req.integrationUser.id, input.rule));
+    } catch (error) {
+      handleProviderError(res, error);
+    }
   });
 
   app.post("/api/integrations/email/drafts/reply", requireApiKey, async (req, res) => {
@@ -496,13 +524,8 @@ export function registerIntegrationRoutes(app) {
         return;
       }
 
-      if (account.provider !== "gmail") {
-        res.status(501).json({ error: `${account.provider} draft replies are not implemented yet` });
-        return;
-      }
-
       const accessToken = await getValidEmailAccountAccessToken(account);
-      const draft = await createGmailReplyDraft({ accessToken, account, input });
+      const draft = await createProviderReplyDraft({ accessToken, account, input });
       await recordMetricEvent(req.integrationUser.id, "draft_created", {
         emailId: input.emailId,
         accountEmail: account.email,
@@ -513,8 +536,8 @@ export function registerIntegrationRoutes(app) {
         accountEmail: account.email,
         emailId: input.emailId,
         draftId: draft.id,
-        messageId: draft.message?.id ?? null,
-        threadId: draft.message?.threadId ?? null,
+        messageId: draft.message?.id ?? draft.id ?? null,
+        threadId: draft.message?.threadId ?? draft.conversationId ?? null,
       });
     } catch (error) {
       handleProviderError(res, error);
@@ -542,7 +565,8 @@ async function modifyMessageLabels(req, res, action) {
       return;
     }
 
-    const labels = await resolveProviderLabels(req.integrationUser.id, account.id, input.labels);
+    const requestedLabels = action === "add" ? await withSystemDefaultLabel(req.integrationUser.id, input.labels) : input.labels;
+    const labels = await resolveProviderLabels(req.integrationUser.id, account.id, requestedLabels);
     if (!labels.ok) {
       res.status(labels.status).json({ error: labels.error, labels: labels.labels });
       return;
@@ -572,6 +596,126 @@ async function modifyMessageLabels(req, res, action) {
   } catch (error) {
     handleProviderError(res, error);
   }
+}
+
+export async function withSystemDefaultLabel(userId, labelNames) {
+  const systemLabel = await ensureSystemDefaultLabel(userId);
+  const uniqueLabels = [...labelNames];
+
+  if (!uniqueLabels.some((label) => label.toLowerCase() === systemLabel.name.toLowerCase())) {
+    uniqueLabels.push(systemLabel.name);
+  }
+
+  return uniqueLabels;
+}
+
+async function evaluateAndApplyLabels(userId, rule) {
+  const threshold = await getConfidenceThreshold(userId);
+  const target = await findConnectedMessageById(userId, rule.emailId, rule.subject);
+
+  if (!target) {
+    const error = new Error("Email was not found in connected email accounts");
+    error.status = 404;
+    throw error;
+  }
+
+  if (target.account.provider !== "gmail") {
+    const error = new Error(`${target.account.provider} message labels are not implemented yet`);
+    error.status = 501;
+    throw error;
+  }
+
+  const shouldAutoLabel = rule.confidence >= threshold;
+  const systemLabel = await ensureSystemDefaultLabel(userId);
+  const requestedLabels = shouldAutoLabel ? await withSystemDefaultLabel(userId, rule.labelsApplied) : [systemLabel.name];
+  const labels = await resolveProviderLabels(userId, target.account.id, requestedLabels);
+
+  if (!labels.ok) {
+    const error = new Error(labels.error);
+    error.status = labels.status;
+    error.labels = labels.labels;
+    throw error;
+  }
+
+  const accessToken = await getValidEmailAccountAccessToken(target.account);
+  await modifyGmailMessageLabels({
+    accessToken,
+    emailId: rule.emailId,
+    addLabelIds: labels.labels.map((label) => label.providerLabelId),
+    removeLabelIds: [],
+  });
+
+  await recordMetricEvent(userId, "email_labeled", {
+    emailId: rule.emailId,
+    accountEmail: target.account.email,
+    metadata: { provider: target.account.provider, labels: labels.labels.map((label) => label.name), source: "integration" },
+  });
+
+  if (shouldAutoLabel) {
+    return {
+      action: "labels_added",
+      threshold,
+      confidence: rule.confidence,
+      accountEmail: target.account.email,
+      emailId: rule.emailId,
+      added: labels.labels,
+    };
+  }
+
+  const pendingRule = await upsertEmailRule(userId, {
+    ...rule,
+    isPending: true,
+    metadata: {
+      source: "integration",
+      threshold,
+      systemLabelApplied: true,
+      accountEmail: target.account.email,
+    },
+  });
+
+  return {
+    action: "pending_rule_created",
+    threshold,
+    confidence: rule.confidence,
+    accountEmail: target.account.email,
+    emailId: rule.emailId,
+    added: labels.labels,
+    rule: pendingRule,
+  };
+}
+
+async function findConnectedMessageById(userId, emailId, subject) {
+  const accounts = await getConnectedEmailAccounts(userId);
+  const matches = [];
+
+  for (const account of accounts) {
+    if (!["gmail", "microsoft"].includes(account.provider)) {
+      continue;
+    }
+
+    try {
+      const accessToken = await getValidEmailAccountAccessToken(account);
+      const message = account.provider === "gmail"
+        ? await fetchGmailMessageMetadata(accessToken, emailId)
+        : await fetchMicrosoftMessageMetadata(accessToken, emailId);
+      matches.push({ account, subject: getProviderMessageSubject(account.provider, message) });
+    } catch (error) {
+      if (error.status !== 404) {
+        console.warn(`Integration message lookup failed for ${account.provider} ${account.email}:`, error.message);
+      }
+    }
+  }
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  if (matches.length === 1) {
+    return matches[0];
+  }
+
+  const normalizedSubject = normalizeComparableSubject(subject);
+  return matches.find((match) => normalizeComparableSubject(match.subject) === normalizedSubject) ?? null;
 }
 
 async function requireSession(req, res, next) {
@@ -639,7 +783,7 @@ function parseLabelMutationInput(body) {
   return { ok: true, accountEmail, emailId, labels: [...new Set(labels)] };
 }
 
-function parseDraftInput(body) {
+export function parseDraftInput(body) {
   const accountEmail = typeof body?.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : "";
   const emailId = typeof body?.emailId === "string" ? body.emailId.trim() : "";
   const bodyText = typeof body?.bodyText === "string" ? body.bodyText : "";
@@ -691,7 +835,7 @@ async function resolveAppLabelsByName(userId, labelsApplied) {
   return { ok: true, labels: uniqueRequested.map((label) => labelsByLowerName.get(label.toLowerCase())) };
 }
 
-async function parseEmailRuleInput(userId, body, { partial }) {
+export async function parseEmailRuleInput(userId, body, { partial }) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: "Request body must be an object" };
   }
@@ -750,6 +894,17 @@ async function parseEmailRuleInput(userId, body, { partial }) {
     rule.isPending = true;
   }
 
+  if ("accountEmail" in body) {
+    if (typeof body.accountEmail !== "string" || body.accountEmail.trim().length === 0) {
+      return { ok: false, error: "accountEmail must be a non-empty string" };
+    }
+
+    rule.metadata = {
+      ...(rule.metadata ?? {}),
+      accountEmail: body.accountEmail.trim().toLowerCase(),
+    };
+  }
+
   if (partial && Object.keys(rule).length === 0) {
     return { ok: false, error: "At least one email rule field is required" };
   }
@@ -773,7 +928,8 @@ function addRuleSearchConditions(search, conditions, values) {
   }
 }
 
-async function upsertEmailRule(userId, rule) {
+export async function upsertEmailRule(userId, rule) {
+  const ruleToSave = await resolveRuleAccountEmailForSave(userId, rule);
   const result = await dbPool.query(
     `
       insert into email_rules (
@@ -797,20 +953,39 @@ async function upsertEmailRule(userId, rule) {
     [
       crypto.randomUUID(),
       userId,
-      rule.emailId,
-      rule.threadId,
-      rule.fromEmail,
-      rule.fromName,
-      rule.subject,
-      rule.snippet,
-      rule.confidence,
-      rule.labelsApplied,
-      rule.isPending,
-      JSON.stringify(rule.metadata ?? {}),
+      ruleToSave.emailId,
+      ruleToSave.threadId,
+      ruleToSave.fromEmail,
+      ruleToSave.fromName,
+      ruleToSave.subject,
+      ruleToSave.snippet,
+      ruleToSave.confidence,
+      ruleToSave.labelsApplied,
+      ruleToSave.isPending,
+      JSON.stringify(ruleToSave.metadata ?? {}),
     ],
   );
 
   return mapEmailRuleRow(result.rows[0]);
+}
+
+async function resolveRuleAccountEmailForSave(userId, rule) {
+  if (rule.metadata?.accountEmail || !rule.emailId) {
+    return rule;
+  }
+
+  const target = await findConnectedMessageById(userId, rule.emailId, rule.subject);
+  if (!target?.account?.email) {
+    return rule;
+  }
+
+  return {
+    ...rule,
+    metadata: {
+      ...(rule.metadata ?? {}),
+      accountEmail: target.account.email,
+    },
+  };
 }
 
 async function updateEmailRule(userId, emailId, rule) {
@@ -876,7 +1051,40 @@ async function getRecentRules(userId, limit) {
     [userId, limit],
   );
 
-  return result.rows.map(mapEmailRuleRow);
+  return hydrateRuleAccountEmails(userId, result.rows.map(mapEmailRuleRow));
+}
+
+async function hydrateRuleAccountEmails(userId, rules) {
+  const hydratedRules = [];
+
+  for (const rule of rules) {
+    if (rule.accountEmail) {
+      hydratedRules.push(rule);
+      continue;
+    }
+
+    const target = await findConnectedMessageById(userId, rule.emailId, rule.subject);
+    if (!target?.account?.email) {
+      hydratedRules.push(rule);
+      continue;
+    }
+
+    await dbPool.query(
+      `
+        update email_rules
+        set metadata = metadata || jsonb_build_object('accountEmail', $3::text)
+        where user_id = $1 and email_id = $2
+      `,
+      [userId, rule.emailId, target.account.email],
+    );
+
+    hydratedRules.push({
+      ...rule,
+      accountEmail: target.account.email,
+    });
+  }
+
+  return hydratedRules;
 }
 
 async function getRuleStatusCounts(userId) {
@@ -982,7 +1190,7 @@ async function getMetricEventTimeline(userId, eventType) {
   return result.rows;
 }
 
-async function recordMetricEvent(userId, eventType, { emailId = null, accountEmail = null, metadata = {} } = {}) {
+export async function recordMetricEvent(userId, eventType, { emailId = null, accountEmail = null, metadata = {} } = {}) {
   await dbPool.query(
     `
       insert into integration_metric_events (id, user_id, event_type, email_id, account_email, metadata)
@@ -992,7 +1200,7 @@ async function recordMetricEvent(userId, eventType, { emailId = null, accountEma
   );
 }
 
-function buildEmailRuleQuery(query, parameterOffset = 2) {
+export function buildEmailRuleQuery(query, parameterOffset = 2) {
   const values = [];
   const parsed = buildEmailRuleQueryNode(query, values, parameterOffset);
 
@@ -1108,7 +1316,7 @@ function escapeLike(value) {
   return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
-function parseQueryLimit(value) {
+export function parseQueryLimit(value) {
   const limit = Number(value);
 
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
@@ -1140,7 +1348,9 @@ function parsePendingFilter(value) {
   return null;
 }
 
-function mapEmailRuleRow(row) {
+export function mapEmailRuleRow(row) {
+  const metadata = row.metadata ?? {};
+
   return {
     id: row.id,
     emailId: row.emailId,
@@ -1152,7 +1362,8 @@ function mapEmailRuleRow(row) {
     confidence: Number(row.confidence),
     labelsApplied: row.labelsApplied ?? [],
     isPending: row.isPending,
-    ...(row.metadata ?? {}),
+    ...metadata,
+    accountEmail: metadata.accountEmail ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -1210,7 +1421,7 @@ function renderTemplateDescription(description, confidenceThreshold) {
   return String(description ?? "").split("{confidenceThreshold}").join(String(confidenceThreshold));
 }
 
-async function getUserEmailAccount(userId, accountEmail) {
+export async function getUserEmailAccount(userId, accountEmail) {
   await ensureSsoEmailAccount(userId);
 
   const result = await dbPool.query(
@@ -1226,7 +1437,7 @@ async function getUserEmailAccount(userId, accountEmail) {
   return result.rows[0] ?? null;
 }
 
-async function resolveProviderLabels(userId, emailAccountId, labelNames) {
+export async function resolveProviderLabels(userId, emailAccountId, labelNames) {
   const result = await dbPool.query(
     `
       select lower(l.name) as "lookupName",
@@ -1282,7 +1493,7 @@ async function resolveProviderLabels(userId, emailAccountId, labelNames) {
   return { ok: true, labels: resolved };
 }
 
-async function modifyGmailMessageLabels({ accessToken, emailId, addLabelIds, removeLabelIds }) {
+export async function modifyGmailMessageLabels({ accessToken, emailId, addLabelIds, removeLabelIds }) {
   const response = await providerFetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}/modify`,
     accessToken,
@@ -1293,6 +1504,18 @@ async function modifyGmailMessageLabels({ accessToken, emailId, addLabelIds, rem
   );
 
   return response.json();
+}
+
+export async function createProviderReplyDraft({ accessToken, account, input }) {
+  if (account.provider === "gmail") {
+    return createGmailReplyDraft({ accessToken, account, input });
+  }
+
+  if (account.provider === "microsoft") {
+    return createMicrosoftReplyDraft({ accessToken, input });
+  }
+
+  throw new Error(`${account.provider} draft replies are not implemented yet`);
 }
 
 async function createGmailReplyDraft({ accessToken, account, input }) {
@@ -1311,6 +1534,40 @@ async function createGmailReplyDraft({ accessToken, account, input }) {
   return response.json();
 }
 
+async function createMicrosoftReplyDraft({ accessToken, input }) {
+  const action = input.replyAll ? "createReplyAll" : "createReply";
+  const createResponse = await providerFetch(
+    `https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(input.emailId)}/${action}`,
+    accessToken,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+  const draft = await createResponse.json();
+  const bodyHtml = input.bodyHtml.trim();
+  const bodyText = input.bodyText.trim();
+
+  if (bodyHtml || bodyText) {
+    const patchResponse = await providerFetch(
+      `https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(draft.id)}`,
+      accessToken,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          body: {
+            contentType: bodyHtml ? "HTML" : "Text",
+            content: bodyHtml || bodyText,
+          },
+        }),
+      },
+    );
+
+    if (patchResponse.status !== 204) {
+      return patchResponse.json();
+    }
+  }
+
+  return draft;
+}
+
 async function fetchGmailMessageMetadata(accessToken, emailId) {
   const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}`);
   url.searchParams.set("format", "metadata");
@@ -1323,6 +1580,26 @@ async function fetchGmailMessageMetadata(accessToken, emailId) {
 
   const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
   return response.json();
+}
+
+async function fetchMicrosoftMessageMetadata(accessToken, emailId) {
+  const url = new URL(`https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(emailId)}`);
+  url.searchParams.set("$select", "id,subject");
+
+  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+  return response.json();
+}
+
+function getProviderMessageSubject(provider, message) {
+  if (provider === "gmail") {
+    return getGmailHeaders(message).subject ?? "";
+  }
+
+  if (provider === "microsoft") {
+    return message.subject ?? "";
+  }
+
+  return "";
 }
 
 function buildReplyMessage({ accountEmail, original, input }) {
@@ -1382,6 +1659,10 @@ function extractEmailAddress(value = "") {
 
 function normalizeReplySubject(subject) {
   return /^re:/i.test(subject) ? subject : `Re: ${subject || "(no subject)"}`;
+}
+
+function normalizeComparableSubject(subject) {
+  return String(subject ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 async function providerFetch(url, accessToken, options) {

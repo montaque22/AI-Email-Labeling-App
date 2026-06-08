@@ -3,10 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { toNodeHandler } from "better-auth/node";
 import { auth, googleOAuthEnabled } from "./auth.js";
+import { ensureAiPromptsTable, registerAiPromptRoutes } from "./ai-prompts.js";
 import { dbPool } from "./db.js";
 import { ensureEmailAccountsTable, registerEmailAccountRoutes } from "./email-accounts.js";
 import { ensureIntegrationTables, registerIntegrationRoutes } from "./integrations.js";
 import { ensureLabelsTable, registerLabelRoutes } from "./labels.js";
+import { ensureMcpTables, registerMcpRoutes } from "./mcp-server.js";
 import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -64,6 +66,8 @@ registerLabelRoutes(app);
 registerSettingsRoutes(app);
 registerEmailAccountRoutes(app);
 registerIntegrationRoutes(app);
+registerAiPromptRoutes(app);
+registerMcpRoutes(app);
 
 app.use(express.static(distDir));
 
@@ -86,6 +90,8 @@ async function startServer() {
     await ensureLabelsTable();
     await ensureSettingsTable();
     await ensureIntegrationTables();
+    await ensureAiPromptsTable();
+    await ensureMcpTables();
   } catch (error) {
     console.error("Failed to initialize database tables:", error);
   }

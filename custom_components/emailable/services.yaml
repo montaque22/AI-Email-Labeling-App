@@ -1,0 +1,87 @@
+get_prompts:
+  name: Get prompts
+  description: Fetch rendered prompts, confidence threshold, and labels from Emailable.
+
+create_draft_reply:
+  name: Create draft reply
+  description: Create a draft reply in a connected email account.
+  fields:
+    accountEmail:
+      required: true
+      selector:
+        text:
+    emailId:
+      required: true
+      selector:
+        text:
+    bodyText:
+      required: false
+      selector:
+        text:
+          multiline: true
+    bodyHtml:
+      required: false
+      selector:
+        text:
+          multiline: true
+    replyAll:
+      required: false
+      selector:
+        boolean:
+
+add_labels_on_email:
+  name: Add labels on email
+  description: Apply labels or create a pending review rule depending on confidence.
+  fields:
+    emailId:
+      required: true
+      selector:
+        text:
+    threadId:
+      required: true
+      selector:
+        text:
+    fromEmail:
+      required: true
+      selector:
+        text:
+    fromName:
+      required: true
+      selector:
+        text:
+    subject:
+      required: true
+      selector:
+        text:
+    snippet:
+      required: true
+      selector:
+        text:
+          multiline: true
+    confidence:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+    labelsApplied:
+      required: true
+      selector:
+        object:
+
+query_email_rules:
+  name: Query email rules
+  description: Query email rules with AND/OR conditions.
+  fields:
+    query:
+      required: true
+      selector:
+        object:
+    limit:
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 200
+          mode: box

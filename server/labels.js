@@ -11,6 +11,11 @@ import {
   tryDeleteLabelEverywhere,
 } from "./label-sync.js";
 
+export const SYSTEM_LABEL_KEY = "processed";
+const SYSTEM_LABEL_DEFAULT_NAME = "emailable";
+const SYSTEM_LABEL_DESCRIPTION =
+  "This is a system default label added to all processed emails. Automtations can ignore emails with this label to prevent reprocessing";
+
 export async function ensureLabelsTable() {
   if (!dbPool) {
     return;
@@ -26,13 +31,19 @@ export async function ensureLabelsTable() {
       updated_at timestamptz not null default now()
     )
   `);
+  await dbPool.query("alter table labels add column if not exists system_key text");
   await dbPool.query("create index if not exists labels_user_id_idx on labels(user_id)");
+  await dbPool.query(
+    "create unique index if not exists labels_user_id_system_key_idx on labels(user_id, system_key) where system_key is not null",
+  );
   await ensureLabelSyncTable();
 }
 
 export function registerLabelRoutes(app) {
   app.get("/api/labels", requireSession, async (req, res) => {
     try {
+      const systemLabel = await ensureSystemDefaultLabel(req.user.id);
+      await syncLabelToConnectedAccounts(req.user.id, systemLabel, "update");
       const labels = await listLabels(req.user.id);
       const labelsWithSyncs = await attachSyncsToLabels(labels);
       res.json({ total: labelsWithSyncs.length, labels: labelsWithSyncs });
@@ -50,6 +61,7 @@ export function registerLabelRoutes(app) {
     }
 
     try {
+      await ensureSystemDefaultLabel(req.user.id);
       const label = await createLabel(req.user.id, input.name, input.description);
       await syncLabelToConnectedAccounts(req.user.id, label, "create");
       res.status(201).json({ label });
@@ -67,6 +79,7 @@ export function registerLabelRoutes(app) {
     }
 
     try {
+      await ensureSystemDefaultLabel(req.user.id);
       const labels = await createLabels(req.user.id, input.labels);
 
       for (const label of labels) {
@@ -88,6 +101,8 @@ export function registerLabelRoutes(app) {
     }
 
     try {
+      await ensureSystemDefaultLabel(req.user.id);
+      const existingLabel = await getLabel(req.user.id, req.params.id);
       const label = await updateLabel(req.user.id, req.params.id, input.name, input.description);
 
       if (!label) {
@@ -96,6 +111,22 @@ export function registerLabelRoutes(app) {
       }
 
       await syncLabelToConnectedAccounts(req.user.id, label, "update");
+
+      if (isSystemDefaultLabel(label) && (await labelHasFailedSync(label.id))) {
+        const revertedLabel = await revertSystemDefaultLabel(req.user.id, label.id);
+        await syncLabelToConnectedAccounts(req.user.id, revertedLabel, "update");
+        res.json({
+          label: revertedLabel,
+          reverted: true,
+          message: "System label name could not sync and was reverted to emailable.",
+        });
+        return;
+      }
+
+      if (existingLabel?.name && existingLabel.name !== label.name) {
+        await renameLabelInEmailRules(req.user.id, existingLabel.name, label.name);
+      }
+
       res.json({ label });
     } catch (error) {
       handleDbError(res, error);
@@ -111,15 +142,27 @@ export function registerLabelRoutes(app) {
     }
 
     try {
+      await ensureSystemDefaultLabel(req.user.id);
       const results = [];
 
       for (const id of ids) {
-        results.push(await tryDeleteLabelEverywhere(req.user.id, id));
+        if (await isSystemDefaultLabelId(req.user.id, id)) {
+          results.push({ deleted: false, failed: false, protected: true });
+          continue;
+        }
+
+        const label = await getLabel(req.user.id, id);
+        const result = await tryDeleteLabelEverywhere(req.user.id, id);
+        if (result.deleted && label?.name) {
+          await removeLabelFromEmailRules(req.user.id, label.name);
+        }
+        results.push(result);
       }
 
       res.json({
         deleted: results.filter((result) => result.deleted).length,
         failed: results.filter((result) => result.failed).length,
+        protected: results.filter((result) => result.protected).length,
       });
     } catch (error) {
       handleDbError(res, error);
@@ -128,11 +171,17 @@ export function registerLabelRoutes(app) {
 
   app.post("/api/labels/:id/retry", requireSession, async (req, res) => {
     try {
+      await ensureSystemDefaultLabel(req.user.id);
+      const label = await getLabel(req.user.id, req.params.id);
       const result = await retryLabelSync(req.user.id, req.params.id);
 
       if (!result) {
         res.status(404).json({ error: "Label not found" });
         return;
+      }
+
+      if (result.deleted && label?.name) {
+        await removeLabelFromEmailRules(req.user.id, label.name);
       }
 
       res.json(result);
@@ -143,6 +192,7 @@ export function registerLabelRoutes(app) {
 
   app.post("/api/labels/sync-all", requireSession, async (req, res) => {
     try {
+      await ensureSystemDefaultLabel(req.user.id);
       await syncAllLabelsToConnectedAccounts(req.user.id);
       const labels = await listLabels(req.user.id);
       const labelsWithSyncs = await attachSyncsToLabels(labels);
@@ -154,6 +204,7 @@ export function registerLabelRoutes(app) {
 
   app.post("/api/labels/refresh-sync", requireSession, async (req, res) => {
     try {
+      await ensureSystemDefaultLabel(req.user.id);
       await refreshAllLabelSyncStatus(req.user.id);
       const labels = await listLabels(req.user.id);
       const labelsWithSyncs = await attachSyncsToLabels(labels);
@@ -253,12 +304,12 @@ function parseLabelImportInput(body) {
 async function listLabels(userId) {
   const result = await dbPool.query(
     `
-      select id, name, description, created_at as "createdAt", updated_at as "updatedAt"
+      select id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
       from labels
       where user_id = $1
-      order by lower(name), created_at desc
+      order by case when system_key = $2 then 0 else 1 end, lower(name), created_at desc
     `,
-    [userId],
+    [userId, SYSTEM_LABEL_KEY],
   );
 
   return result.rows;
@@ -269,7 +320,7 @@ async function createLabel(userId, name, description) {
     `
       insert into labels (id, user_id, name, description)
       values ($1, $2, $3, $4)
-      returning id, name, description, created_at as "createdAt", updated_at as "updatedAt"
+      returning id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
     `,
     [randomUUID(), userId, name, description],
   );
@@ -289,7 +340,7 @@ async function createLabels(userId, labels) {
         `
           insert into labels (id, user_id, name, description)
           values ($1, $2, $3, $4)
-          returning id, name, description, created_at as "createdAt", updated_at as "updatedAt"
+          returning id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
         `,
         [randomUUID(), userId, label.name, label.description],
       );
@@ -308,17 +359,183 @@ async function createLabels(userId, labels) {
 }
 
 async function updateLabel(userId, id, name, description) {
+  const existing = await getLabel(userId, id);
+  if (!existing) {
+    return null;
+  }
+
+  const nextDescription = isSystemDefaultLabel(existing) ? SYSTEM_LABEL_DESCRIPTION : description;
   const result = await dbPool.query(
     `
       update labels
       set name = $3, description = $4, updated_at = now()
       where user_id = $1 and id = $2
-      returning id, name, description, created_at as "createdAt", updated_at as "updatedAt"
+      returning id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
     `,
-    [userId, id, name, description],
+    [userId, id, name, nextDescription],
   );
 
   return result.rows[0] ?? null;
+}
+
+export async function ensureSystemDefaultLabel(userId) {
+  const existingSystemLabel = await getSystemDefaultLabel(userId);
+  if (existingSystemLabel) {
+    if (existingSystemLabel.description !== SYSTEM_LABEL_DESCRIPTION) {
+      await dbPool.query("update labels set description = $3, updated_at = now() where user_id = $1 and id = $2", [
+        userId,
+        existingSystemLabel.id,
+        SYSTEM_LABEL_DESCRIPTION,
+      ]);
+    }
+    return existingSystemLabel;
+  }
+
+  const existingNamedLabel = await dbPool.query(
+    `
+      update labels
+      set system_key = $3,
+          description = $4,
+          updated_at = now()
+      where id = (
+        select id
+        from labels
+        where user_id = $1 and lower(name) = lower($2)
+        order by created_at
+        limit 1
+      )
+      returning id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
+    `,
+    [userId, SYSTEM_LABEL_DEFAULT_NAME, SYSTEM_LABEL_KEY, SYSTEM_LABEL_DESCRIPTION],
+  );
+
+  if (existingNamedLabel.rows[0]) {
+    return existingNamedLabel.rows[0];
+  }
+
+  const created = await dbPool.query(
+    `
+      insert into labels (id, user_id, name, description, system_key)
+      values ($1, $2, $3, $4, $5)
+      on conflict (user_id, system_key) where system_key is not null do update
+      set description = excluded.description,
+          updated_at = now()
+      returning id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
+    `,
+    [randomUUID(), userId, SYSTEM_LABEL_DEFAULT_NAME, SYSTEM_LABEL_DESCRIPTION, SYSTEM_LABEL_KEY],
+  );
+
+  return created.rows[0];
+}
+
+async function getLabel(userId, id) {
+  const result = await dbPool.query(
+    `
+      select id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
+      from labels
+      where user_id = $1 and id = $2
+      limit 1
+    `,
+    [userId, id],
+  );
+
+  return result.rows[0] ?? null;
+}
+
+async function getSystemDefaultLabel(userId) {
+  const result = await dbPool.query(
+    `
+      select id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
+      from labels
+      where user_id = $1 and system_key = $2
+      limit 1
+    `,
+    [userId, SYSTEM_LABEL_KEY],
+  );
+
+  return result.rows[0] ?? null;
+}
+
+async function isSystemDefaultLabelId(userId, id) {
+  const label = await getLabel(userId, id);
+  return isSystemDefaultLabel(label);
+}
+
+function isSystemDefaultLabel(label) {
+  return label?.systemKey === SYSTEM_LABEL_KEY;
+}
+
+async function labelHasFailedSync(labelId) {
+  const result = await dbPool.query(
+    `
+      select count(*)::int as total
+      from label_account_syncs
+      where label_id = $1 and sync_status = 'failed'
+    `,
+    [labelId],
+  );
+
+  return (result.rows[0]?.total ?? 0) > 0;
+}
+
+async function revertSystemDefaultLabel(userId, id) {
+  const result = await dbPool.query(
+    `
+      update labels
+      set name = $3,
+          description = $4,
+          updated_at = now()
+      where user_id = $1 and id = $2 and system_key = $5
+      returning id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
+    `,
+    [userId, id, SYSTEM_LABEL_DEFAULT_NAME, SYSTEM_LABEL_DESCRIPTION, SYSTEM_LABEL_KEY],
+  );
+
+  return result.rows[0];
+}
+
+async function renameLabelInEmailRules(userId, oldName, newName) {
+  await dbPool.query(
+    `
+      update email_rules
+      set labels_applied = array(
+            select case
+              when lower(label_name) = lower($2) then $3
+              else label_name
+            end
+            from unnest(labels_applied) as label_name
+          ),
+          updated_at = now()
+      where user_id = $1
+        and exists (
+          select 1
+          from unnest(labels_applied) as label_name
+          where lower(label_name) = lower($2)
+        )
+    `,
+    [userId, oldName, newName],
+  );
+}
+
+async function removeLabelFromEmailRules(userId, labelName) {
+  await dbPool.query(
+    `
+      update email_rules
+      set labels_applied = array(
+            select label_name
+            from unnest(labels_applied) as label_name
+            where lower(label_name) <> lower($2)
+          ),
+          updated_at = now()
+      where user_id = $1
+        and exists (
+          select 1
+          from unnest(labels_applied) as label_name
+          where lower(label_name) = lower($2)
+        )
+    `,
+    [userId, labelName],
+  );
 }
 
 function handleDbError(res, error) {

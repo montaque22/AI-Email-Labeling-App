@@ -1,0 +1,52 @@
+name: Emailable
+version: "0.1.0"
+slug: emailable
+description: Email labeling assistant with API and MCP tools.
+url: "https://github.com/montaque22/AI-Email-Labeling-App"
+arch:
+  - aarch64
+  - amd64
+  - armv7
+startup: services
+boot: auto
+init: false
+ingress: true
+ingress_port: 3000
+panel_icon: mdi:email-edit-outline
+panel_title: Emailable
+ports:
+  3000/tcp: null
+ports_description:
+  3000/tcp: Optional direct web/API access. Ingress is used for the Home Assistant sidebar.
+map:
+  - addon_config:rw
+options:
+  app_url: ""
+  better_auth_url: ""
+  better_auth_secret: ""
+  database_url: ""
+  google_client_id: ""
+  google_client_secret: ""
+  google_email_client_id: ""
+  google_email_client_secret: ""
+  microsoft_client_id: ""
+  microsoft_client_secret: ""
+  yahoo_client_id: ""
+  yahoo_client_secret: ""
+  email_account_token_secret: ""
+  node_env: production
+schema:
+  app_url: str?
+  better_auth_url: str?
+  better_auth_secret: password
+  database_url: password
+  google_client_id: str?
+  google_client_secret: password?
+  google_email_client_id: str?
+  google_email_client_secret: password?
+  microsoft_client_id: str?
+  microsoft_client_secret: password?
+  yahoo_client_id: str?
+  yahoo_client_secret: password?
+  email_account_token_secret: password?
+  node_env: list(production|development)

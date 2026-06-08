@@ -37,9 +37,22 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { authClient } from "./lib/auth-client";
+import { getAbsoluteRuntimeUrl, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
 
-type Page = "overview" | "labels" | "rules" | "metrics" | "settings" | "confidence-threshold" | "email-accounts" | "endpoints";
+type Page =
+  | "overview"
+  | "labels"
+  | "rules"
+  | "metrics"
+  | "ai-prompts"
+  | "ai-email-label"
+  | "ai-draft-reply"
+  | "settings"
+  | "confidence-threshold"
+  | "email-accounts"
+  | "endpoints"
+  | "mcp-server";
 type AuthMode = "login" | "signup";
 
 type AuthUser = {
@@ -57,6 +70,7 @@ type Label = {
   id: string;
   name: string;
   description: string;
+  systemKey?: string | null;
   createdAt: string;
   updatedAt: string;
   syncs?: LabelSync[];
@@ -101,6 +115,7 @@ type EmailRule = {
   id: string;
   emailId: string;
   threadId: string;
+  accountEmail?: string | null;
   fromEmail: string;
   fromName: string;
   subject: string;
@@ -142,6 +157,25 @@ type OverviewData = {
   recentRules: EmailRule[];
 };
 
+type AiPrompt = {
+  promptKey: string;
+  title: string;
+  markdown: string;
+  templateTokens: string[];
+};
+
+type DraftEmailExample = {
+  emailId: string;
+  accountEmail: string;
+  provider: string;
+  to: string;
+  subject: string;
+  bodyText: string;
+  markdown: string;
+};
+
+type DraftEmailSearchResult = DraftEmailExample;
+
 const LABEL_NAME_MAX_LENGTH = 25;
 const LABEL_DESCRIPTION_MAX_LENGTH = 200;
 const LABEL_NAME_PATTERN = /^[A-Za-z0-9 _-]+$/;
@@ -152,23 +186,32 @@ const navItems = [
   { id: "labels" as const, label: "Labels", icon: Tag },
   { id: "rules" as const, label: "Rule Review", icon: FileCheck2 },
   { id: "metrics" as const, label: "Metrics", icon: BarChart3 },
+  { id: "ai-prompts" as const, label: "AI Prompts", icon: Sparkles },
   { id: "settings" as const, label: "Settings", icon: Settings },
+];
+
+const aiPromptSubItems = [
+  { id: "ai-email-label" as const, label: "Email Label" },
+  { id: "ai-draft-reply" as const, label: "Draft Reply" },
 ];
 
 const settingsSubItems = [
   { id: "confidence-threshold" as const, label: "Confidence Threshold" },
   { id: "email-accounts" as const, label: "Email Accounts" },
   { id: "endpoints" as const, label: "Endpoints" },
+  { id: "mcp-server" as const, label: "MCP Server" },
 ];
 
 export function App() {
   const session = authClient.useSession();
   const [activePage, setActivePage] = useState<Page>("overview");
   const [ruleToOpen, setRuleToOpen] = useState<string | null>(null);
+  const [ruleInitialFilter, setRuleInitialFilter] = useState<RulePendingFilter | null>(null);
   const user = session.data?.user ? mapAuthUser(session.data.user) : null;
 
   function navigate(page: Page) {
     setActivePage(page);
+    setRuleInitialFilter(null);
     if (page !== "rules") {
       setRuleToOpen(null);
     }
@@ -176,6 +219,13 @@ export function App() {
 
   function openRuleReview(emailId: string) {
     setRuleToOpen(emailId);
+    setRuleInitialFilter(null);
+    setActivePage("rules");
+  }
+
+  function openPendingRuleReview() {
+    setRuleToOpen(null);
+    setRuleInitialFilter("pending");
     setActivePage("rules");
   }
 
@@ -188,11 +238,13 @@ export function App() {
       activePage={activePage}
       onNavigate={navigate}
       onOpenRuleReview={openRuleReview}
+      onOpenPendingRuleReview={openPendingRuleReview}
       onSignOut={async () => {
         await authClient.signOut();
         await session.refetch();
         navigate("overview");
       }}
+      ruleInitialFilter={ruleInitialFilter}
       ruleToOpen={ruleToOpen}
       user={user}
     />
@@ -438,14 +490,18 @@ function AuthenticatedLayout({
   activePage,
   onNavigate,
   onOpenRuleReview,
+  onOpenPendingRuleReview,
   onSignOut,
+  ruleInitialFilter,
   ruleToOpen,
   user,
 }: {
   activePage: Page;
   onNavigate: (page: Page) => void;
   onOpenRuleReview: (emailId: string) => void;
+  onOpenPendingRuleReview: () => void;
   onSignOut: () => void;
+  ruleInitialFilter: RulePendingFilter | null;
   ruleToOpen: string | null;
   user: AuthUser;
 }) {
@@ -466,7 +522,10 @@ function AuthenticatedLayout({
         <nav className="flex-1 space-y-1 px-3 py-4">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = activePage === item.id || (item.id === "settings" && isSettingsPage(activePage));
+            const isActive =
+              activePage === item.id ||
+              (item.id === "settings" && isSettingsPage(activePage)) ||
+              (item.id === "ai-prompts" && isAiPromptsPage(activePage));
 
             return (
               <div key={item.id}>
@@ -483,6 +542,22 @@ function AuthenticatedLayout({
                 {item.id === "settings" && isSettingsPage(activePage) ? (
                   <div className="mt-1 space-y-1 pl-7">
                     {settingsSubItems.map((subItem) => (
+                      <button
+                        className={cn(
+                          "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-950",
+                          activePage === subItem.id && "bg-zinc-100 text-zinc-950",
+                        )}
+                        key={subItem.id}
+                        onClick={() => onNavigate(subItem.id)}
+                      >
+                        {subItem.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                {item.id === "ai-prompts" && isAiPromptsPage(activePage) ? (
+                  <div className="mt-1 space-y-1 pl-7">
+                    {aiPromptSubItems.map((subItem) => (
                       <button
                         className={cn(
                           "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-950",
@@ -522,13 +597,19 @@ function AuthenticatedLayout({
             </div>
           </div>
           <div className="flex gap-2 overflow-x-auto md:hidden">
-            {[...navItems, ...(isSettingsPage(activePage) ? settingsSubItems : [])].map((item) => (
+            {[
+              ...navItems,
+              ...(isAiPromptsPage(activePage) ? aiPromptSubItems : []),
+              ...(isSettingsPage(activePage) ? settingsSubItems : []),
+            ].map((item) => (
               <Button
                 key={item.id}
                 onClick={() => onNavigate(item.id)}
                 size="sm"
                 variant={
-                  activePage === item.id || (item.id === "settings" && isSettingsPage(activePage))
+                  activePage === item.id ||
+                  (item.id === "settings" && isSettingsPage(activePage)) ||
+                  (item.id === "ai-prompts" && isAiPromptsPage(activePage))
                     ? "default"
                     : "outline"
                 }
@@ -539,14 +620,24 @@ function AuthenticatedLayout({
           </div>
         </header>
         <main className="min-w-0 overflow-x-hidden p-4 sm:p-5 lg:p-8">
-          {activePage === "overview" && <OverviewPage onNavigate={onNavigate} onOpenRuleReview={onOpenRuleReview} />}
+          {activePage === "overview" && (
+            <OverviewPage
+              onNavigate={onNavigate}
+              onOpenPendingRuleReview={onOpenPendingRuleReview}
+              onOpenRuleReview={onOpenRuleReview}
+            />
+          )}
           {activePage === "labels" && <LabelsPage />}
-          {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} />}
+          {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} />}
           {activePage === "metrics" && <MetricsPage />}
+          {activePage === "ai-prompts" && <AiPromptsPage onNavigate={onNavigate} />}
+          {activePage === "ai-email-label" && <AiPromptEditorPage promptKey="email-label" />}
+          {activePage === "ai-draft-reply" && <AiPromptEditorPage promptKey="draft-reply" />}
           {activePage === "settings" && <SettingsPage onNavigate={onNavigate} />}
           {activePage === "confidence-threshold" && <ConfidenceThresholdPage />}
           {activePage === "email-accounts" && <EmailAccountsPage />}
           {activePage === "endpoints" && <EndpointsPage />}
+          {activePage === "mcp-server" && <McpServerPage />}
         </main>
       </div>
     </div>
@@ -555,9 +646,11 @@ function AuthenticatedLayout({
 
 function OverviewPage({
   onNavigate,
+  onOpenPendingRuleReview,
   onOpenRuleReview,
 }: {
   onNavigate: (page: Page) => void;
+  onOpenPendingRuleReview: () => void;
   onOpenRuleReview: (emailId: string) => void;
 }) {
   const [overview, setOverview] = useState<OverviewData | null>(null);
@@ -591,6 +684,7 @@ function OverviewPage({
 
   const pendingRules = overview?.pendingRules ?? 0;
   const nonPendingRules = overview?.nonPendingRules ?? 0;
+  const totalRules = pendingRules + nonPendingRules;
 
   return (
     <div className="space-y-6">
@@ -611,12 +705,12 @@ function OverviewPage({
           value={formatNumber(overview?.syncedLabels ?? 0)}
         />
         <MetricCard
-          actionLabel="Review rules"
+          actionLabel={pendingRules > 0 ? `Review ${formatNumber(pendingRules)} pending rules` : undefined}
           icon={CheckCircle2}
-          label="Non-pending vs pending rules"
+          label="Total number of rules"
           loading={isLoading}
-          onAction={() => onNavigate("rules")}
-          value={`${formatNumber(nonPendingRules)} / ${formatNumber(pendingRules)}`}
+          onAction={pendingRules > 0 ? onOpenPendingRuleReview : undefined}
+          value={formatNumber(totalRules)}
         />
       </div>
 
@@ -641,6 +735,7 @@ function OverviewPage({
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-zinc-950">{rule.subject}</p>
                   <p className="mt-1 truncate text-sm text-zinc-500">{rule.fromEmail}</p>
+                  <p className="mt-1 truncate text-xs text-zinc-500">Account: {rule.accountEmail || "Unknown account"}</p>
                   <p className="mt-1 line-clamp-2 text-sm text-zinc-600">
                     {rule.recommendedAction || rule.reason || "No recommendation provided."}
                   </p>
@@ -672,6 +767,7 @@ function LabelsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
+  const [deleteConfirmationIds, setDeleteConfirmationIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [labelAction, setLabelAction] = useState<
@@ -684,6 +780,8 @@ function LabelsPage() {
   const csvUploadRef = useRef<HTMLInputElement | null>(null);
   const syncedLabelCount = labels.filter((label) => isLabelFullySynced(label, connectedAccountCount)).length;
   const unsyncedLabelCount = labels.length - syncedLabelCount;
+  const deletableLabels = labels.filter((label) => !isSystemLabel(label));
+  const selectedDeletableIds = selectedIds.filter((id) => deletableLabels.some((label) => label.id === id));
 
   useEffect(() => {
     void loadLabels();
@@ -722,7 +820,9 @@ function LabelsPage() {
 
       setLabels(data.labels ?? []);
       setConnectedAccountCount(accountsResponse.ok ? accountsData.accounts?.length ?? 0 : 0);
-      setSelectedIds((current) => current.filter((id) => data.labels?.some((label: Label) => label.id === id)));
+      setSelectedIds((current) =>
+        current.filter((id) => data.labels?.some((label: Label) => label.id === id && !isSystemLabel(label))),
+      );
     } catch {
       setError("Could not load labels.");
     } finally {
@@ -905,7 +1005,9 @@ function LabelsPage() {
   }
 
   async function deleteLabels(ids: string[]) {
-    if (ids.length === 0) {
+    const deletableIds = ids.filter((id) => labels.some((label) => label.id === id && !isSystemLabel(label)));
+
+    if (deletableIds.length === 0) {
       return;
     }
 
@@ -918,7 +1020,7 @@ function LabelsPage() {
         method: "DELETE",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
+        body: JSON.stringify({ ids: deletableIds }),
       });
       const data = await response.json();
 
@@ -938,17 +1040,35 @@ function LabelsPage() {
     } finally {
       setIsSaving(false);
       setLabelAction(null);
+      setDeleteConfirmationIds([]);
     }
   }
 
+  function requestDeleteLabels(ids: string[]) {
+    const deletableIds = ids.filter((id) => labels.some((label) => label.id === id && !isSystemLabel(label)));
+
+    if (deletableIds.length === 0) {
+      return;
+    }
+
+    setDeleteConfirmationIds(deletableIds);
+  }
+
   function toggleSelected(labelId: string) {
+    const label = labels.find((item) => item.id === labelId);
+    if (label && isSystemLabel(label)) {
+      return;
+    }
+
     setSelectedIds((current) =>
       current.includes(labelId) ? current.filter((id) => id !== labelId) : [...current, labelId],
     );
   }
 
   function toggleAllSelected() {
-    setSelectedIds((current) => (current.length === labels.length ? [] : labels.map((label) => label.id)));
+    setSelectedIds((current) =>
+      current.length === deletableLabels.length ? [] : deletableLabels.map((label) => label.id),
+    );
   }
 
   async function retryLabel(labelId: string) {
@@ -1082,6 +1202,44 @@ function LabelsPage() {
           </div>
         </div>
       ) : null}
+      {deleteConfirmationIds.length > 0 ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-[min(460px,100%)] rounded-md border border-zinc-200 bg-white p-5 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-base font-semibold text-zinc-950">Delete label?</h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  This will delete {deleteConfirmationIds.length === 1 ? "this label" : `${deleteConfirmationIds.length} labels`}.
+                </p>
+              </div>
+              <Button
+                aria-label="Close delete confirmation"
+                disabled={isSaving}
+                onClick={() => setDeleteConfirmationIds([])}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <ul className="mt-4 list-disc space-y-2 pl-5 text-sm text-zinc-700">
+              <li>Deleting the label cannot be undone.</li>
+              <li>Any email rule that uses this label will be updated to remove it.</li>
+              <li>Any emails that use this label will have the label removed.</li>
+            </ul>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <Button disabled={isSaving} onClick={() => setDeleteConfirmationIds([])} type="button" variant="outline">
+                Cancel
+              </Button>
+              <Button disabled={isSaving} onClick={() => void deleteLabels(deleteConfirmationIds)} type="button">
+                {labelAction === "delete" ? <Loader /> : <Trash2 className="h-4 w-4" />}
+                {labelAction === "delete" ? "Deleting..." : "Delete"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-[220px_260px_minmax(0,1fr)]">
         <Card>
           <CardHeader className="items-center text-center">
@@ -1197,12 +1355,12 @@ function LabelsPage() {
             <CardDescription>Manage label names and descriptions.</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button disabled={labels.length === 0 || isSaving} onClick={toggleAllSelected} type="button" variant="outline">
-              {selectedIds.length === labels.length && labels.length > 0 ? "Clear selection" : "Select all"}
+            <Button disabled={deletableLabels.length === 0 || isSaving} onClick={toggleAllSelected} type="button" variant="outline">
+              {selectedIds.length === deletableLabels.length && deletableLabels.length > 0 ? "Clear selection" : "Select all"}
             </Button>
             <Button
-              disabled={selectedIds.length === 0 || isSaving}
-              onClick={() => void deleteLabels(selectedIds)}
+              disabled={selectedDeletableIds.length === 0 || isSaving}
+              onClick={() => requestDeleteLabels(selectedDeletableIds)}
               type="button"
               variant="outline"
             >
@@ -1231,22 +1389,25 @@ function LabelsPage() {
               </div>
               <div className="divide-y divide-zinc-200">
                 {labels.map((label) => {
-                  const isEditing = editingId === label.id;
-                  const isSelected = selectedIds.includes(label.id);
-                  const failedSyncs = getFailedSyncs(label);
-                  const hasFailedSyncs = failedSyncs.length > 0;
+	                  const isEditing = editingId === label.id;
+	                  const isSelected = selectedIds.includes(label.id);
+	                  const failedSyncs = getFailedSyncs(label);
+	                  const hasFailedSyncs = failedSyncs.length > 0;
+                    const isSystem = isSystemLabel(label);
 
                   return (
                     <div
                       className="grid min-w-[720px] grid-cols-[44px_1fr_1.5fr_160px] items-start gap-3 px-4 py-3"
                       key={label.id}
                     >
-                      <input
-                        checked={isSelected}
-                        className="h-4 w-4"
-                        onChange={() => toggleSelected(label.id)}
-                        type="checkbox"
-                      />
+	                      <input
+	                        checked={isSelected}
+	                        className="h-4 w-4"
+                          disabled={isSystem}
+	                        onChange={() => toggleSelected(label.id)}
+                          title={isSystem ? "System labels cannot be deleted" : undefined}
+	                        type="checkbox"
+	                      />
                       {isEditing ? (
                         <>
                           <div>
@@ -1267,17 +1428,18 @@ function LabelsPage() {
                           <div>
                             <div className="flex gap-2">
                               <input
-                                className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
-                                maxLength={LABEL_DESCRIPTION_MAX_LENGTH}
-                                onBlur={() => window.setTimeout(() => setActiveDescriptionInput(null), 0)}
+	                                className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                                  disabled={isSystem}
+	                                maxLength={LABEL_DESCRIPTION_MAX_LENGTH}
+	                                onBlur={() => window.setTimeout(() => setActiveDescriptionInput(null), 0)}
                                 onChange={(event) => setEditDescription(event.target.value)}
                                 onFocus={() => setActiveDescriptionInput("edit")}
                                 ref={editDescriptionRef}
                                 value={editDescription}
                               />
                               <Button
-                                aria-label="Insert confidence threshold template"
-                                disabled={!isTemplateButtonEnabled("edit")}
+	                                aria-label="Insert confidence threshold template"
+	                                disabled={isSystem || !isTemplateButtonEnabled("edit")}
                                 onMouseDown={(event) => event.preventDefault()}
                                 onClick={() => insertConfidenceThresholdTemplate("edit")}
                                 size="icon"
@@ -1313,8 +1475,11 @@ function LabelsPage() {
                       ) : (
                         <>
                           <div>
-                            <p className="text-sm font-medium text-zinc-950">{label.name}</p>
-                            {label.syncs && label.syncs.length > 0 ? (
+	                            <p className="text-sm font-medium text-zinc-950">{label.name}</p>
+                              {isSystem ? (
+                                <Badge className="mt-2 border-zinc-200 bg-zinc-50 text-zinc-700">System default</Badge>
+                              ) : null}
+	                            {label.syncs && label.syncs.length > 0 ? (
                               <div className="mt-2 flex flex-wrap gap-1">
                                 {hasFailedSyncs ? (
                                   <Badge className="border-red-200 bg-red-50 text-red-700">
@@ -1350,11 +1515,11 @@ function LabelsPage() {
                             <Button disabled={isSaving} onClick={() => startEditing(label)} size="icon" title="Edit label" type="button" variant="outline">
                               <Pencil className="h-4 w-4" />
                             </Button>
-                            <Button
-                              disabled={isSaving}
-                              onClick={() => void deleteLabels([label.id])}
-                              size="icon"
-                              title="Delete label"
+	                            <Button
+	                              disabled={isSaving || isSystem}
+	                              onClick={() => requestDeleteLabels([label.id])}
+	                              size="icon"
+	                              title={isSystem ? "System labels cannot be deleted" : "Delete label"}
                               type="button"
                               variant="outline"
                             >
@@ -1442,14 +1607,20 @@ function MetricsPage() {
   );
 }
 
-function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
+function RuleReviewPage({
+  initialEmailId,
+  initialPendingFilter,
+}: {
+  initialEmailId: string | null;
+  initialPendingFilter: RulePendingFilter | null;
+}) {
   const [rules, setRules] = useState<EmailRule[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.9);
   const [pageSize, setPageSize] = useState(10);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
-  const [pendingFilter, setPendingFilter] = useState<RulePendingFilter>("all");
+  const [pendingFilter, setPendingFilter] = useState<RulePendingFilter>(initialPendingFilter ?? "all");
   const [groupBy, setGroupBy] = useState<RuleGroupBy>("none");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
@@ -1465,9 +1636,19 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
   const [error, setError] = useState<string | null>(null);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const hasLabelChanges = selectedRule ? !sameStringSet(draftLabels, selectedRule.labelsApplied) : false;
+  const hasRecommendedActionChanges = selectedRule ? recommendedAction !== (selectedRule.recommendedAction ?? "") : false;
+  const hasRuleReviewChanges = hasLabelChanges || hasRecommendedActionChanges;
   const groupedRules = groupRules(rules, groupBy);
+  const availableLabels = labels.filter((label) => !isSystemLabel(label));
   const visibleRuleIds = rules.map((rule) => rule.emailId);
   const allVisibleRulesSelected = visibleRuleIds.length > 0 && visibleRuleIds.every((emailId) => selectedRuleIds.includes(emailId));
+
+  useEffect(() => {
+    if (initialPendingFilter) {
+      setPendingFilter(initialPendingFilter);
+      setPage(1);
+    }
+  }, [initialPendingFilter]);
 
   useEffect(() => {
     void loadRuleReviewData();
@@ -1581,7 +1762,7 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
   }
 
   async function saveRuleReview() {
-    if (!selectedRule || !hasLabelChanges || recommendedAction.length > 200) {
+    if (!selectedRule || !hasRuleReviewChanges || recommendedAction.length > 200) {
       return;
     }
 
@@ -1876,6 +2057,12 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
                                 </Badge>
                                 <p className="truncate text-sm font-medium text-zinc-950">{rule.fromEmail}</p>
                               </div>
+                              <p className="mt-1 truncate text-xs text-zinc-500">
+                                Account: {rule.accountEmail || "Unknown account"}
+                              </p>
+                              <p className="mt-1 truncate text-xs text-zinc-500">
+                                Created: {formatDate(rule.createdAt)}
+                              </p>
                               <p className="mt-2 line-clamp-2 text-sm leading-5 text-zinc-600">
                                 {rule.recommendedAction || rule.reason || "No reason provided."}
                               </p>
@@ -1922,6 +2109,8 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-zinc-950">{selectedRule.fromName}</p>
                       <p className="truncate text-sm text-zinc-500">{selectedRule.fromEmail}</p>
+                      <p className="truncate text-xs text-zinc-500">Account: {selectedRule.accountEmail || "Unknown account"}</p>
+                      <p className="truncate text-xs text-zinc-500">Created: {formatDate(selectedRule.createdAt)}</p>
                     </div>
                     <Badge className={selectedRule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
                       {selectedRule.isPending ? "Pending" : "Reviewed"}
@@ -1951,13 +2140,15 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
                         draggingLabel && "border-blue-200 bg-blue-50/40",
                       )}
                     >
-                      {labels.map((label) => (
+                      {availableLabels.map((label) => (
                         <button
                           className={cn(
-                            "w-full cursor-grab rounded-md border border-zinc-200 bg-white px-3 py-2 text-left text-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50 active:cursor-grabbing",
+                            "w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-left text-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50",
+                            draftLabels.includes(label.name) ? "cursor-not-allowed border-emerald-200 bg-emerald-50 text-emerald-900 hover:border-emerald-200 hover:bg-emerald-50" : "cursor-grab active:cursor-grabbing",
                             draggingLabel === label.name && "border-blue-300 bg-blue-50 opacity-70",
                           )}
-                          draggable
+                          disabled={draftLabels.includes(label.name)}
+                          draggable={!draftLabels.includes(label.name)}
                           key={label.id}
                           onClick={() => addDraftLabel(label.name)}
                           onDragEnd={() => {
@@ -1965,12 +2156,20 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
                             setIsLabelDropActive(false);
                           }}
                           onDragStart={(event) => {
+                            if (draftLabels.includes(label.name)) {
+                              event.preventDefault();
+                              return;
+                            }
+
                             event.dataTransfer.setData("text/plain", label.name);
                             setDraggingLabel(label.name);
                           }}
                           type="button"
                         >
-                          {label.name}
+                          <span className="block font-medium text-zinc-950">{label.name}</span>
+                          <span className="mt-1 block text-xs leading-5 text-zinc-500">
+                            {renderLabelDescription(label.description, confidenceThreshold.toFixed(2))}
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -2035,7 +2234,7 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
                     <Trash2 className="h-4 w-4" />
                     Delete
                   </Button>
-                  <Button disabled={isSaving || !hasLabelChanges || recommendedAction.length > 200} onClick={() => void saveRuleReview()} type="button">
+                  <Button disabled={isSaving || !hasRuleReviewChanges || recommendedAction.length > 200} onClick={() => void saveRuleReview()} type="button">
                     <Save className="h-4 w-4" />
                     Save
                   </Button>
@@ -2045,6 +2244,469 @@ function RuleReviewPage({ initialEmailId }: { initialEmailId: string | null }) {
         </Card>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function AiPromptsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>AI Prompts</CardTitle>
+          <CardDescription>Select a prompt template to edit.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="divide-y divide-zinc-200 rounded-md border border-zinc-200">
+            <button
+              className="flex w-full cursor-pointer items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
+              onClick={() => onNavigate("ai-email-label")}
+              type="button"
+            >
+              <div>
+                <p className="text-sm font-medium text-zinc-950">Email Label</p>
+                <p className="mt-1 text-sm text-zinc-500">
+                  Build the system prompt used to analyze emails and choose labels.
+                </p>
+              </div>
+              <ChevronRight className="h-4 w-4 text-zinc-400" />
+            </button>
+            <button
+              className="flex w-full cursor-pointer items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
+              onClick={() => onNavigate("ai-draft-reply")}
+              type="button"
+            >
+              <div>
+                <p className="text-sm font-medium text-zinc-950">Draft Reply</p>
+                <p className="mt-1 text-sm text-zinc-500">
+                  Build the system prompt used to draft replies in the tone and style you want.
+                </p>
+              </div>
+              <ChevronRight className="h-4 w-4 text-zinc-400" />
+            </button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function AiPromptEditorPage({ promptKey }: { promptKey: string }) {
+  const [prompt, setPrompt] = useState<AiPrompt | null>(null);
+  const [markdown, setMarkdown] = useState("");
+  const [savedMarkdown, setSavedMarkdown] = useState("");
+  const [previewMarkdown, setPreviewMarkdown] = useState("");
+  const [draftEmailExamples, setDraftEmailExamples] = useState<DraftEmailExample[]>([]);
+  const [draftSearchRecipient, setDraftSearchRecipient] = useState("");
+  const [draftSearchSubject, setDraftSearchSubject] = useState("");
+  const [draftSearchResults, setDraftSearchResults] = useState<DraftEmailSearchResult[]>([]);
+  const [isSearchingDraftEmails, setIsSearchingDraftEmails] = useState(false);
+  const [isEmailExamplesOpen, setIsEmailExamplesOpen] = useState(true);
+  const [draftSearchError, setDraftSearchError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const hasChanges = markdown !== savedMarkdown;
+  const isDraftReplyPrompt = promptKey === "draft-reply";
+
+  useEffect(() => {
+    async function loadPrompt() {
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const response = await fetch(`/api/ai-prompts/${promptKey}`, { credentials: "include" });
+        const data = await response.json();
+
+        if (!response.ok) {
+          setError(data.error ?? "Could not load AI prompt.");
+          return;
+        }
+
+        setPrompt(data);
+        setMarkdown(data.markdown ?? "");
+        setSavedMarkdown(data.markdown ?? "");
+      } catch {
+        setError("Could not load AI prompt.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    void loadPrompt();
+  }, [promptKey]);
+
+  useEffect(() => {
+    if (isLoading) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      setIsPreviewing(true);
+
+      try {
+        const response = await fetch(`/api/ai-prompts/${promptKey}/preview`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ markdown }),
+          signal: controller.signal,
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+          setError(data.error ?? "Could not preview AI prompt.");
+          return;
+        }
+
+        setPreviewMarkdown(data.markdown ?? "");
+      } catch (previewError) {
+        if (!controller.signal.aborted) {
+          setError("Could not preview AI prompt.");
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsPreviewing(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [isLoading, markdown, promptKey]);
+
+  function insertAtCursor(value: string) {
+    const input = textareaRef.current;
+
+    if (!input) {
+      setMarkdown((current) => `${current}${value}`);
+      return;
+    }
+
+    const selectionStart = input.selectionStart ?? markdown.length;
+    const selectionEnd = input.selectionEnd ?? selectionStart;
+    const nextMarkdown = markdown.slice(0, selectionStart) + value + markdown.slice(selectionEnd);
+
+    setMarkdown(nextMarkdown);
+
+    window.requestAnimationFrame(() => {
+      input.focus();
+      const nextCursor = selectionStart + value.length;
+      input.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
+
+  function removeDraftEmailExample(emailId: string) {
+    setDraftEmailExamples((current) => current.filter((example) => example.emailId !== emailId));
+  }
+
+  function clearDraftSearchResults() {
+    setDraftSearchResults([]);
+    setDraftSearchError(null);
+  }
+
+  async function searchDraftSentEmails(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!draftSearchRecipient.trim() && !draftSearchSubject.trim()) {
+      setDraftSearchError("Enter a recipient or subject to search sent mail.");
+      return;
+    }
+
+    setIsSearchingDraftEmails(true);
+    setDraftSearchError(null);
+
+    try {
+      const response = await fetch("/api/ai-prompts/draft-reply/sent-email-search", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipient: draftSearchRecipient,
+          subject: draftSearchSubject,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setDraftSearchError(data.error ?? "Sent email search failed.");
+        setDraftSearchResults([]);
+        return;
+      }
+
+      setDraftSearchResults(data.emails ?? []);
+
+      if ((data.emails ?? []).length === 0) {
+        setDraftSearchError("No sent emails matched that search.");
+      }
+    } catch {
+      setDraftSearchError("Sent email search failed.");
+      setDraftSearchResults([]);
+    } finally {
+      setIsSearchingDraftEmails(false);
+    }
+  }
+
+  function addDraftSearchResult(result: DraftEmailSearchResult) {
+    if (draftEmailExamples.length >= 10 || draftEmailExamples.some((example) => example.emailId === result.emailId)) {
+      return;
+    }
+
+    setDraftEmailExamples((current) => [...current, result]);
+  }
+
+  function applyMarkdownWrap(prefix: string, suffix = prefix) {
+    const input = textareaRef.current;
+    const selectionStart = input?.selectionStart ?? markdown.length;
+    const selectionEnd = input?.selectionEnd ?? selectionStart;
+    const selectedText = markdown.slice(selectionStart, selectionEnd) || "text";
+    const nextMarkdown = markdown.slice(0, selectionStart) + prefix + selectedText + suffix + markdown.slice(selectionEnd);
+
+    setMarkdown(nextMarkdown);
+
+    window.requestAnimationFrame(() => {
+      input?.focus();
+      input?.setSelectionRange(selectionStart + prefix.length, selectionStart + prefix.length + selectedText.length);
+    });
+  }
+
+  async function savePrompt() {
+    setIsSaving(true);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const response = await fetch(`/api/ai-prompts/${promptKey}`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ markdown }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not save AI prompt.");
+        return;
+      }
+
+      setSavedMarkdown(data.prompt.markdown ?? markdown);
+      setMessage("AI prompt saved.");
+    } catch {
+      setError("Could not save AI prompt.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+	      <Card>
+	        <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+            <div className="min-w-0">
+	            <CardTitle>{prompt?.title ?? "Email Label"} Prompt</CardTitle>
+	            <CardDescription>
+	              Create the system prompt that defines how the AI should behave when analyzing and labeling emails. Template
+	              strings are saved as-is and replaced with current app values when previewed or called through the API.
+	            </CardDescription>
+            </div>
+            <Button className="shrink-0" disabled={isLoading || isSaving || !hasChanges} onClick={() => void savePrompt()} type="button">
+              {isSaving ? "Saving..." : "Save Prompt"}
+            </Button>
+	        </CardHeader>
+        <CardContent className="space-y-5">
+          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          {message ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</p> : null}
+
+          <div className="flex flex-wrap gap-2">
+            <Button disabled={isLoading} onClick={() => applyMarkdownWrap("**")} size="sm" type="button" variant="outline">
+              Bold
+            </Button>
+            <Button disabled={isLoading} onClick={() => applyMarkdownWrap("_")} size="sm" type="button" variant="outline">
+              Italic
+            </Button>
+            <Button disabled={isLoading} onClick={() => insertAtCursor("\n## Heading\n")} size="sm" type="button" variant="outline">
+              Heading
+            </Button>
+            <Button disabled={isLoading} onClick={() => insertAtCursor("\n- List item\n")} size="sm" type="button" variant="outline">
+              List
+            </Button>
+            <Button disabled={isLoading} onClick={() => insertAtCursor("{confidenceThreshold}")} size="sm" type="button" variant="outline">
+              {"{confidenceThreshold}"}
+            </Button>
+            <Button disabled={isLoading} onClick={() => insertAtCursor("{labelTable}")} size="sm" type="button" variant="outline">
+              {"{labelTable}"}
+            </Button>
+          </div>
+
+		          {isDraftReplyPrompt ? (
+		            <Card className="border-zinc-200">
+		              <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+                    <div className="min-w-0">
+		                  <CardTitle className="text-base">Email examples</CardTitle>
+		                  <CardDescription>
+		                    Find sent emails from connected Gmail accounts and insert them as markdown tables with To, Subject, and
+		                    BodyText fields.
+		                  </CardDescription>
+                    </div>
+                    <Button
+                      className="shrink-0"
+                      onClick={() => setIsEmailExamplesOpen((current) => !current)}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      {isEmailExamplesOpen ? "Collapse" : "Expand"}
+                    </Button>
+		              </CardHeader>
+		              {isEmailExamplesOpen ? <CardContent>
+		                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
+	                  <div className="space-y-3 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+	                    <form className="space-y-3" onSubmit={searchDraftSentEmails}>
+	                      <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+	                        <input
+	                          className="h-10 min-w-0 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+	                          disabled={isSearchingDraftEmails}
+	                          onChange={(event) => setDraftSearchRecipient(event.target.value)}
+	                          placeholder="Recipient email"
+	                          value={draftSearchRecipient}
+	                        />
+	                        <input
+	                          className="h-10 min-w-0 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+	                          disabled={isSearchingDraftEmails}
+	                          onChange={(event) => setDraftSearchSubject(event.target.value)}
+	                          placeholder="Subject"
+	                          value={draftSearchSubject}
+	                        />
+	                        <Button
+	                          className="cursor-pointer"
+	                          disabled={isSearchingDraftEmails || (!draftSearchRecipient.trim() && !draftSearchSubject.trim())}
+	                          type="submit"
+	                          variant="outline"
+	                        >
+	                          {isSearchingDraftEmails ? <Loader /> : <Search className="h-4 w-4" />}
+	                          Find sent email
+	                        </Button>
+	                      </div>
+	                      <div className="flex items-center justify-between gap-3">
+	                        {draftSearchError ? <p className="text-sm text-red-700">{draftSearchError}</p> : <span />}
+	                        <Button
+	                          className="cursor-pointer"
+	                          disabled={draftSearchResults.length === 0 && !draftSearchError}
+	                          onClick={clearDraftSearchResults}
+	                          size="sm"
+	                          type="button"
+	                          variant="ghost"
+	                        >
+	                          Clear
+	                        </Button>
+	                      </div>
+	                    </form>
+
+	                    {draftSearchResults.length > 0 ? (
+	                      <div className="space-y-2">
+	                        {draftSearchResults.map((result) => {
+	                          const isAdded = draftEmailExamples.some((example) => example.emailId === result.emailId);
+	                          return (
+	                            <div
+	                              className="flex flex-col gap-2 rounded-md border border-zinc-200 bg-white p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+	                              key={`${result.provider}-${result.accountEmail}-${result.emailId}`}
+	                            >
+	                              <div className="min-w-0">
+	                                <p className="truncate font-medium text-zinc-950">{result.subject || "No subject"}</p>
+	                                <p className="truncate text-zinc-500">
+	                                  To {result.to || "Unknown recipient"} from {result.accountEmail}
+	                                </p>
+	                              </div>
+	                              <Button
+	                                className="cursor-pointer sm:shrink-0"
+	                                disabled={isAdded || draftEmailExamples.length >= 10}
+	                                onClick={() => addDraftSearchResult(result)}
+	                                size="sm"
+	                                type="button"
+	                                variant="outline"
+	                              >
+	                                {isAdded ? "Added" : "Add example"}
+	                              </Button>
+	                            </div>
+	                          );
+	                        })}
+	                      </div>
+	                    ) : null}
+	                  </div>
+
+	                  <div className="space-y-3 rounded-md border border-emerald-200 bg-emerald-50 p-3">
+	                    <div>
+	                      <p className="text-sm font-medium text-emerald-950">Added examples</p>
+	                      <p className="text-xs text-emerald-800">{draftEmailExamples.length}/10 selected</p>
+	                    </div>
+	                    <div className="space-y-2">
+	                      {draftEmailExamples.length === 0 ? (
+	                        <p className="rounded-md border border-dashed border-emerald-200 bg-white/70 px-3 py-6 text-center text-sm text-emerald-800">
+	                          No examples added.
+	                        </p>
+	                      ) : (
+	                        draftEmailExamples.map((example) => (
+	                          <div
+	                            className="flex max-w-full items-center gap-2 rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm text-emerald-900"
+	                            key={example.emailId}
+	                            title={example.subject || "No subject"}
+	                          >
+	                            <span className="min-w-0 flex-1 truncate">{example.subject || "No subject"}</span>
+	                            <Button onClick={() => insertAtCursor(`\n\n${example.markdown}\n`)} size="sm" type="button" variant="outline">
+	                              Insert
+	                            </Button>
+	                            <button className="cursor-pointer text-current" onClick={() => removeDraftEmailExample(example.emailId)} type="button">
+	                              <X className="h-4 w-4" />
+	                            </button>
+	                          </div>
+	                        ))
+	                      )}
+	                    </div>
+	                  </div>
+	                </div>
+		              </CardContent> : null}
+		            </Card>
+		          ) : null}
+
+	          <div className="grid gap-5 xl:grid-cols-2">
+	            <div className="space-y-2">
+	              <label className="block">
+	                <span className="mb-1 block text-sm font-medium text-zinc-700">Markdown prompt</span>
+	                <textarea
+	                  className="h-[420px] w-full resize-none overflow-auto rounded-md border border-zinc-200 bg-white px-3 py-3 font-mono text-sm outline-none transition-colors focus:border-zinc-400"
+	                  disabled={isLoading}
+                  onChange={(event) => {
+                    setMarkdown(event.target.value);
+                    setMessage(null);
+                  }}
+                  ref={textareaRef}
+                  value={markdown}
+                />
+              </label>
+              <p className="text-xs text-zinc-500">Images are not supported in AI prompt markdown.</p>
+            </div>
+            <div className="space-y-2">
+	              <div className="flex items-center justify-between gap-3">
+	                <p className="text-sm font-medium text-zinc-700">Rendered preview</p>
+	                {isPreviewing ? <span className="text-xs text-zinc-500">Updating...</span> : null}
+	              </div>
+	              <div className="h-[420px] overflow-auto rounded-md border border-zinc-200 bg-white p-4">
+	                <div
+                  className="max-w-none space-y-3 text-sm leading-6 text-zinc-800 [&_code]:rounded [&_code]:bg-zinc-100 [&_code]:px-1 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:text-lg [&_h3]:font-semibold [&_li]:ml-5 [&_li]:list-disc [&_strong]:font-semibold"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(previewMarkdown || markdown) }}
+                />
+              </div>
+            </div>
+          </div>
+
+	        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -2081,18 +2743,29 @@ function SettingsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
               </div>
               <ChevronRight className="h-4 w-4 text-zinc-400" />
             </button>
-            <button
-              className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
-              onClick={() => onNavigate("endpoints")}
+	            <button
+	              className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
+	              onClick={() => onNavigate("endpoints")}
               type="button"
             >
               <div>
                 <p className="text-sm font-medium text-zinc-950">Endpoints</p>
                 <p className="mt-1 text-sm text-zinc-500">Create n8n API keys and view integration payload examples.</p>
               </div>
-              <ChevronRight className="h-4 w-4 text-zinc-400" />
-            </button>
-          </div>
+	              <ChevronRight className="h-4 w-4 text-zinc-400" />
+	            </button>
+	            <button
+	              className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
+	              onClick={() => onNavigate("mcp-server")}
+	              type="button"
+	            >
+	              <div>
+	                <p className="text-sm font-medium text-zinc-950">MCP Server</p>
+	                <p className="mt-1 text-sm text-zinc-500">Create MCP bearer keys and view Streamable HTTP tool details.</p>
+	              </div>
+	              <ChevronRight className="h-4 w-4 text-zinc-400" />
+	            </button>
+	          </div>
         </CardContent>
       </Card>
     </div>
@@ -2138,7 +2811,7 @@ function EmailAccountsPage() {
   }
 
   function connectProvider(providerId: string) {
-    window.location.href = `/api/email-accounts/connect/${providerId}`;
+    window.location.href = getRuntimeUrl(`/api/email-accounts/connect/${providerId}`);
   }
 
   async function removeAccount(accountId: string) {
@@ -2431,15 +3104,36 @@ function EndpointsPage() {
               { name: "Client Ops", description: "Operational client messages." },
             ]}
           />
-          <EndpointDoc
-            method="GET"
-            path="/api/integrations/confidence-threshold"
-            title="Get confidence threshold"
-            response={{ confidenceThreshold: 0.9 }}
-          />
-          <EndpointDoc
-            method="POST"
-            path="/api/integrations/email-rules"
+	          <EndpointDoc
+	            method="GET"
+	            path="/api/integrations/confidence-threshold"
+	            title="Get confidence threshold"
+	            response={{ confidenceThreshold: 0.9 }}
+	          />
+	          <EndpointDoc
+	            method="GET"
+	            path="/api/integrations/ai-prompts"
+	            title="Get AI prompts"
+	            notes={["Returns all AI Prompt submenu prompts with supported template strings replaced by current app values."]}
+	            response={{
+	              confidenceThreshold: 0.9,
+	              labels: [
+	                { name: "Invoice", description: "Use when confidence is at least 0.9." },
+	                { name: "Client Ops", description: "Operational client messages." },
+	              ],
+	              "email-label": {
+	                markdown:
+	                  "You are an email labeling assistant.\n\nUse the confidence threshold of 0.90 to decide whether an email can be labeled automatically.\n\nAvailable labels:\n\n| Name | Description |\n| --- | --- |\n| Invoice | Use when confidence is at least 0.9. |",
+	              },
+	              "draft-reply": {
+	                markdown:
+	                  "You are an email reply assistant.\n\nThe voice should be warm but not overly casual. Use simple sentences and make the message clear and tactful.",
+	              },
+	            }}
+	          />
+	          <EndpointDoc
+	            method="POST"
+	            path="/api/integrations/email-rules"
             title="Add an email rule"
             notes={["isPending is optional. If omitted, the API sets it to true."]}
             payload={{
@@ -2574,6 +3268,222 @@ function EndpointsPage() {
               messageId: "msg_123",
               threadId: "188c1f2d7e1a1234",
             }}
+          />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function McpServerPage() {
+  const [apiKeys, setApiKeys] = useState<IntegrationApiKey[]>([]);
+  const [keyName, setKeyName] = useState("");
+  const [newToken, setNewToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mcpEndpoint = getAbsoluteRuntimeUrl("/mcp");
+
+  useEffect(() => {
+    void loadMcpKeys();
+  }, []);
+
+  async function loadMcpKeys() {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/mcp-api-keys", { credentials: "include" });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not load MCP keys.");
+        return;
+      }
+
+      setApiKeys(data.keys ?? []);
+    } catch {
+      setError("Could not load MCP keys.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function createMcpKey() {
+    setIsSaving(true);
+    setError(null);
+    setNewToken(null);
+
+    try {
+      const response = await fetch("/api/mcp-api-keys", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: keyName || "MCP client" }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not create MCP key.");
+        return;
+      }
+
+      setNewToken(data.token);
+      setKeyName("");
+      await loadMcpKeys();
+    } catch {
+      setError("Could not create MCP key.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function deleteMcpKey(id: string) {
+    setIsSaving(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/mcp-api-keys/${id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not revoke MCP key.");
+        return;
+      }
+
+      await loadMcpKeys();
+    } catch {
+      setError("Could not revoke MCP key.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>MCP Server</CardTitle>
+          <CardDescription>Use Streamable HTTP with Authorization: Bearer &lt;token&gt;.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-md border border-zinc-200 bg-zinc-50 p-4">
+            <p className="text-sm font-medium text-zinc-950">Streamable HTTP endpoint</p>
+            <code className="mt-2 block overflow-x-auto rounded-md bg-white p-3 text-xs text-zinc-900">{mcpEndpoint}</code>
+          </div>
+          <div className="grid gap-3 md:grid-cols-[minmax(0,260px)_auto]">
+            <input
+              className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+              maxLength={60}
+              onChange={(event) => setKeyName(event.target.value)}
+              placeholder="Key name"
+              value={keyName}
+            />
+            <Button disabled={isSaving} onClick={() => void createMcpKey()} type="button">
+              <Plus className="h-4 w-4" />
+              Create MCP Key
+            </Button>
+          </div>
+
+          {newToken ? (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4">
+              <p className="text-sm font-medium text-emerald-900">Copy this key now. It will only be shown once.</p>
+              <code className="mt-2 block overflow-x-auto rounded-md bg-white p-3 text-xs text-zinc-900">{newToken}</code>
+            </div>
+          ) : null}
+
+          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+
+          <div className="overflow-hidden rounded-md border border-zinc-200">
+            <div className="grid grid-cols-[1fr_140px_120px] gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-xs font-medium uppercase text-zinc-500">
+              <span>Key</span>
+              <span>Last used</span>
+              <span className="text-right">Actions</span>
+            </div>
+            <div className="divide-y divide-zinc-200">
+              {isLoading ? (
+                <div className="px-4 py-4 text-sm text-zinc-500">Loading MCP keys...</div>
+              ) : apiKeys.length === 0 ? (
+                <div className="px-4 py-4 text-sm text-zinc-500">No MCP keys yet.</div>
+              ) : (
+                apiKeys.map((apiKey) => (
+                  <div className="grid grid-cols-[1fr_140px_120px] items-center gap-3 px-4 py-3" key={apiKey.id}>
+                    <div>
+                      <p className="text-sm font-medium text-zinc-950">{apiKey.name}</p>
+                      <p className="text-xs text-zinc-500">{apiKey.keyPrefix}...</p>
+                    </div>
+                    <span className="text-sm text-zinc-600">{apiKey.lastUsedAt ? formatDate(apiKey.lastUsedAt) : "Never"}</span>
+                    <div className="flex justify-end">
+                      <Button disabled={isSaving} onClick={() => void deleteMcpKey(apiKey.id)} size="sm" type="button" variant="outline">
+                        Revoke
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>MCP Tools</CardTitle>
+          <CardDescription>Available tools for connected MCP clients.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <EndpointDoc
+            method="TOOL"
+            path="create_draft_reply"
+            title="Create Draft Reply"
+            payload={{
+              accountEmail: "user@gmail.com",
+              emailId: "188c1f2d7e1a1234",
+              bodyText: "Thanks for the update. I will review this and follow up shortly.",
+              replyAll: false,
+            }}
+            response={{ draftId: "r123", messageId: "188c1f2d7e1a1234", threadId: "188c1f2d7e1a1234" }}
+          />
+          <EndpointDoc
+            method="TOOL"
+            path="add_labels_on_email"
+            title="Add Labels On Email"
+            notes={[
+              "Payload matches Add Email Rule except isPending is omitted.",
+              "When confidence is at or above the current threshold, labelsApplied and the system label are added to the email.",
+              "When confidence is below the threshold, only the system label is added and a pending rule is created.",
+            ]}
+            payload={{
+              emailId: "188c1f2d7e1a1234",
+              threadId: "188c1f2d7e1a1234",
+              fromEmail: "someone@gmail.com",
+              fromName: "Michael Montaque",
+              subject: "Invoice for review",
+              snippet: "Please review the attached invoice.",
+              confidence: 0.87,
+              labelsApplied: ["Invoice"],
+            }}
+            response={{ action: "pending_rule_created", threshold: 0.9, confidence: 0.87 }}
+          />
+          <EndpointDoc
+            method="TOOL"
+            path="query_email_rules"
+            title="Query Email Rules"
+            notes={["Supported equivalences: equals, notEquals, contains."]}
+            payload={{
+              query: {
+                operator: "AND",
+                conditions: [
+                  { field: "fromEmail", equivalence: "contains", value: "gmail.com" },
+                  { field: "isPending", equivalence: "equals", value: true },
+                ],
+              },
+              limit: 25,
+            }}
+            response={{ rules: [{ emailId: "188c1f2d7e1a1234", isPending: true }] }}
           />
         </CardContent>
       </Card>
@@ -3050,6 +3960,10 @@ function getFailedSyncs(label: Label) {
   return (label.syncs ?? []).filter((sync) => sync.syncStatus === "failed");
 }
 
+function isSystemLabel(label: Label) {
+  return Boolean(label.systemKey);
+}
+
 function isLabelFullySynced(label: Label, connectedAccountCount: number) {
   if (connectedAccountCount === 0) {
     return false;
@@ -3154,11 +4068,154 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
+function renderMarkdownHtml(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const html: string[] = [];
+  let paragraph: string[] = [];
+  let listItems: string[] = [];
+
+  function flushParagraph() {
+    if (paragraph.length > 0) {
+      html.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+      paragraph = [];
+    }
+  }
+
+  function flushList() {
+    if (listItems.length > 0) {
+      html.push(`<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+      listItems = [];
+    }
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    if (isMarkdownTableAt(lines, index)) {
+      flushParagraph();
+      flushList();
+      const table = readMarkdownTable(lines, index);
+      html.push(renderMarkdownTable(table.rows));
+      index = table.nextIndex - 1;
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const listItem = trimmed.match(/^[-*]\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      listItems.push(listItem[1]);
+      continue;
+    }
+
+    paragraph.push(trimmed);
+  }
+
+  flushParagraph();
+  flushList();
+
+  return html.join("");
+}
+
+function renderInlineMarkdown(value: string) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/_([^_]+)_/g, "<em>$1</em>");
+}
+
+function isMarkdownTableAt(lines: string[], index: number) {
+  const header = lines[index]?.trim();
+  const separator = lines[index + 1]?.trim();
+  return Boolean(header?.startsWith("|") && header.endsWith("|") && /^(\|\s*:?-+:?\s*)+\|$/.test(separator ?? ""));
+}
+
+function readMarkdownTable(lines: string[], startIndex: number) {
+  const rows = [];
+  let index = startIndex;
+
+  while (index < lines.length) {
+    const line = lines[index].trim();
+    if (!line.startsWith("|") || !line.endsWith("|")) {
+      break;
+    }
+
+    if (index !== startIndex + 1) {
+      rows.push(line.slice(1, -1).split("|").map((cell) => cell.trim()));
+    }
+
+    index += 1;
+  }
+
+  return { rows, nextIndex: index };
+}
+
+function renderMarkdownTable(rows: string[][]) {
+  if (rows.length === 0) {
+    return "";
+  }
+
+  const [header, ...body] = rows;
+  return `
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:0.875rem">
+        <thead>
+          <tr>${header.map((cell) => `<th style="border:1px solid #e4e4e7;padding:8px;text-align:left;background:#f4f4f5">${renderInlineMarkdown(cell)}</th>`).join("")}</tr>
+        </thead>
+        <tbody>
+          ${body
+            .map(
+              (row) =>
+                `<tr>${row.map((cell) => `<td style="border:1px solid #e4e4e7;padding:8px;vertical-align:top">${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function isAiPromptsPage(page: Page) {
+  return page === "ai-prompts" || page === "ai-email-label" || page === "ai-draft-reply";
+}
+
 function isSettingsPage(page: Page) {
-  return page === "settings" || page === "confidence-threshold" || page === "email-accounts" || page === "endpoints";
+  return page === "settings" || page === "confidence-threshold" || page === "email-accounts" || page === "endpoints" || page === "mcp-server";
 }
 
 function getPageTitle(page: Page) {
+  if (page === "ai-email-label") {
+    return "Email Label Prompt";
+  }
+
+  if (page === "ai-draft-reply") {
+    return "Draft Reply Prompt";
+  }
+
   if (page === "confidence-threshold") {
     return "Confidence Threshold";
   }
@@ -3169,6 +4226,10 @@ function getPageTitle(page: Page) {
 
   if (page === "endpoints") {
     return "Endpoints";
+  }
+
+  if (page === "mcp-server") {
+    return "MCP Server";
   }
 
   return navItems.find((item) => item.id === page)?.label ?? "Overview";
