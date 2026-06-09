@@ -17,8 +17,9 @@ export async function withImapClient(account, fn) {
     },
     logger: false,
   });
+  client.on("error", () => {});
 
-  await client.connect();
+  await connectImapClient(client);
   try {
     return await fn(client, metadata);
   } finally {
@@ -37,9 +38,37 @@ export async function testImapConnection(settings) {
     },
     logger: false,
   });
+  client.on("error", () => {});
 
-  await client.connect();
-  await client.logout();
+  try {
+    await connectImapClient(client);
+  } finally {
+    await client.logout().catch(() => {});
+  }
+}
+
+async function connectImapClient(client) {
+  try {
+    await client.connect();
+  } catch (error) {
+    throw normalizeImapConnectionError(error);
+  }
+}
+
+function normalizeImapConnectionError(error) {
+  if (error?.authenticationFailed || error?.serverResponseCode === "AUTHENTICATIONFAILED") {
+    return new Error("IMAP authentication failed. Check the username and app password.");
+  }
+
+  if (error?.code === "ENOTFOUND") {
+    return new Error("IMAP host could not be found. Check the IMAP server host.");
+  }
+
+  if (error?.code === "ECONNREFUSED" || error?.code === "ETIMEDOUT" || error?.code === "ECONNRESET") {
+    return new Error("Could not connect to the IMAP server. Check the host, port, and SSL setting.");
+  }
+
+  return new Error(error?.message || "Could not connect to the IMAP server.");
 }
 
 export async function syncImapFolder({ action, account, label, providerLabelId }) {

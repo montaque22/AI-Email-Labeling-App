@@ -3038,6 +3038,7 @@ function EmailAccountsPage() {
   const [showProviderChoices, setShowProviderChoices] = useState(false);
   const [showImapModal, setShowImapModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [imapError, setImapError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadEmailAccounts();
@@ -3071,6 +3072,8 @@ function EmailAccountsPage() {
 
   function connectProvider(providerId: string) {
     if (providerId === "imap") {
+      setError(null);
+      setImapError(null);
       setShowImapModal(true);
       return;
     }
@@ -3078,9 +3081,19 @@ function EmailAccountsPage() {
     window.location.href = getRuntimeUrl(`/api/email-accounts/connect/${providerId}`);
   }
 
+  function closeImapModal() {
+    if (isConnectingImap) {
+      return;
+    }
+
+    setShowImapModal(false);
+    setImapError(null);
+  }
+
   async function connectImapAccount() {
     setIsConnectingImap(true);
     setError(null);
+    setImapError(null);
 
     try {
       const response = await fetch("/api/email-accounts/imap", {
@@ -3092,10 +3105,10 @@ function EmailAccountsPage() {
           imapPort: Number(imapForm.imapPort),
         }),
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        setError(data.error ?? "Could not connect IMAP account.");
+        setImapError(getImapConnectionErrorMessage(data, response.status));
         return;
       }
 
@@ -3115,7 +3128,7 @@ function EmailAccountsPage() {
       });
       await loadEmailAccounts();
     } catch {
-      setError("Could not connect IMAP account.");
+      setImapError("Could not reach the app server. Check that the local Node server is running, then try again.");
     } finally {
       setIsConnectingImap(false);
     }
@@ -3246,11 +3259,18 @@ function EmailAccountsPage() {
                   Use an app password from your email provider. Do not use your main account password.
                 </p>
               </div>
-              <Button aria-label="Close IMAP setup" onClick={() => setShowImapModal(false)} size="icon" type="button" variant="ghost">
+              <Button aria-label="Close IMAP setup" disabled={isConnectingImap} onClick={closeImapModal} size="icon" type="button" variant="ghost">
                 <X className="h-4 w-4" />
               </Button>
             </div>
             <div className="space-y-5 p-5">
+              {imapError ? (
+                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">
+                  <p className="font-medium">IMAP connection failed</p>
+                  <p className="mt-1">{imapError}</p>
+                </div>
+              ) : null}
+
               <div className="grid gap-3 sm:grid-cols-2">
                 <InputField label="Email address" value={imapForm.email} onChange={(value) => setImapForm((current) => ({ ...current, email: value }))} />
                 <InputField label="Display name" value={imapForm.displayName} onChange={(value) => setImapForm((current) => ({ ...current, displayName: value }))} />
@@ -3288,7 +3308,7 @@ function EmailAccountsPage() {
               </div>
 
               <div className="flex justify-end gap-2">
-                <Button disabled={isConnectingImap} onClick={() => setShowImapModal(false)} type="button" variant="outline">
+                <Button disabled={isConnectingImap} onClick={closeImapModal} type="button" variant="outline">
                   Cancel
                 </Button>
                 <Button disabled={isConnectingImap} onClick={() => void connectImapAccount()} type="button">
@@ -3301,6 +3321,32 @@ function EmailAccountsPage() {
       ) : null}
     </div>
   );
+}
+
+function getImapConnectionErrorMessage(data: unknown, status: number) {
+  const error = typeof data === "object" && data && "error" in data && typeof data.error === "string" ? data.error : "";
+  const details =
+    typeof data === "object" && data && "details" in data && typeof data.details === "string" ? data.details : "";
+  const message = [error, details].filter(Boolean).join(" ");
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes("authentication failed") || normalized.includes("invalid credentials")) {
+    return "The IMAP server rejected the username or app password. Use the full email address as the username unless your provider says otherwise, and use an app password instead of your normal email password.";
+  }
+
+  if (normalized.includes("host could not be found") || normalized.includes("enotfound")) {
+    return "The IMAP host could not be found. Check the server name. For Yahoo, use imap.mail.yahoo.com.";
+  }
+
+  if (normalized.includes("connect") || normalized.includes("timeout") || normalized.includes("refused") || normalized.includes("reset")) {
+    return "The app could not connect to the IMAP server. Check the host, port, and SSL setting, then try again.";
+  }
+
+  if (status === 401) {
+    return "Your app session expired. Sign in again, then reconnect the IMAP account.";
+  }
+
+  return message || "The IMAP account could not be connected. Check the account settings and try again.";
 }
 
 function InputField({
