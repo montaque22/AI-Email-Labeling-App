@@ -57,6 +57,8 @@ function getHomeAssistantIngressOrigins(request) {
   }
 
   const origins = new Set();
+  const ingressPath = request.headers.get("x-ingress-path");
+  const originHeader = request.headers.get("origin");
   const requestUrl = safeParseUrl(request.url);
 
   if (requestUrl?.pathname.includes("/api/hassio_ingress/")) {
@@ -66,6 +68,19 @@ function getHomeAssistantIngressOrigins(request) {
   const refererUrl = safeParseUrl(request.headers.get("referer"));
   if (refererUrl?.pathname.includes("/api/hassio_ingress/")) {
     origins.add(refererUrl.origin);
+  }
+
+  if (ingressPath?.includes("/api/hassio_ingress/")) {
+    const originUrl = safeParseUrl(originHeader);
+    if (originUrl) {
+      origins.add(originUrl.origin);
+    }
+
+    const forwardedProto = request.headers.get("x-forwarded-proto") || originUrl?.protocol?.replace(":", "");
+    const forwardedHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
+    if (forwardedProto && forwardedHost) {
+      origins.add(`${forwardedProto}://${forwardedHost}`);
+    }
   }
 
   return [...origins];
