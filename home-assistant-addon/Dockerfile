@@ -1,11 +1,11 @@
 ARG BUILD_FROM=node:22-bookworm-slim
+ARG APP_CACHE_BUST=0.1.2
 FROM ${BUILD_FROM} AS source
 WORKDIR /src
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
-# Bust Docker cache when the app repository main branch changes.
-ADD https://api.github.com/repos/montaque22/AI-Email-Labeling-App/commits/main /tmp/emailable-main-commit.json
+RUN echo "$APP_CACHE_BUST" > /tmp/emailable-cache-bust
 RUN git clone --depth=1 https://github.com/montaque22/AI-Email-Labeling-App.git .
 
 FROM source AS deps
