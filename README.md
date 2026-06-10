@@ -192,12 +192,23 @@ BETTER_AUTH_URL=<the same externally reachable app URL>
 
 Home Assistant Ingress serves the frontend behind an internal base path. The frontend includes a runtime helper that rewrites `/api/...` and `/mcp` calls to the correct Ingress path when the app is opened from the sidebar.
 
-The add-on configuration includes descriptions for each field in Home Assistant. The required values are:
+The add-on configuration is grouped into two sections:
+
+- `Basic Configuration`: common values for the app URL and Google OAuth.
+- `Optional / Advanced Configuration`: generated secrets, external database override, Yahoo OAuth, and development mode.
+
+The common values are:
 
 - `APP_URL`: Public URL where OAuth providers can reach Emailable.
-- `BETTER_AUTH_URL`: Usually the same value as `APP_URL`.
-- `BETTER_AUTH_SECRET`: Optional random secret. If left blank, the add-on generates one and stores it in `/data/better_auth_secret`.
 - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: One Google OAuth client used for both app login and Gmail connection.
+
+The optional values are:
+
+- `BETTER_AUTH_URL`: Leave blank to use `APP_URL`.
+- `BETTER_AUTH_SECRET`: If left blank, the add-on generates one and stores it in `/data/better_auth_secret`.
+- `DATABASE_URL`: Leave blank to use the bundled Postgres database.
+- `YAHOO_CLIENT_ID` and `YAHOO_CLIENT_SECRET`: Only needed for Yahoo OAuth.
+- `NODE_ENV`: Use `production` unless developing the add-on.
 
 `DATABASE_URL` is optional for the Home Assistant add-on. If it is left blank, the add-on starts a bundled Postgres database and stores its files under `/data/postgres`. Advanced users can still provide an external Postgres connection string.
 

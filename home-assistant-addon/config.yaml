@@ -21,22 +21,26 @@ ports_description:
 map:
   - addon_config:rw
 options:
-  app_url: ""
-  better_auth_url: ""
-  better_auth_secret: ""
-  database_url: ""
-  google_client_id: ""
-  google_client_secret: ""
-  yahoo_client_id: ""
-  yahoo_client_secret: ""
-  node_env: production
+  basic:
+    app_url: ""
+    google_client_id: ""
+    google_client_secret: ""
+  optional:
+    better_auth_url: ""
+    better_auth_secret: ""
+    database_url: ""
+    yahoo_client_id: ""
+    yahoo_client_secret: ""
+    node_env: production
 schema:
-  app_url: str?
-  better_auth_url: str?
-  better_auth_secret: password?
-  database_url: password?
-  google_client_id: str?
-  google_client_secret: password?
-  yahoo_client_id: str?
-  yahoo_client_secret: password?
-  node_env: list(production|development)
+  basic:
+    app_url: str?
+    google_client_id: str?
+    google_client_secret: password?
+  optional:
+    better_auth_url: str?
+    better_auth_secret: password?
+    database_url: password?
+    yahoo_client_id: str?
+    yahoo_client_secret: password?
+    node_env: list(production|development)

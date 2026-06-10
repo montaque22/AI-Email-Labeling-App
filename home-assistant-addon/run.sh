@@ -13,18 +13,22 @@ BUNDLED_PG_PORT="5432"
 USING_BUNDLED_POSTGRES="false"
 
 read_option() {
-  node -e "const fs=require('fs'); const config=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); const value=config[process.argv[2]]; if (value !== undefined && value !== null && value !== '') process.stdout.write(String(value));" "$CONFIG_PATH" "$1"
+  node -e "const fs=require('fs'); const config=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); const value=process.argv[2].split('.').reduce((current, key) => current && current[key], config); if (value === undefined || value === null || value === '') process.exit(1); process.stdout.write(String(value));" "$CONFIG_PATH" "$1"
 }
 
-export APP_URL="$(read_option app_url || true)"
-export BETTER_AUTH_URL="$(read_option better_auth_url || true)"
-export BETTER_AUTH_SECRET="$(read_option better_auth_secret || true)"
-export DATABASE_URL="$(read_option database_url || true)"
-export GOOGLE_CLIENT_ID="$(read_option google_client_id || true)"
-export GOOGLE_CLIENT_SECRET="$(read_option google_client_secret || true)"
-export YAHOO_CLIENT_ID="$(read_option yahoo_client_id || true)"
-export YAHOO_CLIENT_SECRET="$(read_option yahoo_client_secret || true)"
-export NODE_ENV="$(read_option node_env || true)"
+read_grouped_option() {
+  read_option "$1" || read_option "$2" || true
+}
+
+export APP_URL="$(read_grouped_option basic.app_url app_url)"
+export BETTER_AUTH_URL="$(read_grouped_option optional.better_auth_url better_auth_url)"
+export BETTER_AUTH_SECRET="$(read_grouped_option optional.better_auth_secret better_auth_secret)"
+export DATABASE_URL="$(read_grouped_option optional.database_url database_url)"
+export GOOGLE_CLIENT_ID="$(read_grouped_option basic.google_client_id google_client_id)"
+export GOOGLE_CLIENT_SECRET="$(read_grouped_option basic.google_client_secret google_client_secret)"
+export YAHOO_CLIENT_ID="$(read_grouped_option optional.yahoo_client_id yahoo_client_id)"
+export YAHOO_CLIENT_SECRET="$(read_grouped_option optional.yahoo_client_secret yahoo_client_secret)"
+export NODE_ENV="$(read_grouped_option optional.node_env node_env)"
 export NODE_ENV="${NODE_ENV:-production}"
 export PORT="${PORT:-3000}"
 
