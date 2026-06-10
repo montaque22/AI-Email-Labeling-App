@@ -10,6 +10,8 @@ const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 const staticTrustedOrigins = [
   baseURL,
   process.env.APP_URL,
+  ...getHomeAssistantUiOrigins(baseURL),
+  ...getHomeAssistantUiOrigins(process.env.APP_URL),
   "http://localhost:3000",
   "http://127.0.0.1:3000",
   "http://localhost:5173",
@@ -96,4 +98,14 @@ function safeParseUrl(value) {
   } catch {
     return null;
   }
+}
+
+function getHomeAssistantUiOrigins(value) {
+  const url = safeParseUrl(value);
+  if (!url || url.port !== "3000") {
+    return [];
+  }
+
+  url.port = "8123";
+  return [url.origin];
 }
