@@ -10,8 +10,8 @@ export const EMAIL_ACCOUNT_PROVIDERS = {
     tokenUrl: "https://oauth2.googleapis.com/token",
     userInfoUrl: "https://openidconnect.googleapis.com/v1/userinfo",
     scopes: ["openid", "email", "profile", "https://www.googleapis.com/auth/gmail.modify"],
-    clientId: process.env.GOOGLE_EMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_EMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET,
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     extraAuthParams: { access_type: "offline", prompt: "consent" },
   },
   yahoo: {

@@ -1,0 +1,33 @@
+configuration:
+  app_url:
+    name: App URL
+    description: External URL users and OAuth providers use to reach Emailable. Use the same public URL you register in Google or Yahoo OAuth redirect settings.
+  better_auth_url:
+    name: Better Auth URL
+    description: Public base URL used by Better Auth for login callbacks. In most installs, set this to the same value as App URL.
+  better_auth_secret:
+    name: Better Auth Secret
+    description: Random secret used to protect app login sessions. Generate one with openssl rand -base64 32 and keep it private.
+  database_url:
+    name: Database URL
+    description: Optional PostgreSQL connection string. Leave blank to use the bundled add-on Postgres database stored in /data/postgres. Changing this later switches databases and does not migrate existing data.
+  google_client_id:
+    name: Google Client ID
+    description: Google OAuth client ID used for Google sign-in and Gmail account connection. Create it in Google Cloud Console.
+  google_client_secret:
+    name: Google Client Secret
+    description: Google OAuth client secret paired with the Google Client ID. Keep this value private.
+  yahoo_client_id:
+    name: Yahoo Client ID
+    description: Optional Yahoo OAuth client ID used when connecting Yahoo email accounts.
+  yahoo_client_secret:
+    name: Yahoo Client Secret
+    description: Optional Yahoo OAuth client secret paired with the Yahoo Client ID. Keep this value private.
+  email_account_token_secret:
+    name: Email Account Token Secret
+    description: Random secret used to encrypt connected email account tokens and IMAP app passwords. Generate one with openssl rand -base64 32.
+  node_env:
+    name: Node Environment
+    description: Runtime mode for the Node app. Use production unless you are developing the add-on.
+network:
+  3000/tcp: Optional direct web/API access. Home Assistant Ingress is used for the sidebar.

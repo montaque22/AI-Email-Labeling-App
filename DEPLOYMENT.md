@@ -16,11 +16,6 @@ Required environment variables:
 - `APP_URL`
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
-
-Optional email OAuth overrides:
-
-- `GOOGLE_EMAIL_CLIENT_ID`
-- `GOOGLE_EMAIL_CLIENT_SECRET`
 - `EMAIL_ACCOUNT_TOKEN_SECRET`
 
 ## Docker

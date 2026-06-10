@@ -27,8 +27,6 @@ options:
   database_url: ""
   google_client_id: ""
   google_client_secret: ""
-  google_email_client_id: ""
-  google_email_client_secret: ""
   yahoo_client_id: ""
   yahoo_client_secret: ""
   email_account_token_secret: ""
@@ -37,11 +35,9 @@ schema:
   app_url: str?
   better_auth_url: str?
   better_auth_secret: password
-  database_url: password
+  database_url: password?
   google_client_id: str?
   google_client_secret: password?
-  google_email_client_id: str?
-  google_email_client_secret: password?
   yahoo_client_id: str?
   yahoo_client_secret: password?
   email_account_token_secret: password?

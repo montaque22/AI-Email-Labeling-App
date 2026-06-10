@@ -18,8 +18,13 @@ FROM ${BUILD_FROM}
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends postgresql postgresql-client util-linux \
+  && rm -rf /var/lib/apt/lists/*
 COPY --from=source /src/package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev \
+  && npm install -g auth@latest \
+  && npm cache clean --force
 COPY --from=build /src/dist ./dist
 COPY --from=build /src/server ./server
 COPY --from=build /src/prisma ./prisma

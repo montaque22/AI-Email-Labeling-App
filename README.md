@@ -37,10 +37,6 @@ GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
 
 EMAIL_ACCOUNT_TOKEN_SECRET=replace-with-a-strong-random-secret-for-email-account-tokens
 
-# Optional separate OAuth app for connected Gmail accounts.
-GOOGLE_EMAIL_CLIENT_ID=optional-separate-google-email-oauth-client-id
-GOOGLE_EMAIL_CLIENT_SECRET=optional-separate-google-email-oauth-client-secret
-
 # Optional Yahoo OAuth connection.
 YAHOO_CLIENT_ID=your-yahoo-oauth-client-id
 YAHOO_CLIENT_SECRET=your-yahoo-oauth-client-secret
@@ -196,7 +192,19 @@ BETTER_AUTH_URL=<the same externally reachable app URL>
 
 Home Assistant Ingress serves the frontend behind an internal base path. The frontend includes a runtime helper that rewrites `/api/...` and `/mcp` calls to the correct Ingress path when the app is opened from the sidebar.
 
-Important packaging note: the current add-on Dockerfile is designed to build with the repository root as the Docker build context. If your Home Assistant build flow only uses the `home-assistant-addon/` folder as the Docker context, publish the root Docker image to a registry such as GHCR and point the add-on config at that image.
+The add-on configuration includes descriptions for each field in Home Assistant. The required values are:
+
+- `APP_URL`: Public URL where OAuth providers can reach Emailable.
+- `BETTER_AUTH_URL`: Usually the same value as `APP_URL`.
+- `BETTER_AUTH_SECRET`: Random secret generated with `openssl rand -base64 32`.
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: One Google OAuth client used for both app login and Gmail connection.
+- `EMAIL_ACCOUNT_TOKEN_SECRET`: Random secret generated with `openssl rand -base64 32` to encrypt connected email credentials.
+
+`DATABASE_URL` is optional for the Home Assistant add-on. If it is left blank, the add-on starts a bundled Postgres database and stores its files under `/data/postgres`. Advanced users can still provide an external Postgres connection string.
+
+Changing `DATABASE_URL` after first use switches which database Emailable uses. Existing data is not migrated automatically between the bundled database and an external database.
+
+Yahoo OAuth fields are optional unless you want Yahoo account connection through OAuth. Generic IMAP accounts do not require Yahoo OAuth credentials.
 
 ## HACS Integration and Home Assistant Actions
 
@@ -283,13 +291,6 @@ https://your-production-domain.example/api/email-accounts/callback/gmail
 ```text
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
-```
-
-If you create a separate Google OAuth app for connected Gmail accounts, use:
-
-```text
-GOOGLE_EMAIL_CLIENT_ID
-GOOGLE_EMAIL_CLIENT_SECRET
 ```
 
 Gmail label operations require Gmail API scopes such as `https://www.googleapis.com/auth/gmail.modify`. If Google blocks access for external users, add test users during development or complete the required Google verification process.
