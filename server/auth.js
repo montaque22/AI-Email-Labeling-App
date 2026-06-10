@@ -12,6 +12,8 @@ const staticTrustedOrigins = [
   process.env.APP_URL,
   ...getHomeAssistantUiOrigins(baseURL),
   ...getHomeAssistantUiOrigins(process.env.APP_URL),
+  "http://*:8123",
+  "https://*:8123",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
   "http://localhost:5173",

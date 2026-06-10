@@ -32,6 +32,12 @@ export NODE_ENV="$(read_grouped_option optional.node_env node_env)"
 export NODE_ENV="${NODE_ENV:-production}"
 export PORT="${PORT:-3000}"
 
+derive_home_assistant_origin() {
+  node -e "const value=process.argv[1]; if (!value) process.exit(0); try { const url=new URL(value); if (url.port === '3000') { url.port='8123'; process.stdout.write(url.origin); } } catch {}" "$1"
+}
+
+export BETTER_AUTH_TRUSTED_ORIGINS="$APP_URL,$(derive_home_assistant_origin "$APP_URL"),http://*:8123,https://*:8123"
+
 find_pg_bin() {
   find /usr/lib/postgresql -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1 | sed 's|$|/bin|'
 }
