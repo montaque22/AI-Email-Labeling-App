@@ -124,6 +124,7 @@ type EmailRule = {
   snippet: string;
   confidence: number;
   labelsApplied: string[];
+  labelReasons?: Record<string, string>;
   isPending: boolean;
   reason?: string | null;
   userQuestion?: string | null;
@@ -784,7 +785,7 @@ function LabelsPage() {
   const csvUploadRef = useRef<HTMLInputElement | null>(null);
   const syncedLabelCount = labels.filter((label) => isLabelFullySynced(label, connectedAccountCount)).length;
   const unsyncedLabelCount = labels.length - syncedLabelCount;
-  const deletableLabels = labels.filter((label) => !isSystemLabel(label));
+  const deletableLabels = labels;
   const selectedDeletableIds = selectedIds.filter((id) => deletableLabels.some((label) => label.id === id));
 
   useEffect(() => {
@@ -824,9 +825,7 @@ function LabelsPage() {
 
       setLabels(data.labels ?? []);
       setConnectedAccountCount(accountsResponse.ok ? accountsData.accounts?.length ?? 0 : 0);
-      setSelectedIds((current) =>
-        current.filter((id) => data.labels?.some((label: Label) => label.id === id && !isSystemLabel(label))),
-      );
+      setSelectedIds((current) => current.filter((id) => data.labels?.some((label: Label) => label.id === id)));
     } catch {
       setError("Could not load labels.");
     } finally {
@@ -1009,7 +1008,7 @@ function LabelsPage() {
   }
 
   async function deleteLabels(ids: string[]) {
-    const deletableIds = ids.filter((id) => labels.some((label) => label.id === id && !isSystemLabel(label)));
+    const deletableIds = ids.filter((id) => labels.some((label) => label.id === id));
 
     if (deletableIds.length === 0) {
       return;
@@ -1049,7 +1048,7 @@ function LabelsPage() {
   }
 
   function requestDeleteLabels(ids: string[]) {
-    const deletableIds = ids.filter((id) => labels.some((label) => label.id === id && !isSystemLabel(label)));
+    const deletableIds = ids.filter((id) => labels.some((label) => label.id === id));
 
     if (deletableIds.length === 0) {
       return;
@@ -1059,11 +1058,6 @@ function LabelsPage() {
   }
 
   function toggleSelected(labelId: string) {
-    const label = labels.find((item) => item.id === labelId);
-    if (label && isSystemLabel(label)) {
-      return;
-    }
-
     setSelectedIds((current) =>
       current.includes(labelId) ? current.filter((id) => id !== labelId) : [...current, labelId],
     );
@@ -1397,7 +1391,6 @@ function LabelsPage() {
 	                  const isSelected = selectedIds.includes(label.id);
 	                  const failedSyncs = getFailedSyncs(label);
 	                  const hasFailedSyncs = failedSyncs.length > 0;
-                    const isSystem = isSystemLabel(label);
 
                   return (
                     <div
@@ -1407,9 +1400,7 @@ function LabelsPage() {
 	                      <input
 	                        checked={isSelected}
 	                        className="h-4 w-4"
-                          disabled={isSystem}
 	                        onChange={() => toggleSelected(label.id)}
-                          title={isSystem ? "System labels cannot be deleted" : undefined}
 	                        type="checkbox"
 	                      />
                       {isEditing ? (
@@ -1433,7 +1424,6 @@ function LabelsPage() {
                             <div className="flex gap-2">
                               <input
 	                                className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
-                                  disabled={isSystem}
 	                                maxLength={LABEL_DESCRIPTION_MAX_LENGTH}
 	                                onBlur={() => window.setTimeout(() => setActiveDescriptionInput(null), 0)}
                                 onChange={(event) => setEditDescription(event.target.value)}
@@ -1443,7 +1433,7 @@ function LabelsPage() {
                               />
                               <Button
 	                                aria-label="Insert confidence threshold template"
-	                                disabled={isSystem || !isTemplateButtonEnabled("edit")}
+	                                disabled={!isTemplateButtonEnabled("edit")}
                                 onMouseDown={(event) => event.preventDefault()}
                                 onClick={() => insertConfidenceThresholdTemplate("edit")}
                                 size="icon"
@@ -1480,9 +1470,6 @@ function LabelsPage() {
                         <>
                           <div>
 	                            <p className="text-sm font-medium text-zinc-950">{label.name}</p>
-                              {isSystem ? (
-                                <Badge className="mt-2 border-zinc-200 bg-zinc-50 text-zinc-700">System default</Badge>
-                              ) : null}
 	                            {label.syncs && label.syncs.length > 0 ? (
                               <div className="mt-2 flex flex-wrap gap-1">
                                 {hasFailedSyncs ? (
@@ -1520,10 +1507,10 @@ function LabelsPage() {
                               <Pencil className="h-4 w-4" />
                             </Button>
 	                            <Button
-	                              disabled={isSaving || isSystem}
+	                              disabled={isSaving}
 	                              onClick={() => requestDeleteLabels([label.id])}
 	                              size="icon"
-	                              title={isSystem ? "System labels cannot be deleted" : "Delete label"}
+	                              title="Delete label"
                               type="button"
                               variant="outline"
                             >
@@ -1631,6 +1618,7 @@ function RuleReviewPage({
   const [selectedRule, setSelectedRule] = useState<EmailRule | null>(null);
   const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
+  const [draftLabelReasons, setDraftLabelReasons] = useState<Record<string, string>>({});
   const [recommendedAction, setRecommendedAction] = useState("");
   const [draggingLabel, setDraggingLabel] = useState<string | null>(null);
   const [isLabelDropActive, setIsLabelDropActive] = useState(false);
@@ -1640,10 +1628,12 @@ function RuleReviewPage({
   const [error, setError] = useState<string | null>(null);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const hasLabelChanges = selectedRule ? !sameStringSet(draftLabels, selectedRule.labelsApplied) : false;
+  const hasLabelReasonChanges = selectedRule ? !sameLabelReasons(draftLabelReasons, selectedRule.labelReasons ?? {}, draftLabels) : false;
   const hasRecommendedActionChanges = selectedRule ? recommendedAction !== (selectedRule.recommendedAction ?? "") : false;
-  const hasRuleReviewChanges = hasLabelChanges || hasRecommendedActionChanges;
+  const hasRuleReviewChanges = hasLabelChanges || hasLabelReasonChanges || hasRecommendedActionChanges;
+  const hasMissingLabelReasons = draftLabels.some((label) => !draftLabelReasons[label]?.trim());
   const groupedRules = groupRules(rules, groupBy);
-  const availableLabels = labels.filter((label) => !isSystemLabel(label));
+  const availableLabels = labels;
   const visibleRuleIds = rules.map((rule) => rule.emailId);
   const allVisibleRulesSelected = visibleRuleIds.length > 0 && visibleRuleIds.every((emailId) => selectedRuleIds.includes(emailId));
 
@@ -1725,16 +1715,33 @@ function RuleReviewPage({
   function selectRule(rule: EmailRule | null) {
     setSelectedRule(rule);
     setDraftLabels(rule?.labelsApplied ?? []);
+    setDraftLabelReasons(rule?.labelReasons ?? {});
     setRecommendedAction(rule?.recommendedAction ?? "");
     setError(null);
   }
 
   function addDraftLabel(labelName: string) {
-    setDraftLabels((current) => (current.includes(labelName) ? current : [...current, labelName]));
+    setDraftLabels((current) => {
+      if (current.includes(labelName) || current.length >= 3) {
+        return current;
+      }
+
+      return [...current, labelName];
+    });
+    setDraftLabelReasons((current) => ({ ...current, [labelName]: current[labelName] ?? "" }));
   }
 
   function removeDraftLabel(labelName: string) {
     setDraftLabels((current) => current.filter((label) => label !== labelName));
+    setDraftLabelReasons((current) => {
+      const next = { ...current };
+      delete next[labelName];
+      return next;
+    });
+  }
+
+  function updateDraftLabelReason(labelName: string, reason: string) {
+    setDraftLabelReasons((current) => ({ ...current, [labelName]: reason }));
   }
 
   function toggleRuleSelection(emailId: string) {
@@ -1766,7 +1773,7 @@ function RuleReviewPage({
   }
 
   async function saveRuleReview() {
-    if (!selectedRule || !hasRuleReviewChanges || recommendedAction.length > 200) {
+    if (!selectedRule || !hasRuleReviewChanges || draftLabels.length === 0 || hasMissingLabelReasons || recommendedAction.length > 200) {
       return;
     }
 
@@ -1778,7 +1785,7 @@ function RuleReviewPage({
         method: "PUT",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ labelsApplied: draftLabels, recommendedAction }),
+        body: JSON.stringify({ labelsApplied: draftLabels, labelReasons: pickLabelReasons(draftLabels, draftLabelReasons), recommendedAction }),
       });
       const data = await response.json();
 
@@ -2148,11 +2155,15 @@ function RuleReviewPage({
                         <button
                           className={cn(
                             "w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-left text-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50",
-                            draftLabels.includes(label.name) ? "cursor-not-allowed border-emerald-200 bg-emerald-50 text-emerald-900 hover:border-emerald-200 hover:bg-emerald-50" : "cursor-grab active:cursor-grabbing",
+                            draftLabels.includes(label.name)
+                              ? "cursor-not-allowed border-emerald-200 bg-emerald-50 text-emerald-900 hover:border-emerald-200 hover:bg-emerald-50"
+                              : draftLabels.length >= 3
+                                ? "cursor-not-allowed opacity-60"
+                                : "cursor-grab active:cursor-grabbing",
                             draggingLabel === label.name && "border-blue-300 bg-blue-50 opacity-70",
                           )}
-                          disabled={draftLabels.includes(label.name)}
-                          draggable={!draftLabels.includes(label.name)}
+                          disabled={draftLabels.includes(label.name) || draftLabels.length >= 3}
+                          draggable={!draftLabels.includes(label.name) && draftLabels.length < 3}
                           key={label.id}
                           onClick={() => addDraftLabel(label.name)}
                           onDragEnd={() => {
@@ -2179,7 +2190,10 @@ function RuleReviewPage({
                     </div>
                   </div>
                   <div>
-                    <p className="mb-2 text-xs font-medium uppercase text-zinc-500">Labels applied</p>
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-xs font-medium uppercase text-zinc-500">Labels applied</p>
+                      <span className="text-xs text-zinc-500">{draftLabels.length}/3</span>
+                    </div>
                     <div
                       className={cn(
                         "min-h-72 space-y-2 rounded-md border border-dashed border-zinc-300 p-2 transition-colors",
@@ -2198,7 +2212,9 @@ function RuleReviewPage({
                       }}
                       onDrop={(event) => {
                         event.preventDefault();
-                        addDraftLabel(event.dataTransfer.getData("text/plain"));
+                        if (draftLabels.length < 3) {
+                          addDraftLabel(event.dataTransfer.getData("text/plain"));
+                        }
                         setDraggingLabel(null);
                         setIsLabelDropActive(false);
                       }}
@@ -2207,11 +2223,26 @@ function RuleReviewPage({
                         <p className="p-3 text-sm text-zinc-500">Drop labels here.</p>
                       ) : (
                         draftLabels.map((label) => (
-                          <div className="flex items-center justify-between gap-2 rounded-md bg-zinc-100 px-3 py-2 text-sm" key={label}>
-                            <span>{label}</span>
-                            <button className="cursor-pointer text-zinc-500 hover:text-zinc-950" onClick={() => removeDraftLabel(label)} type="button">
-                              <X className="h-4 w-4" />
-                            </button>
+                          <div className="rounded-md bg-zinc-100 p-3 text-sm" key={label}>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-medium text-zinc-950">{label}</span>
+                              <button className="cursor-pointer text-zinc-500 hover:text-zinc-950" onClick={() => removeDraftLabel(label)} type="button">
+                                <X className="h-4 w-4" />
+                              </button>
+                            </div>
+                            <label className="mt-2 block">
+                              <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">When to use this label</span>
+                              <textarea
+                                className="min-h-20 w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
+                                maxLength={200}
+                                onChange={(event) => updateDraftLabelReason(label, event.target.value)}
+                                placeholder="Explain when the AI should choose this label."
+                                value={draftLabelReasons[label] ?? ""}
+                              />
+                              <span className="mt-1 block text-right text-xs text-zinc-500">
+                                {(draftLabelReasons[label] ?? "").length}/200
+                              </span>
+                            </label>
                           </div>
                         ))
                       )}
@@ -2238,7 +2269,7 @@ function RuleReviewPage({
                     <Trash2 className="h-4 w-4" />
                     Delete
                   </Button>
-                  <Button disabled={isSaving || !hasRuleReviewChanges || recommendedAction.length > 200} onClick={() => void saveRuleReview()} type="button">
+                  <Button disabled={isSaving || !hasRuleReviewChanges || draftLabels.length === 0 || hasMissingLabelReasons || recommendedAction.length > 200} onClick={() => void saveRuleReview()} type="button">
                     <Save className="h-4 w-4" />
                     Save
                   </Button>
@@ -3005,7 +3036,7 @@ function WebhookPage() {
               payload: {
                 emailId: "message-id",
                 accountEmail: "user@example.com",
-                added: ["Invoice", "emailable"],
+                added: ["Invoice"],
                 removed: [],
               },
               timestamp: "2026-06-08T12:00:00.000Z",
@@ -3579,7 +3610,7 @@ function EndpointsPage() {
 	            method="POST"
 	            path="/api/integrations/email-rules"
             title="Add an email rule"
-            notes={["isPending is optional. If omitted, the API sets it to true."]}
+            notes={["isPending is optional. If omitted, the API sets it to true.", "labelsApplied supports 1 to 3 labels. Provide one labelReasons entry for each label."]}
             payload={{
               emailId: "19e394a85255976b",
               threadId: "19e394a85255976b",
@@ -3588,7 +3619,11 @@ function EndpointsPage() {
               subject: "Hello",
               snippet: "world",
               confidence: 1,
-              labelsApplied: ["AI/Low Priority"],
+              labelsApplied: ["AI/Low Priority", "Needs Review"],
+              labelReasons: {
+                "AI/Low Priority": "Use for informational messages that do not require a reply.",
+                "Needs Review": "Use when the message may need human follow-up.",
+              },
               isPending: false,
               reason: "Looks like a test email.",
             }}
@@ -3608,6 +3643,7 @@ function EndpointsPage() {
             payload={{
               confidence: 0.86,
               labelsApplied: ["Needs Review"],
+              labelReasons: { "Needs Review": "Use when the message may need human follow-up." },
               isPending: true,
               userQuestion: "Should this be escalated?",
             }}
@@ -3666,24 +3702,23 @@ function EndpointsPage() {
             method="POST"
             path="/api/integrations/email/labels/add"
             title="Add labels to an email"
+            notes={["Exactly one label can be applied per request. Folder-based accounts move the email to that label's folder."]}
             payload={{
               accountEmail: "user@gmail.com",
               emailId: "188c1f2d7e1a1234",
-              labels: ["Invoice", "Client Ops"],
+              labels: ["Invoice"],
             }}
             response={{
               accountEmail: "user@gmail.com",
               emailId: "188c1f2d7e1a1234",
-              added: [
-                { name: "Invoice", providerLabelId: "Label_123" },
-                { name: "Client Ops", providerLabelId: "Label_456" },
-              ],
+              added: [{ name: "Invoice", providerLabelId: "Label_123" }],
             }}
           />
           <EndpointDoc
             method="POST"
             path="/api/integrations/email/labels/remove"
             title="Remove labels from an email"
+            notes={["Exactly one label can be removed per request."]}
             payload={{
               accountEmail: "user@gmail.com",
               emailId: "188c1f2d7e1a1234",
@@ -3897,8 +3932,9 @@ function McpServerPage() {
             title="Add Labels On Email"
             notes={[
               "Payload matches Add Email Rule except isPending is omitted.",
-              "When confidence is at or above the current threshold, labelsApplied and the system label are added to the email.",
-              "When confidence is below the threshold, only the system label is added and a pending rule is created.",
+              "labelsApplied supports 1 to 3 labels with one labelReasons entry for each label.",
+              "When confidence is at or above the current threshold, the first selected label is applied to the email.",
+              "When confidence is below the threshold, no label is applied and a pending rule is created.",
             ]}
             payload={{
               emailId: "188c1f2d7e1a1234",
@@ -3908,7 +3944,11 @@ function McpServerPage() {
               subject: "Invoice for review",
               snippet: "Please review the attached invoice.",
               confidence: 0.87,
-              labelsApplied: ["Invoice"],
+              labelsApplied: ["Invoice", "Needs Review"],
+              labelReasons: {
+                Invoice: "Use for vendor invoices and payment requests.",
+                "Needs Review": "Use when the message needs human follow-up.",
+              },
             }}
             response={{ action: "pending_rule_created", threshold: 0.9, confidence: 0.87 }}
           />
@@ -4404,10 +4444,6 @@ function getFailedSyncs(label: Label) {
   return (label.syncs ?? []).filter((sync) => sync.syncStatus === "failed");
 }
 
-function isSystemLabel(label: Label) {
-  return Boolean(label.systemKey);
-}
-
 function isLabelFullySynced(label: Label, connectedAccountCount: number) {
   if (connectedAccountCount === 0) {
     return false;
@@ -4429,6 +4465,17 @@ function sameStringSet(left: string[], right: string[]) {
 
   const rightSet = new Set(right);
   return left.every((item) => rightSet.has(item));
+}
+
+function pickLabelReasons(labels: string[], reasons: Record<string, string>) {
+  return labels.reduce<Record<string, string>>((selectedReasons, label) => {
+    selectedReasons[label] = reasons[label]?.trim() ?? "";
+    return selectedReasons;
+  }, {});
+}
+
+function sameLabelReasons(left: Record<string, string>, right: Record<string, string>, labels: string[]) {
+  return labels.every((label) => (left[label] ?? "").trim() === (right[label] ?? "").trim());
 }
 
 function groupRules(rules: EmailRule[], groupBy: RuleGroupBy) {

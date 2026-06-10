@@ -9,7 +9,6 @@ import {
   moveImapMessageToFolders,
 } from "./imap-provider.js";
 import { ensureLabelSyncedToAccount } from "./label-sync.js";
-import { ensureSystemDefaultLabel } from "./labels.js";
 import { getConfidenceThreshold } from "./settings.js";
 import { emitWebhookEvent } from "./webhooks.js";
 
@@ -300,11 +299,50 @@ export function registerIntegrationRoutes(app) {
     const labelsApplied = Array.isArray(req.body?.labelsApplied)
       ? req.body.labelsApplied.filter((label) => typeof label === "string").map((label) => label.trim()).filter(Boolean)
       : null;
+    const labelReasonsInput = parseLabelReasons(req.body?.labelReasons ?? {});
     const recommendedAction =
       typeof req.body?.recommendedAction === "string" ? req.body.recommendedAction.trim() : "";
 
     if (!labelsApplied) {
       res.status(400).json({ error: "labelsApplied must be an array of strings" });
+      return;
+    }
+
+    if (labelsApplied.length > 3) {
+      res.status(400).json({ error: "labelsApplied can include at most 3 labels" });
+      return;
+    }
+
+    if (!labelReasonsInput.ok) {
+      res.status(400).json({ error: labelReasonsInput.error });
+      return;
+    }
+
+    const uniqueLabelsApplied = [...new Set(labelsApplied)];
+    if (uniqueLabelsApplied.length === 0) {
+      res.status(400).json({ error: "labelsApplied must include at least one label" });
+      return;
+    }
+
+    const resolvedLabels = await resolveAppLabelsByName(req.user.id, uniqueLabelsApplied);
+    if (!resolvedLabels.ok) {
+      res.status(400).json({ error: resolvedLabels.error, labels: resolvedLabels.labels });
+      return;
+    }
+
+    const unexpectedReasons = Object.keys(labelReasonsInput.labelReasons).filter(
+      (label) => !resolvedLabels.labels.some((selectedLabel) => selectedLabel.toLowerCase() === label.toLowerCase()),
+    );
+    if (unexpectedReasons.length > 0) {
+      res.status(400).json({ error: "labelReasons can only include labels listed in labelsApplied", labels: unexpectedReasons });
+      return;
+    }
+
+    const missingReasons = resolvedLabels.labels.filter(
+      (label) => !Object.entries(labelReasonsInput.labelReasons).some(([reasonLabel, reason]) => reasonLabel.toLowerCase() === label.toLowerCase() && reason),
+    );
+    if (missingReasons.length > 0) {
+      res.status(400).json({ error: "A reason is required for each selected label", labels: missingReasons });
       return;
     }
 
@@ -320,12 +358,12 @@ export function registerIntegrationRoutes(app) {
           set labels_applied = $3,
               is_pending = false,
               confidence = 1,
-              metadata = (metadata - 'reason' - 'userQuestion') || jsonb_build_object('recommendedAction', $4::text),
+              metadata = (metadata - 'reason' - 'userQuestion') || jsonb_build_object('recommendedAction', $4::text, 'labelReasons', $5::jsonb),
               updated_at = now()
           where user_id = $1 and email_id = $2
           returning ${EMAIL_RULE_SELECT}
         `,
-        [req.user.id, req.params.emailId, [...new Set(labelsApplied)], recommendedAction],
+        [req.user.id, req.params.emailId, resolvedLabels.labels, recommendedAction, JSON.stringify(normalizeLabelReasons(resolvedLabels.labels, labelReasonsInput.labelReasons))],
       );
 
       if (!result.rows[0]) {
@@ -337,7 +375,8 @@ export function registerIntegrationRoutes(app) {
       await emitWebhookEvent(req.user.id, "email_rule.modified", {
         rule,
         changes: {
-          labelsApplied,
+          labelsApplied: resolvedLabels.labels,
+          labelReasons: normalizeLabelReasons(resolvedLabels.labels, labelReasonsInput.labelReasons),
           recommendedAction,
           isPending: false,
           confidence: 1,
@@ -619,8 +658,7 @@ async function modifyMessageLabels(req, res, action) {
       return;
     }
 
-    const requestedLabels = action === "add" ? await withSystemDefaultLabel(req.integrationUser.id, input.labels) : input.labels;
-    const labels = await resolveProviderLabels(req.integrationUser.id, account.id, requestedLabels);
+    const labels = await resolveProviderLabels(req.integrationUser.id, account.id, input.labels);
     if (!labels.ok) {
       res.status(labels.status).json({ error: labels.error, labels: labels.labels });
       return;
@@ -670,17 +708,6 @@ async function modifyMessageLabels(req, res, action) {
   }
 }
 
-export async function withSystemDefaultLabel(userId, labelNames) {
-  const systemLabel = await ensureSystemDefaultLabel(userId);
-  const uniqueLabels = [...labelNames];
-
-  if (!uniqueLabels.some((label) => label.toLowerCase() === systemLabel.name.toLowerCase())) {
-    uniqueLabels.push(systemLabel.name);
-  }
-
-  return uniqueLabels;
-}
-
 async function evaluateAndApplyLabels(userId, rule) {
   const threshold = await getConfidenceThreshold(userId);
   const target = await findConnectedMessageById(userId, rule.emailId, rule.subject);
@@ -698,18 +725,17 @@ async function evaluateAndApplyLabels(userId, rule) {
   }
 
   const shouldAutoLabel = rule.confidence >= threshold;
-  const systemLabel = await ensureSystemDefaultLabel(userId);
-  const requestedLabels = shouldAutoLabel ? await withSystemDefaultLabel(userId, rule.labelsApplied) : [systemLabel.name];
+  const requestedLabels = shouldAutoLabel ? [rule.labelsApplied[0]].filter(Boolean) : [];
   const labels = await resolveProviderLabels(userId, target.account.id, requestedLabels);
 
-  if (!labels.ok) {
+  if (shouldAutoLabel && !labels.ok) {
     const error = new Error(labels.error);
     error.status = labels.status;
     error.labels = labels.labels;
     throw error;
   }
 
-  if (target.account.provider === "gmail") {
+  if (shouldAutoLabel && target.account.provider === "gmail") {
     const accessToken = await getValidEmailAccountAccessToken(target.account);
     await modifyGmailMessageLabels({
       accessToken,
@@ -717,7 +743,7 @@ async function evaluateAndApplyLabels(userId, rule) {
       addLabelIds: labels.labels.map((label) => label.providerLabelId),
       removeLabelIds: [],
     });
-  } else {
+  } else if (shouldAutoLabel) {
     await moveImapMessageToFolders({
       account: target.account,
       emailId: rule.emailId,
@@ -726,19 +752,21 @@ async function evaluateAndApplyLabels(userId, rule) {
     });
   }
 
-  await recordMetricEvent(userId, "email_labeled", {
-    emailId: rule.emailId,
-    accountEmail: target.account.email,
-    metadata: { provider: target.account.provider, labels: labels.labels.map((label) => label.name), source: "integration" },
-  });
-  await emitWebhookEvent(userId, "email.labels_updated", {
-    emailId: rule.emailId,
-    accountEmail: target.account.email,
-    added: labels.labels.map((label) => label.name),
-    removed: [],
-    labels: labels.labels,
-    source: "integration",
-  });
+  if (shouldAutoLabel) {
+    await recordMetricEvent(userId, "email_labeled", {
+      emailId: rule.emailId,
+      accountEmail: target.account.email,
+      metadata: { provider: target.account.provider, labels: labels.labels.map((label) => label.name), source: "integration" },
+    });
+    await emitWebhookEvent(userId, "email.labels_updated", {
+      emailId: rule.emailId,
+      accountEmail: target.account.email,
+      added: labels.labels.map((label) => label.name),
+      removed: [],
+      labels: labels.labels,
+      source: "integration",
+    });
+  }
 
   if (shouldAutoLabel) {
     return {
@@ -758,7 +786,6 @@ async function evaluateAndApplyLabels(userId, rule) {
     metadata: {
       source: "integration",
       threshold,
-      systemLabelApplied: true,
       accountEmail: target.account.email,
     },
   });
@@ -873,10 +900,55 @@ function parseLabelMutationInput(body) {
   }
 
   if (labels.length === 0) {
-    return { ok: false, error: "labels must include at least one label name" };
+    return { ok: false, error: "labels must include exactly one label name" };
   }
 
-  return { ok: true, accountEmail, emailId, labels: [...new Set(labels)] };
+  const uniqueLabels = [...new Set(labels)];
+  if (uniqueLabels.length !== 1) {
+    return { ok: false, error: "labels must include exactly one label name" };
+  }
+
+  return { ok: true, accountEmail, emailId, labels: uniqueLabels };
+}
+
+function parseLabelReasons(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "labelReasons must be an object keyed by label name" };
+  }
+
+  const labelReasons = {};
+
+  for (const [label, reason] of Object.entries(value)) {
+    const labelName = typeof label === "string" ? label.trim() : "";
+    const reasonText = typeof reason === "string" ? reason.trim() : "";
+
+    if (!labelName) {
+      return { ok: false, error: "labelReasons cannot include an empty label name" };
+    }
+
+    if (!reasonText) {
+      return { ok: false, error: `Reason is required for ${labelName}` };
+    }
+
+    if (reasonText.length > 200) {
+      return { ok: false, error: `Reason for ${labelName} must be 200 characters or less` };
+    }
+
+    labelReasons[labelName] = reasonText;
+  }
+
+  return { ok: true, labelReasons };
+}
+
+function normalizeLabelReasons(labels, labelReasons) {
+  const normalizedReasons = {};
+
+  for (const label of labels) {
+    const entry = Object.entries(labelReasons).find(([reasonLabel]) => reasonLabel.toLowerCase() === label.toLowerCase());
+    normalizedReasons[label] = typeof entry?.[1] === "string" ? entry[1].trim() : "";
+  }
+
+  return normalizedReasons;
 }
 
 export function parseDraftInput(body) {
@@ -974,12 +1046,52 @@ export async function parseEmailRuleInput(userId, body, { partial }) {
       return { ok: false, error: "labelsApplied must be an array of strings" };
     }
 
-    const labels = await resolveAppLabelsByName(userId, body.labelsApplied);
+    const uniqueLabelInputs = [...new Map(body.labelsApplied.map((label) => [label.trim().toLowerCase(), label.trim()])).values()].filter(Boolean);
+
+    if (uniqueLabelInputs.length === 0) {
+      return { ok: false, error: "labelsApplied must include at least one label" };
+    }
+
+    if (uniqueLabelInputs.length > 3) {
+      return { ok: false, error: "labelsApplied can include at most 3 labels" };
+    }
+
+    const labels = await resolveAppLabelsByName(userId, uniqueLabelInputs);
     if (!labels.ok) {
       return labels;
     }
 
     rule.labelsApplied = labels.labels;
+  }
+
+  if ("labelReasons" in body) {
+    const labelReasons = parseLabelReasons(body.labelReasons);
+    if (!labelReasons.ok) {
+      return labelReasons;
+    }
+
+    const selectedLabels = rule.labelsApplied ?? [];
+    const unexpectedReasons = Object.keys(labelReasons.labelReasons).filter(
+      (label) => !selectedLabels.some((selectedLabel) => selectedLabel.toLowerCase() === label.toLowerCase()),
+    );
+    if (unexpectedReasons.length > 0) {
+      return { ok: false, error: "labelReasons can only include labels listed in labelsApplied", labels: unexpectedReasons };
+    }
+
+    rule.metadata = {
+      ...(rule.metadata ?? {}),
+      labelReasons: normalizeLabelReasons(selectedLabels, labelReasons.labelReasons),
+    };
+  }
+
+  if ("labelsApplied" in body && rule.labelsApplied?.length > 0) {
+    const labelReasons = rule.metadata?.labelReasons ?? {};
+    const missingReasons = rule.labelsApplied.filter(
+      (label) => !Object.entries(labelReasons).some(([reasonLabel, reason]) => reasonLabel.toLowerCase() === label.toLowerCase() && reason),
+    );
+    if (missingReasons.length > 0) {
+      return { ok: false, error: "A reason is required for each label in labelsApplied", labels: missingReasons };
+    }
   }
 
   if ("isPending" in body) {

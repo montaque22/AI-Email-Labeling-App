@@ -20,9 +20,7 @@ import {
   recordMetricEvent,
   resolveProviderLabels,
   upsertEmailRule,
-  withSystemDefaultLabel,
 } from "./integrations.js";
-import { ensureSystemDefaultLabel } from "./labels.js";
 import { getConfidenceThreshold } from "./settings.js";
 import { emitWebhookEvent } from "./webhooks.js";
 
@@ -175,7 +173,7 @@ function createMcpServer(userId) {
     {
       title: "Add Labels On Email",
       description:
-        "Apply labels when confidence meets the current threshold. Otherwise apply only the system label and create a pending email rule.",
+        "Apply one selected label when confidence meets the current threshold. Otherwise create a pending email rule.",
       inputSchema: {
         emailId: z.string().min(1),
         threadId: z.string().min(1),
@@ -184,7 +182,8 @@ function createMcpServer(userId) {
         subject: z.string().min(1),
         snippet: z.string().min(1),
         confidence: z.number(),
-        labelsApplied: z.array(z.string().min(1)),
+        labelsApplied: z.array(z.string().min(1)).max(3),
+        labelReasons: z.record(z.string(), z.string()),
       },
     },
     async (input) => {
@@ -250,19 +249,19 @@ async function addLabelsOnEmailTool(userId, payload) {
   const threshold = await getConfidenceThreshold(userId);
   const target = await findConnectedMessageById(userId, input.rule.emailId, input.rule.subject);
   if (!target) {
-    throw new Error("Email was not found in connected Gmail accounts");
+    throw new Error("Email was not found in connected email accounts");
   }
 
   const shouldAutoLabel = input.rule.confidence >= threshold;
-  const requestedLabels = shouldAutoLabel ? await withSystemDefaultLabel(userId, input.rule.labelsApplied) : [await getSystemLabelName(userId)];
+  const requestedLabels = shouldAutoLabel ? [input.rule.labelsApplied[0]].filter(Boolean) : [];
   const labels = await resolveProviderLabels(userId, target.account.id, requestedLabels);
-  if (!labels.ok) {
+  if (shouldAutoLabel && !labels.ok) {
     const error = new Error(labels.error);
     error.details = labels.labels;
     throw error;
   }
 
-  if (target.account.provider === "gmail") {
+  if (shouldAutoLabel && target.account.provider === "gmail") {
     const accessToken = await getValidEmailAccountAccessToken(target.account);
     await modifyGmailMessageLabels({
       accessToken,
@@ -270,34 +269,36 @@ async function addLabelsOnEmailTool(userId, payload) {
       addLabelIds: labels.labels.map((label) => label.providerLabelId),
       removeLabelIds: [],
     });
-  } else if (target.account.provider === "imap") {
+  } else if (shouldAutoLabel && target.account.provider === "imap") {
     await moveImapMessageToFolders({
       account: target.account,
       emailId: input.rule.emailId,
       addFolders: labels.labels.map((label) => label.providerLabelId),
       removeFolders: [],
     });
-  } else {
+  } else if (shouldAutoLabel) {
     throw new Error(`${target.account.provider} message labels are not implemented yet`);
   }
 
-  await recordMetricEvent(userId, "email_labeled", {
-    emailId: input.rule.emailId,
-    accountEmail: target.account.email,
-    metadata: {
-      provider: target.account.provider,
-      labels: labels.labels.map((label) => label.name),
+  if (shouldAutoLabel) {
+    await recordMetricEvent(userId, "email_labeled", {
+      emailId: input.rule.emailId,
+      accountEmail: target.account.email,
+      metadata: {
+        provider: target.account.provider,
+        labels: labels.labels.map((label) => label.name),
+        source: "mcp",
+      },
+    });
+    await emitWebhookEvent(userId, "email.labels_updated", {
+      emailId: input.rule.emailId,
+      accountEmail: target.account.email,
+      added: labels.labels.map((label) => label.name),
+      removed: [],
+      labels: labels.labels,
       source: "mcp",
-    },
-  });
-  await emitWebhookEvent(userId, "email.labels_updated", {
-    emailId: input.rule.emailId,
-    accountEmail: target.account.email,
-    added: labels.labels.map((label) => label.name),
-    removed: [],
-    labels: labels.labels,
-    source: "mcp",
-  });
+    });
+  }
 
   if (shouldAutoLabel) {
     return {
@@ -317,7 +318,6 @@ async function addLabelsOnEmailTool(userId, payload) {
     metadata: {
       source: "mcp",
       threshold,
-      systemLabelApplied: true,
       accountEmail: target.account.email,
     },
   });
@@ -447,11 +447,6 @@ function getHeaderValue(message, headerName) {
 
 function normalizeSubject(subject) {
   return String(subject ?? "").trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-async function getSystemLabelName(userId) {
-  const label = await ensureSystemDefaultLabel(userId);
-  return label.name;
 }
 
 async function authenticateMcpRequest(req) {
