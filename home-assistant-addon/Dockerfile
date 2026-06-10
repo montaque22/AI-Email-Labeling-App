@@ -4,6 +4,8 @@ WORKDIR /src
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
+# Bust Docker cache when the app repository main branch changes.
+ADD https://api.github.com/repos/montaque22/AI-Email-Labeling-App/commits/main /tmp/emailable-main-commit.json
 RUN git clone --depth=1 https://github.com/montaque22/AI-Email-Labeling-App.git .
 
 FROM source AS deps
