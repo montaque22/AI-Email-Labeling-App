@@ -29,16 +29,14 @@ options:
   google_client_secret: ""
   yahoo_client_id: ""
   yahoo_client_secret: ""
-  email_account_token_secret: ""
   node_env: production
 schema:
   app_url: str?
   better_auth_url: str?
-  better_auth_secret: password
+  better_auth_secret: password?
   database_url: password?
   google_client_id: str?
   google_client_secret: password?
   yahoo_client_id: str?
   yahoo_client_secret: password?
-  email_account_token_secret: password?
   node_env: list(production|development)

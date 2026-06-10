@@ -196,9 +196,8 @@ The add-on configuration includes descriptions for each field in Home Assistant.
 
 - `APP_URL`: Public URL where OAuth providers can reach Emailable.
 - `BETTER_AUTH_URL`: Usually the same value as `APP_URL`.
-- `BETTER_AUTH_SECRET`: Random secret generated with `openssl rand -base64 32`.
+- `BETTER_AUTH_SECRET`: Optional random secret. If left blank, the add-on generates one and stores it in `/data/better_auth_secret`.
 - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: One Google OAuth client used for both app login and Gmail connection.
-- `EMAIL_ACCOUNT_TOKEN_SECRET`: Random secret generated with `openssl rand -base64 32` to encrypt connected email credentials.
 
 `DATABASE_URL` is optional for the Home Assistant add-on. If it is left blank, the add-on starts a bundled Postgres database and stores its files under `/data/postgres`. Advanced users can still provide an external Postgres connection string.
 

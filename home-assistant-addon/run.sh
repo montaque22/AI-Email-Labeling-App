@@ -2,6 +2,7 @@
 set -eu
 
 CONFIG_PATH="/data/options.json"
+BETTER_AUTH_SECRET_FILE="/data/better_auth_secret"
 BUNDLED_PGDATA="/data/postgres"
 BUNDLED_PG_PASSWORD_FILE="/data/postgres_password"
 BUNDLED_PG_READY_FILE="/data/postgres_ready"
@@ -23,7 +24,6 @@ export GOOGLE_CLIENT_ID="$(read_option google_client_id || true)"
 export GOOGLE_CLIENT_SECRET="$(read_option google_client_secret || true)"
 export YAHOO_CLIENT_ID="$(read_option yahoo_client_id || true)"
 export YAHOO_CLIENT_SECRET="$(read_option yahoo_client_secret || true)"
-export EMAIL_ACCOUNT_TOKEN_SECRET="$(read_option email_account_token_secret || true)"
 export NODE_ENV="$(read_option node_env || true)"
 export NODE_ENV="${NODE_ENV:-production}"
 export PORT="${PORT:-3000}"
@@ -34,6 +34,19 @@ find_pg_bin() {
 
 generate_secret() {
   node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64url'))"
+}
+
+configure_app_secrets() {
+  if [ -z "${BETTER_AUTH_SECRET:-}" ]; then
+    if [ ! -f "$BETTER_AUTH_SECRET_FILE" ]; then
+      generate_secret > "$BETTER_AUTH_SECRET_FILE"
+      chmod 600 "$BETTER_AUTH_SECRET_FILE"
+    fi
+
+    export BETTER_AUTH_SECRET="$(cat "$BETTER_AUTH_SECRET_FILE")"
+  fi
+
+  export EMAIL_ACCOUNT_TOKEN_SECRET="$BETTER_AUTH_SECRET"
 }
 
 start_bundled_postgres() {
@@ -116,6 +129,7 @@ run_bundled_database_migrations() {
 
 trap stop_bundled_postgres EXIT INT TERM
 
+configure_app_secrets
 start_bundled_postgres
 run_bundled_database_migrations
 
