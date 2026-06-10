@@ -7,6 +7,14 @@ const isProduction = process.env.NODE_ENV === "production";
 const authSecret = process.env.BETTER_AUTH_SECRET || (isProduction ? undefined : "local-dev-better-auth-secret");
 const googleClientId = process.env.GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+const staticTrustedOrigins = [
+  baseURL,
+  process.env.APP_URL,
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+].filter(Boolean);
 
 if (!dbPool) {
   console.warn("Better Auth is starting without DATABASE_URL. Auth routes will fail until the database is configured.");
@@ -22,13 +30,7 @@ export const auth = betterAuth({
   database: dbPool,
   secret: authSecret,
   baseURL,
-  trustedOrigins: [
-    baseURL,
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-  ],
+  trustedOrigins: getTrustedOrigins,
   emailAndPassword: {
     enabled: true,
   },
@@ -44,3 +46,39 @@ export const auth = betterAuth({
       }
     : {},
 });
+
+async function getTrustedOrigins(request) {
+  return [...staticTrustedOrigins, ...getHomeAssistantIngressOrigins(request)];
+}
+
+function getHomeAssistantIngressOrigins(request) {
+  if (!request) {
+    return [];
+  }
+
+  const origins = new Set();
+  const requestUrl = safeParseUrl(request.url);
+
+  if (requestUrl?.pathname.includes("/api/hassio_ingress/")) {
+    origins.add(requestUrl.origin);
+  }
+
+  const refererUrl = safeParseUrl(request.headers.get("referer"));
+  if (refererUrl?.pathname.includes("/api/hassio_ingress/")) {
+    origins.add(refererUrl.origin);
+  }
+
+  return [...origins];
+}
+
+function safeParseUrl(value) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}

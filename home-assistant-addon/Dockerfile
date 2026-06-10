@@ -1,5 +1,5 @@
 ARG BUILD_FROM=node:22-bookworm-slim
-ARG APP_CACHE_BUST=0.1.2
+ARG APP_CACHE_BUST=0.1.3
 FROM ${BUILD_FROM} AS source
 WORKDIR /src
 RUN apt-get update \
