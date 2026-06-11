@@ -163,6 +163,7 @@ type MetricsData = {
 type OverviewData = {
   todayLabeled: number;
   syncedLabels: number;
+  connectedAccounts: number;
   pendingRules: number;
   nonPendingRules: number;
   recentRules: EmailRule[];
@@ -702,11 +703,13 @@ function OverviewPage({
   return (
     <div className="space-y-6">
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
+          actionLabel="View metrics"
           icon={MailCheck}
-          label="Number of emails labeled today"
+          label="Emails processed today"
           loading={isLoading}
+          onAction={() => onNavigate("metrics")}
           value={formatNumber(overview?.todayLabeled ?? 0)}
         />
         <MetricCard
@@ -716,6 +719,14 @@ function OverviewPage({
           loading={isLoading}
           onAction={() => onNavigate("labels")}
           value={formatNumber(overview?.syncedLabels ?? 0)}
+        />
+        <MetricCard
+          actionLabel="View accounts"
+          icon={Inbox}
+          label="Connected Accounts"
+          loading={isLoading}
+          onAction={() => onNavigate("email-accounts")}
+          value={formatNumber(overview?.connectedAccounts ?? 0)}
         />
         <MetricCard
           actionLabel={pendingRules > 0 ? `Review ${formatNumber(pendingRules)} pending rules` : undefined}
@@ -4305,17 +4316,22 @@ function MetricCard({
   value: string;
 }) {
   return (
-    <Card>
+    <Card className="min-h-36">
       <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
         <CardDescription>{label}</CardDescription>
         <Icon className="h-4 w-4 text-zinc-500" />
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="flex min-h-20 flex-col justify-between gap-4">
         <p className="text-2xl font-semibold">{loading ? "..." : value}</p>
         {actionLabel && onAction ? (
-          <Button onClick={onAction} size="sm" type="button" variant="outline">
-            {actionLabel}
-          </Button>
+          <button
+            className="group inline-flex cursor-pointer items-center gap-1 self-end text-sm font-semibold text-blue-700 underline decoration-blue-200 underline-offset-4 transition-colors hover:text-blue-900 hover:decoration-blue-700"
+            onClick={onAction}
+            type="button"
+          >
+            <span>{actionLabel}</span>
+            <ChevronRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+          </button>
         ) : null}
       </CardContent>
     </Card>

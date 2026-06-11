@@ -220,9 +220,10 @@ export function registerIntegrationRoutes(app) {
 
   app.get("/api/overview", requireSession, async (req, res) => {
     try {
-      const [todayLabeled, syncedLabels, ruleCounts, recentRules] = await Promise.all([
+      const [todayLabeled, syncedLabels, connectedAccounts, ruleCounts, recentRules] = await Promise.all([
         getMetricEventCountForToday(req.user.id, "email_labeled"),
         getSyncedLabelCount(req.user.id),
+        getConnectedEmailAccountCount(req.user.id),
         getRuleStatusCounts(req.user.id),
         getRecentRules(req.user.id, 7),
       ]);
@@ -230,6 +231,7 @@ export function registerIntegrationRoutes(app) {
       res.json({
         todayLabeled,
         syncedLabels,
+        connectedAccounts,
         pendingRules: ruleCounts.pending,
         nonPendingRules: ruleCounts.nonPending,
         recentRules,
@@ -1583,6 +1585,11 @@ async function getSyncedLabelCount(userId) {
   );
 
   return result.rows[0]?.count ?? 0;
+}
+
+async function getConnectedEmailAccountCount(userId) {
+  const accounts = await getConnectedEmailAccounts(userId);
+  return accounts.length;
 }
 
 async function getMetricEventCountForToday(userId, eventType) {
