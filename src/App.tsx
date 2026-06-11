@@ -126,12 +126,20 @@ type EmailRule = {
   labelsApplied: string[];
   labelReasons?: Record<string, string>;
   isPending: boolean;
-  reason?: string | null;
-  userQuestion?: string | null;
-  ruleSuggestion?: string | null;
-  recommendedAction?: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+type RuleEmailSearchResult = {
+  emailId: string;
+  threadId: string;
+  accountEmail: string;
+  provider: string;
+  fromEmail: string;
+  fromName: string;
+  to: string;
+  subject: string;
+  snippet: string;
 };
 
 type RulePendingFilter = "all" | "pending" | "not-pending";
@@ -742,7 +750,7 @@ function OverviewPage({
                   <p className="mt-1 truncate text-sm text-zinc-500">{rule.fromEmail}</p>
                   <p className="mt-1 truncate text-xs text-zinc-500">Account: {rule.accountEmail || "Unknown account"}</p>
                   <p className="mt-1 line-clamp-2 text-sm text-zinc-600">
-                    {rule.recommendedAction || rule.reason || "No recommendation provided."}
+                    {formatRuleLabelReasons(rule)}
                   </p>
                 </div>
                 <Badge className={rule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
@@ -1607,6 +1615,7 @@ function RuleReviewPage({
 }) {
   const [rules, setRules] = useState<EmailRule[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
+  const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.9);
   const [pageSize, setPageSize] = useState(10);
   const [page, setPage] = useState(1);
@@ -1619,19 +1628,27 @@ function RuleReviewPage({
   const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
   const [draftLabelReasons, setDraftLabelReasons] = useState<Record<string, string>>({});
-  const [recommendedAction, setRecommendedAction] = useState("");
   const [draggingLabel, setDraggingLabel] = useState<string | null>(null);
   const [isLabelDropActive, setIsLabelDropActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [addRuleStep, setAddRuleStep] = useState<"search" | "review" | null>(null);
+  const [addRuleSearchQuery, setAddRuleSearchQuery] = useState("");
+  const [addRuleAccountEmail, setAddRuleAccountEmail] = useState("");
+  const [addRuleResults, setAddRuleResults] = useState<RuleEmailSearchResult[]>([]);
+  const [isSearchingEmails, setIsSearchingEmails] = useState(false);
+  const [addRuleError, setAddRuleError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const hasLabelChanges = selectedRule ? !sameStringSet(draftLabels, selectedRule.labelsApplied) : false;
   const hasLabelReasonChanges = selectedRule ? !sameLabelReasons(draftLabelReasons, selectedRule.labelReasons ?? {}, draftLabels) : false;
-  const hasRecommendedActionChanges = selectedRule ? recommendedAction !== (selectedRule.recommendedAction ?? "") : false;
-  const hasRuleReviewChanges = hasLabelChanges || hasLabelReasonChanges || hasRecommendedActionChanges;
-  const hasMissingLabelReasons = draftLabels.some((label) => !draftLabelReasons[label]?.trim());
+  const hasRuleReviewChanges = hasLabelChanges || hasLabelReasonChanges;
+  const selectedReviewReason = draftLabels.length === 1 ? (draftLabelReasons[draftLabels[0]] ?? "").trim() : "";
+  const canReviewRule = Boolean(selectedRule && draftLabels.length === 1 && (selectedRule.isPending || hasRuleReviewChanges));
+  const reviewedButtonClass = selectedReviewReason
+    ? "bg-emerald-600 text-white hover:bg-emerald-700"
+    : "bg-amber-500 text-white hover:bg-amber-600";
   const groupedRules = groupRules(rules, groupBy);
   const availableLabels = labels;
   const visibleRuleIds = rules.map((rule) => rule.emailId);
@@ -1655,27 +1672,29 @@ function RuleReviewPage({
   }, [initialEmailId]);
 
   useEffect(() => {
-    if (selectedRule && !rules.some((rule) => rule.emailId === selectedRule.emailId)) {
+    if (selectedRule && !addRuleStep && !rules.some((rule) => rule.emailId === selectedRule.emailId)) {
       selectRule(null);
     }
-  }, [rules, selectedRule]);
+  }, [rules, selectedRule, addRuleStep]);
 
   async function loadRuleReviewData() {
     setIsLoading(true);
     setError(null);
 
     try {
-      const [rulesResponse, labelsResponse, thresholdResponse] = await Promise.all([
+      const [rulesResponse, labelsResponse, thresholdResponse, accountsResponse] = await Promise.all([
         fetch(
           `/api/email-rules?page=${page}&pageSize=${pageSize}&status=${pendingFilter}&search=${encodeURIComponent(search)}`,
           { credentials: "include" },
         ),
         fetch("/api/labels", { credentials: "include" }),
         fetch("/api/settings/confidence-threshold", { credentials: "include" }),
+        fetch("/api/email-accounts", { credentials: "include" }),
       ]);
       const rulesData = await rulesResponse.json();
       const labelsData = await labelsResponse.json();
       const thresholdData = await thresholdResponse.json();
+      const accountsData = await accountsResponse.json();
 
       if (!rulesResponse.ok) {
         setError(rulesData.error ?? "Could not load email rules.");
@@ -1685,6 +1704,7 @@ function RuleReviewPage({
       setRules(rulesData.rules ?? []);
       setTotal(rulesData.total ?? 0);
       setLabels(labelsData.labels ?? []);
+      setEmailAccounts(accountsData.accounts ?? []);
       setConfidenceThreshold(Number(thresholdData.threshold ?? 0.9));
       setSelectedRuleIds((current) => current.filter((emailId) => rulesData.rules?.some((rule: EmailRule) => rule.emailId === emailId)));
     } catch {
@@ -1716,18 +1736,11 @@ function RuleReviewPage({
     setSelectedRule(rule);
     setDraftLabels(rule?.labelsApplied ?? []);
     setDraftLabelReasons(rule?.labelReasons ?? {});
-    setRecommendedAction(rule?.recommendedAction ?? "");
     setError(null);
   }
 
   function addDraftLabel(labelName: string) {
-    setDraftLabels((current) => {
-      if (current.includes(labelName) || current.length >= 3) {
-        return current;
-      }
-
-      return [...current, labelName];
-    });
+    setDraftLabels([labelName]);
     setDraftLabelReasons((current) => ({ ...current, [labelName]: current[labelName] ?? "" }));
   }
 
@@ -1772,8 +1785,87 @@ function RuleReviewPage({
     setPage(1);
   }
 
+  function openAddRuleModal() {
+    setAddRuleStep("search");
+    setAddRuleError(null);
+    setError(null);
+    selectRule(null);
+  }
+
+  function closeAddRuleModal() {
+    setAddRuleStep(null);
+    setAddRuleError(null);
+    setIsSearchingEmails(false);
+    selectRule(null);
+  }
+
+  function goBackToAddRuleSearch() {
+    setAddRuleStep("search");
+    setError(null);
+    selectRule(null);
+  }
+
+  async function searchEmailsForRule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!addRuleSearchQuery.trim() && !addRuleAccountEmail) {
+      setAddRuleError("Enter a subject search or choose an account.");
+      return;
+    }
+
+    setIsSearchingEmails(true);
+    setAddRuleError(null);
+
+    try {
+      const response = await fetch("/api/email-rules/email-search", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: addRuleSearchQuery, accountEmail: addRuleAccountEmail }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setAddRuleError(data.error ?? "Email search failed.");
+        return;
+      }
+
+      setAddRuleResults(data.emails ?? []);
+      if ((data.emails ?? []).length === 0) {
+        setAddRuleError("No emails matched that search.");
+      }
+    } catch {
+      setAddRuleError("Email search failed.");
+    } finally {
+      setIsSearchingEmails(false);
+    }
+  }
+
+  function selectEmailForNewRule(email: RuleEmailSearchResult) {
+    const now = new Date().toISOString();
+    const newRule: EmailRule = {
+      id: `new-${email.accountEmail}-${email.emailId}`,
+      emailId: email.emailId,
+      threadId: email.threadId || email.emailId,
+      accountEmail: email.accountEmail,
+      fromEmail: email.fromEmail,
+      fromName: email.fromName || email.fromEmail,
+      subject: email.subject || "(no subject)",
+      snippet: email.snippet || "",
+      confidence: 0,
+      labelsApplied: [],
+      labelReasons: {},
+      isPending: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    selectRule(newRule);
+    setAddRuleStep("review");
+  }
+
   async function saveRuleReview() {
-    if (!selectedRule || !hasRuleReviewChanges || draftLabels.length === 0 || hasMissingLabelReasons || recommendedAction.length > 200) {
+    if (!selectedRule || !canReviewRule) {
       return;
     }
 
@@ -1781,12 +1873,25 @@ function RuleReviewPage({
     setError(null);
 
     try {
-      const response = await fetch(`/api/email-rules/${encodeURIComponent(selectedRule.emailId)}/review`, {
-        method: "PUT",
+      const isNewRuleReview = addRuleStep === "review" && selectedRule.id.startsWith("new-");
+      const response = await fetch(
+        isNewRuleReview ? "/api/email-rules/review" : `/api/email-rules/${encodeURIComponent(selectedRule.emailId)}/review`,
+        {
+        method: isNewRuleReview ? "POST" : "PUT",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ labelsApplied: draftLabels, labelReasons: pickLabelReasons(draftLabels, draftLabelReasons), recommendedAction }),
-      });
+        body: JSON.stringify({
+          emailId: selectedRule.emailId,
+          threadId: selectedRule.threadId,
+          fromEmail: selectedRule.fromEmail,
+          fromName: selectedRule.fromName,
+          subject: selectedRule.subject,
+          snippet: selectedRule.snippet,
+          labelsApplied: draftLabels,
+          labelReasons: pickLabelReasons(draftLabels, draftLabelReasons),
+        }),
+      },
+      );
       const data = await response.json();
 
       if (!response.ok) {
@@ -1794,7 +1899,14 @@ function RuleReviewPage({
         return;
       }
 
-      setRules((current) => current.map((rule) => (rule.emailId === data.rule.emailId ? data.rule : rule)));
+      setRules((current) => {
+        const exists = current.some((rule) => rule.emailId === data.rule.emailId);
+        return exists ? current.map((rule) => (rule.emailId === data.rule.emailId ? data.rule : rule)) : [data.rule, ...current];
+      });
+      if (isNewRuleReview) {
+        setTotal((current) => current + 1);
+        setAddRuleStep(null);
+      }
       selectRule(data.rule);
     } catch {
       setError("Could not save rule.");
@@ -1915,10 +2027,16 @@ function RuleReviewPage({
             <CardTitle>Rule Review</CardTitle>
             <CardDescription>Review suggested email labeling rules and export the rule table.</CardDescription>
           </div>
-          <Button className="w-full sm:w-auto" disabled={isExporting} onClick={() => void exportRules()} type="button">
-            <Download className="h-4 w-4" />
-            {isExporting ? "Exporting..." : "Export CSV"}
-          </Button>
+          <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+            <Button className="flex-1 sm:flex-none" onClick={openAddRuleModal} type="button">
+              <Plus className="h-4 w-4" />
+              Add Rule
+            </Button>
+            <Button className="flex-1 sm:flex-none" disabled={isExporting} onClick={() => void exportRules()} type="button" variant="outline">
+              <Download className="h-4 w-4" />
+              {isExporting ? "Exporting..." : "Export CSV"}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
@@ -2001,7 +2119,7 @@ function RuleReviewPage({
         </CardContent>
       </Card>
 
-      <div className={cn("grid gap-5 transition-all duration-300", selectedRule ? "2xl:grid-cols-[minmax(0,1fr)_460px]" : "grid-cols-1")}>
+      <div className="grid grid-cols-1 gap-5">
         <Card className="min-w-0">
           <CardHeader className="gap-4 lg:flex-row lg:items-start lg:justify-between lg:space-y-0">
             <div className="min-w-0">
@@ -2075,7 +2193,7 @@ function RuleReviewPage({
                                 Created: {formatDate(rule.createdAt)}
                               </p>
                               <p className="mt-2 line-clamp-2 text-sm leading-5 text-zinc-600">
-                                {rule.recommendedAction || rule.reason || "No reason provided."}
+                                {formatRuleLabelReasons(rule)}
                               </p>
                               <div className="mt-2 flex flex-wrap gap-1">
                                 {rule.labelsApplied.map((label) => (
@@ -2102,18 +2220,98 @@ function RuleReviewPage({
           </CardContent>
         </Card>
 
+        {addRuleStep === "search" ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <Card className="min-h-[720px] max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden">
+            <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+              <div className="min-w-0">
+                <CardTitle>Add Rule</CardTitle>
+                <CardDescription>Search connected email accounts and choose an email to review.</CardDescription>
+              </div>
+              <Button aria-label="Close add rule" onClick={closeAddRuleModal} size="icon" type="button" variant="outline">
+                <X className="h-4 w-4" />
+              </Button>
+            </CardHeader>
+            <CardContent className="max-h-[calc(92vh-96px)] overflow-y-auto overflow-x-hidden">
+              <StepProgress currentStep={1} steps={["Search", "Review"]} />
+              <form className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px_auto]" onSubmit={searchEmailsForRule}>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Subject search</span>
+                  <input
+                    className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                    onChange={(event) => setAddRuleSearchQuery(event.target.value)}
+                    placeholder="Search by subject"
+                    value={addRuleSearchQuery}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Account</span>
+                  <select
+                    className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm"
+                    onChange={(event) => setAddRuleAccountEmail(event.target.value)}
+                    value={addRuleAccountEmail}
+                  >
+                    <option value="">All accounts</option>
+                    {emailAccounts.map((account) => (
+                      <option key={account.id} value={account.email}>
+                        {account.email}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex items-end">
+                  <Button className="w-full" disabled={isSearchingEmails} type="submit">
+                    {isSearchingEmails ? <Loader /> : <Search className="h-4 w-4" />}
+                    Search
+                  </Button>
+                </div>
+              </form>
+
+              {addRuleError ? <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{addRuleError}</p> : null}
+
+              <div className="mt-5 divide-y divide-zinc-200 overflow-hidden rounded-md border border-zinc-200">
+                {isSearchingEmails ? (
+                  <div className="p-8 text-center text-sm text-zinc-500">Searching emails...</div>
+                ) : addRuleResults.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-zinc-500">Search results will appear here.</div>
+                ) : (
+                  addRuleResults.map((email) => (
+                    <button
+                      className="block w-full cursor-pointer px-4 py-3 text-left transition-colors hover:bg-zinc-50"
+                      key={`${email.accountEmail}-${email.emailId}`}
+                      onClick={() => selectEmailForNewRule(email)}
+                      type="button"
+                    >
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500">
+                        <span className="min-w-0 max-w-full truncate">To: {email.to || "Unknown"}</span>
+                        <span className="min-w-0 max-w-full truncate">From: {email.fromEmail || "Unknown"}</span>
+                        <span className="min-w-0 max-w-full truncate">Account: {email.accountEmail}</span>
+                      </div>
+                      <p className="mt-2 truncate text-sm font-medium text-zinc-950">{email.subject || "(no subject)"}</p>
+                      <p className="mt-1 line-clamp-2 text-sm leading-5 text-zinc-600">{email.snippet || "No snippet available."}</p>
+                    </button>
+                  ))
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+        ) : null}
+
         {selectedRule ? (
-        <Card className="min-w-0 transition-all duration-300 2xl:sticky 2xl:top-5">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <Card className="max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden">
           <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
             <div className="min-w-0">
               <CardTitle>Rule Details</CardTitle>
-              <CardDescription>Review labels and guidance.</CardDescription>
+              <CardDescription>Choose the single best label for this email.</CardDescription>
             </div>
-            <Button aria-label="Close rule details" onClick={() => selectRule(null)} size="icon" type="button" variant="outline">
+            <Button aria-label="Close rule details" onClick={() => (addRuleStep === "review" ? closeAddRuleModal() : selectRule(null))} size="icon" type="button" variant="outline">
               <X className="h-4 w-4" />
             </Button>
           </CardHeader>
-          <CardContent>
+          <CardContent className="max-h-[calc(92vh-96px)] overflow-y-auto overflow-x-hidden">
+              {addRuleStep === "review" ? <StepProgress currentStep={2} steps={["Search", "Review"]} /> : null}
               <div className="space-y-5">
                 <div>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2131,19 +2329,8 @@ function RuleReviewPage({
                   <p className="mt-2 text-sm leading-6 text-zinc-600">{selectedRule.snippet}</p>
                 </div>
 
-                <div className="grid gap-3">
-                  <div className="rounded-md bg-zinc-50 p-3">
-                    <p className="text-xs font-medium uppercase text-zinc-500">Reason</p>
-                    <p className="mt-1 text-sm text-zinc-700">{selectedRule.reason || "No reason provided."}</p>
-                  </div>
-                  <div className="rounded-md bg-zinc-50 p-3">
-                    <p className="text-xs font-medium uppercase text-zinc-500">Rule suggestion</p>
-                    <p className="mt-1 text-sm text-zinc-700">{selectedRule.ruleSuggestion || "No suggestion provided."}</p>
-                  </div>
-                </div>
-
-                <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-1 min-[1680px]:grid-cols-2">
-                  <div>
+                <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+                  <div className="min-w-0">
                     <p className="mb-2 text-xs font-medium uppercase text-zinc-500">Available labels</p>
                     <div
                       className={cn(
@@ -2157,13 +2344,11 @@ function RuleReviewPage({
                             "w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-left text-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50",
                             draftLabels.includes(label.name)
                               ? "cursor-not-allowed border-emerald-200 bg-emerald-50 text-emerald-900 hover:border-emerald-200 hover:bg-emerald-50"
-                              : draftLabels.length >= 3
-                                ? "cursor-not-allowed opacity-60"
-                                : "cursor-grab active:cursor-grabbing",
+                              : "cursor-grab active:cursor-grabbing",
                             draggingLabel === label.name && "border-blue-300 bg-blue-50 opacity-70",
                           )}
-                          disabled={draftLabels.includes(label.name) || draftLabels.length >= 3}
-                          draggable={!draftLabels.includes(label.name) && draftLabels.length < 3}
+                          disabled={draftLabels.includes(label.name)}
+                          draggable={!draftLabels.includes(label.name)}
                           key={label.id}
                           onClick={() => addDraftLabel(label.name)}
                           onDragEnd={() => {
@@ -2189,10 +2374,10 @@ function RuleReviewPage({
                       ))}
                     </div>
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="mb-2 flex items-center justify-between gap-2">
-                      <p className="text-xs font-medium uppercase text-zinc-500">Labels applied</p>
-                      <span className="text-xs text-zinc-500">{draftLabels.length}/3</span>
+                      <p className="text-xs font-medium uppercase text-zinc-500">Selected label</p>
+                      <span className="text-xs text-zinc-500">{draftLabels.length === 1 ? "Ready" : "Choose one"}</span>
                     </div>
                     <div
                       className={cn(
@@ -2212,9 +2397,7 @@ function RuleReviewPage({
                       }}
                       onDrop={(event) => {
                         event.preventDefault();
-                        if (draftLabels.length < 3) {
-                          addDraftLabel(event.dataTransfer.getData("text/plain"));
-                        }
+                        addDraftLabel(event.dataTransfer.getData("text/plain"));
                         setDraggingLabel(null);
                         setIsLabelDropActive(false);
                       }}
@@ -2223,9 +2406,9 @@ function RuleReviewPage({
                         <p className="p-3 text-sm text-zinc-500">Drop labels here.</p>
                       ) : (
                         draftLabels.map((label) => (
-                          <div className="rounded-md bg-zinc-100 p-3 text-sm" key={label}>
+                          <div className="min-w-0 rounded-md bg-zinc-100 p-3 text-sm" key={label}>
                             <div className="flex items-center justify-between gap-2">
-                              <span className="font-medium text-zinc-950">{label}</span>
+                              <span className="min-w-0 truncate font-medium text-zinc-950">{label}</span>
                               <button className="cursor-pointer text-zinc-500 hover:text-zinc-950" onClick={() => removeDraftLabel(label)} type="button">
                                 <X className="h-4 w-4" />
                               </button>
@@ -2250,33 +2433,34 @@ function RuleReviewPage({
                   </div>
                 </div>
 
-                <label className="block">
-                  <span className="mb-1 block text-sm font-medium text-zinc-700">Recommended action</span>
-                  <textarea
-                    className="min-h-24 w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
-                    maxLength={200}
-                    onChange={(event) => setRecommendedAction(event.target.value)}
-                    value={recommendedAction}
-                  />
-                  <span className="mt-1 block text-right text-xs text-zinc-500">{recommendedAction.length}/200</span>
-                </label>
-
                 <div className="flex flex-wrap justify-end gap-2">
-                  <Button disabled={isSaving} onClick={() => selectRule(selectedRule)} type="button" variant="outline">
+                  {addRuleStep === "review" ? (
+                    <Button disabled={isSaving} onClick={goBackToAddRuleSearch} type="button" variant="outline">
+                      Previous
+                    </Button>
+                  ) : null}
+                  <Button disabled={isSaving} onClick={() => (addRuleStep === "review" ? closeAddRuleModal() : selectRule(selectedRule))} type="button" variant="outline">
                     Cancel
                   </Button>
+                  {addRuleStep === "review" ? null : (
                   <Button disabled={isSaving} onClick={() => void deleteSelectedRule()} type="button" variant="outline">
                     <Trash2 className="h-4 w-4" />
                     Delete
                   </Button>
-                  <Button disabled={isSaving || !hasRuleReviewChanges || draftLabels.length === 0 || hasMissingLabelReasons || recommendedAction.length > 200} onClick={() => void saveRuleReview()} type="button">
-                    <Save className="h-4 w-4" />
-                    Save
-                  </Button>
+                  )}
+                  <Tooltip text={selectedReviewReason ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
+                    <span>
+                      <Button className={cn(canReviewRule && reviewedButtonClass)} disabled={isSaving || !canReviewRule} onClick={() => void saveRuleReview()} type="button">
+                        <Save className="h-4 w-4" />
+                        Reviewed
+                      </Button>
+                    </span>
+                  </Tooltip>
                 </div>
               </div>
           </CardContent>
         </Card>
+        </div>
         ) : null}
       </div>
     </div>
@@ -3007,7 +3191,7 @@ function WebhookPage() {
               event_name: "email_rule.modified",
               payload: {
                 rule: { emailId: "message-id", labelsApplied: ["Invoice"], isPending: false },
-                changes: { labelsApplied: ["Invoice"], recommendedAction: "Use this label for vendor invoices." },
+                changes: { labelsApplied: ["Invoice"], labelReasons: { Invoice: "Use this label for vendor invoices." } },
                 previous: { emailId: "message-id", labelsApplied: [], isPending: true },
               },
               timestamp: "2026-06-08T12:00:00.000Z",
@@ -3572,24 +3756,9 @@ function EndpointsPage() {
         <CardContent className="space-y-3">
           <EndpointDoc
             method="GET"
-            path="/api/integrations/labels"
-            title="Get labels"
-            response={[
-              { name: "Invoice", description: "Use when confidence is at least 0.9." },
-              { name: "Client Ops", description: "Operational client messages." },
-            ]}
-          />
-	          <EndpointDoc
-	            method="GET"
-	            path="/api/integrations/confidence-threshold"
-	            title="Get confidence threshold"
-	            response={{ confidenceThreshold: 0.9 }}
-	          />
-	          <EndpointDoc
-	            method="GET"
-	            path="/api/integrations/ai-prompts"
-	            title="Get AI prompts"
-	            notes={["Returns all AI Prompt submenu prompts with supported template strings replaced by current app values."]}
+	            path="/api/integrations/core-content"
+	            title="Get Core Content"
+	            notes={["Returns confidence threshold, labels, and all AI Prompt submenu prompts with supported template strings replaced by current app values."]}
 	            response={{
 	              confidenceThreshold: 0.9,
 	              labels: [
@@ -3606,62 +3775,6 @@ function EndpointsPage() {
 	              },
 	            }}
 	          />
-	          <EndpointDoc
-	            method="POST"
-	            path="/api/integrations/email-rules"
-            title="Add an email rule"
-            notes={["isPending is optional. If omitted, the API sets it to true.", "labelsApplied supports 1 to 3 labels. Provide one labelReasons entry for each label."]}
-            payload={{
-              emailId: "19e394a85255976b",
-              threadId: "19e394a85255976b",
-              fromEmail: "someone@gmail.com",
-              fromName: "Michael Montaque",
-              subject: "Hello",
-              snippet: "world",
-              confidence: 1,
-              labelsApplied: ["AI/Low Priority", "Needs Review"],
-              labelReasons: {
-                "AI/Low Priority": "Use for informational messages that do not require a reply.",
-                "Needs Review": "Use when the message may need human follow-up.",
-              },
-              isPending: false,
-              reason: "Looks like a test email.",
-            }}
-            response={{
-              rule: {
-                id: "7c0d8b6d-3cb5-40d0-9f0d-f6a0a9160ee5",
-                emailId: "19e394a85255976b",
-                labelsApplied: ["AI/Low Priority"],
-                isPending: false,
-              },
-            }}
-          />
-          <EndpointDoc
-            method="PUT"
-            path="/api/integrations/email-rules/:emailId"
-            title="Modify an email rule"
-            payload={{
-              confidence: 0.86,
-              labelsApplied: ["Needs Review"],
-              labelReasons: { "Needs Review": "Use when the message may need human follow-up." },
-              isPending: true,
-              userQuestion: "Should this be escalated?",
-            }}
-            response={{
-              rule: {
-                emailId: "19e394a85255976b",
-                confidence: 0.86,
-                labelsApplied: ["Needs Review"],
-                isPending: true,
-              },
-            }}
-          />
-          <EndpointDoc
-            method="DELETE"
-            path="/api/integrations/email-rules/:emailId"
-            title="Delete an email rule"
-            response={{ deleted: 1 }}
-          />
           <EndpointDoc
             method="POST"
             path="/api/integrations/email-rules/query"
@@ -3701,14 +3814,29 @@ function EndpointsPage() {
           <EndpointDoc
             method="POST"
             path="/api/integrations/email/labels/add"
-            title="Add labels to an email"
-            notes={["Exactly one label can be applied per request. Folder-based accounts move the email to that label's folder."]}
+            title="Classify and label an email"
+            notes={[
+              "Provide up to 3 label candidates with confidence and reason.",
+              "If exactly one label has the highest confidence and it meets the current threshold, that label is applied to the email.",
+              "If labels tie, no label meets the threshold, or no labels are provided, Emailable creates a pending rule for review.",
+              "Folder-based accounts move the email to the selected label's folder.",
+            ]}
             payload={{
-              accountEmail: "user@gmail.com",
               emailId: "188c1f2d7e1a1234",
-              labels: ["Invoice"],
+              threadId: "188c1f2d7e1a1234",
+              fromEmail: "vendor@example.com",
+              fromName: "Vendor Billing",
+              subject: "Invoice for review",
+              snippet: "Please review the attached invoice.",
+              labelsApplied: [
+                { labelName: "Invoice", confidence: 0.94, reason: "The message includes an invoice and payment request." },
+                { labelName: "Needs Review", confidence: 0.74, reason: "The user may need to review the attachment." },
+              ],
             }}
             response={{
+              action: "labels_added",
+              threshold: 0.9,
+              confidence: 0.94,
               accountEmail: "user@gmail.com",
               emailId: "188c1f2d7e1a1234",
               added: [{ name: "Invoice", providerLabelId: "Label_123" }],
@@ -3931,10 +4059,10 @@ function McpServerPage() {
             path="add_labels_on_email"
             title="Add Labels On Email"
             notes={[
-              "Payload matches Add Email Rule except isPending is omitted.",
-              "labelsApplied supports 1 to 3 labels with one labelReasons entry for each label.",
-              "When confidence is at or above the current threshold, the first selected label is applied to the email.",
-              "When confidence is below the threshold, no label is applied and a pending rule is created.",
+              "Payload matches the REST classify-and-label endpoint.",
+              "labelsApplied supports up to 3 label candidate objects.",
+              "When exactly one candidate has the highest confidence and it meets the current threshold, that label is applied.",
+              "When candidates tie, no candidate meets the threshold, or no candidates are provided, a pending rule is created.",
             ]}
             payload={{
               emailId: "188c1f2d7e1a1234",
@@ -3943,12 +4071,10 @@ function McpServerPage() {
               fromName: "Michael Montaque",
               subject: "Invoice for review",
               snippet: "Please review the attached invoice.",
-              confidence: 0.87,
-              labelsApplied: ["Invoice", "Needs Review"],
-              labelReasons: {
-                Invoice: "Use for vendor invoices and payment requests.",
-                "Needs Review": "Use when the message needs human follow-up.",
-              },
+              labelsApplied: [
+                { labelName: "Invoice", confidence: 0.87, reason: "Use for vendor invoices and payment requests." },
+                { labelName: "Needs Review", confidence: 0.87, reason: "Use when the message needs human follow-up." },
+              ],
             }}
             response={{ action: "pending_rule_created", threshold: 0.9, confidence: 0.87 }}
           />
@@ -4193,6 +4319,43 @@ function MetricCard({
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function StepProgress({ currentStep, steps }: { currentStep: number; steps: string[] }) {
+  const progressPercent = steps.length <= 1 ? 100 : ((currentStep - 1) / (steps.length - 1)) * 100;
+
+  return (
+    <div className="mb-5">
+      <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>
+        {steps.map((step, index) => {
+          const stepNumber = index + 1;
+          const isComplete = stepNumber < currentStep;
+          const isActive = stepNumber === currentStep;
+
+          return (
+            <div className={cn("flex items-center gap-1.5", index === steps.length - 1 && "justify-end", index > 0 && index < steps.length - 1 && "justify-center")} key={step}>
+              <span
+                className={cn(
+                  "flex h-4 w-4 items-center justify-center rounded-sm border text-[10px]",
+                  isComplete && "border-zinc-900 bg-zinc-900 text-white",
+                  isActive && "border-zinc-900 bg-white text-zinc-900",
+                  !isComplete && !isActive && "border-zinc-300 bg-white text-zinc-400",
+                )}
+              >
+                {isComplete ? <CheckCircle2 className="h-3 w-3" /> : stepNumber}
+              </span>
+              <span className={cn("text-[11px] font-semibold uppercase tracking-[0.16em]", isActive ? "text-zinc-950" : isComplete ? "text-zinc-700" : "text-zinc-400")}>
+                {step}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-3 h-px rounded-full bg-zinc-200">
+        <div className="h-px rounded-full bg-zinc-900 transition-all duration-300" style={{ width: `${progressPercent}%` }} />
+      </div>
+    </div>
   );
 }
 
@@ -4472,6 +4635,15 @@ function pickLabelReasons(labels: string[], reasons: Record<string, string>) {
     selectedReasons[label] = reasons[label]?.trim() ?? "";
     return selectedReasons;
   }, {});
+}
+
+function formatRuleLabelReasons(rule: EmailRule) {
+  const labelReasons = rule.labelReasons ?? {};
+  const reasonParts = rule.labelsApplied
+    .map((label) => labelReasons[label]?.trim())
+    .filter(Boolean);
+
+  return reasonParts.length > 0 ? reasonParts.join(" ") : "No label reasoning provided.";
 }
 
 function sameLabelReasons(left: Record<string, string>, right: Record<string, string>, labels: string[]) {

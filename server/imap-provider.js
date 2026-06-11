@@ -204,6 +204,40 @@ export async function searchImapSentEmailContexts(account, filters, limit) {
   });
 }
 
+export async function searchImapEmailContexts(account, filters, limit) {
+  return withImapClient(account, async (client, metadata) => {
+    const mailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
+    await client.mailboxOpen(mailbox);
+    const query = { all: true };
+    if (filters.subject) {
+      query.subject = filters.subject;
+    }
+
+    const uids = (await client.search(query, { uid: true })) || [];
+    const latest = uids.slice(-Math.min(Math.max(limit, 1), 10)).reverse();
+    const results = [];
+
+    for (const uid of latest) {
+      const message = await client.fetchOne(String(uid), { uid: true, envelope: true, source: true }, { uid: true });
+      if (!message) {
+        continue;
+      }
+
+      results.push({
+        emailId: String(message.uid),
+        threadId: String(message.uid),
+        fromEmail: (message.envelope?.from ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+        fromName: (message.envelope?.from ?? []).map((address) => address?.name).filter(Boolean).join(", "),
+        to: (message.envelope?.to ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+        subject: message.envelope?.subject ?? "",
+        snippet: extractTextFromRawMessage(message.source?.toString() ?? "").slice(0, 300),
+      });
+    }
+
+    return results;
+  });
+}
+
 export async function findImapMessageAccountMatch(account, emailId, subject) {
   return withImapClient(account, async (client, metadata) => {
     const mailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;

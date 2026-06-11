@@ -4,24 +4,20 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod/v4";
 import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
-import { getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
-import { findImapMessageAccountMatch, moveImapMessageToFolders } from "./imap-provider.js";
+import { getValidEmailAccountAccessToken } from "./email-accounts.js";
 import {
   buildDraftWebhookPayload,
   buildEmailRuleQuery,
+  classifyEmailWithLabelCandidates,
   createProviderReplyDraft,
   EMAIL_RULE_SELECT,
   getUserEmailAccount,
   mapEmailRuleRow,
-  modifyGmailMessageLabels,
   parseDraftInput,
-  parseEmailRuleInput,
+  parseLabelClassificationInput,
   parseQueryLimit,
   recordMetricEvent,
-  resolveProviderLabels,
-  upsertEmailRule,
 } from "./integrations.js";
-import { getConfidenceThreshold } from "./settings.js";
 import { emitWebhookEvent } from "./webhooks.js";
 
 const MCP_KEY_PREFIX = "mcp";
@@ -173,7 +169,7 @@ function createMcpServer(userId) {
     {
       title: "Add Labels On Email",
       description:
-        "Apply one selected label when confidence meets the current threshold. Otherwise create a pending email rule.",
+        "Classify an email with label candidates. Applies the uniquely highest-confidence label when it meets the current threshold; otherwise creates a pending email rule.",
       inputSchema: {
         emailId: z.string().min(1),
         threadId: z.string().min(1),
@@ -181,9 +177,11 @@ function createMcpServer(userId) {
         fromName: z.string().min(1),
         subject: z.string().min(1),
         snippet: z.string().min(1),
-        confidence: z.number(),
-        labelsApplied: z.array(z.string().min(1)).max(3),
-        labelReasons: z.record(z.string(), z.string()),
+        labelsApplied: z.array(z.object({
+          labelName: z.string().min(1),
+          confidence: z.number().min(0).max(1),
+          reason: z.string().min(1).max(200),
+        })).max(3),
       },
     },
     async (input) => {
@@ -241,101 +239,12 @@ async function createDraftReplyTool(userId, payload) {
 }
 
 async function addLabelsOnEmailTool(userId, payload) {
-  const input = await parseEmailRuleInput(userId, payload, { partial: false });
+  const input = await parseLabelClassificationInput(userId, payload);
   if (!input.ok) {
     throw new Error(input.error);
   }
 
-  const threshold = await getConfidenceThreshold(userId);
-  const target = await findConnectedMessageById(userId, input.rule.emailId, input.rule.subject);
-  if (!target) {
-    throw new Error("Email was not found in connected email accounts");
-  }
-
-  const shouldAutoLabel = input.rule.confidence >= threshold;
-  const requestedLabels = shouldAutoLabel ? [input.rule.labelsApplied[0]].filter(Boolean) : [];
-  const labels = await resolveProviderLabels(userId, target.account.id, requestedLabels);
-  if (shouldAutoLabel && !labels.ok) {
-    const error = new Error(labels.error);
-    error.details = labels.labels;
-    throw error;
-  }
-
-  if (shouldAutoLabel && target.account.provider === "gmail") {
-    const accessToken = await getValidEmailAccountAccessToken(target.account);
-    await modifyGmailMessageLabels({
-      accessToken,
-      emailId: input.rule.emailId,
-      addLabelIds: labels.labels.map((label) => label.providerLabelId),
-      removeLabelIds: [],
-    });
-  } else if (shouldAutoLabel && target.account.provider === "imap") {
-    await moveImapMessageToFolders({
-      account: target.account,
-      emailId: input.rule.emailId,
-      addFolders: labels.labels.map((label) => label.providerLabelId),
-      removeFolders: [],
-    });
-  } else if (shouldAutoLabel) {
-    throw new Error(`${target.account.provider} message labels are not implemented yet`);
-  }
-
-  if (shouldAutoLabel) {
-    await recordMetricEvent(userId, "email_labeled", {
-      emailId: input.rule.emailId,
-      accountEmail: target.account.email,
-      metadata: {
-        provider: target.account.provider,
-        labels: labels.labels.map((label) => label.name),
-        source: "mcp",
-      },
-    });
-    await emitWebhookEvent(userId, "email.labels_updated", {
-      emailId: input.rule.emailId,
-      accountEmail: target.account.email,
-      added: labels.labels.map((label) => label.name),
-      removed: [],
-      labels: labels.labels,
-      source: "mcp",
-    });
-  }
-
-  if (shouldAutoLabel) {
-    return {
-      action: "labels_added",
-      threshold,
-      confidence: input.rule.confidence,
-      accountEmail: target.account.email,
-      emailId: input.rule.emailId,
-      added: labels.labels,
-    };
-  }
-
-  const previousRule = await getMcpEmailRuleByEmailId(userId, input.rule.emailId);
-  const rule = await upsertEmailRule(userId, {
-    ...input.rule,
-    isPending: true,
-    metadata: {
-      source: "mcp",
-      threshold,
-      accountEmail: target.account.email,
-    },
-  });
-  await emitWebhookEvent(userId, previousRule ? "email_rule.modified" : "email_rule.created", {
-    rule,
-    payload: input.rule,
-    previous: previousRule,
-  });
-
-  return {
-    action: "pending_rule_created",
-    threshold,
-    confidence: input.rule.confidence,
-    accountEmail: target.account.email,
-    emailId: input.rule.emailId,
-    added: labels.labels,
-    rule,
-  };
+  return classifyEmailWithLabelCandidates(userId, input.rule, { source: "mcp" });
 }
 
 async function queryEmailRulesTool(userId, payload) {
@@ -356,97 +265,6 @@ async function queryEmailRulesTool(userId, payload) {
   );
 
   return { rules: result.rows.map(mapEmailRuleRow) };
-}
-
-async function getMcpEmailRuleByEmailId(userId, emailId) {
-  const result = await dbPool.query(
-    `
-      select ${EMAIL_RULE_SELECT}
-      from email_rules
-      where user_id = $1 and email_id = $2
-      limit 1
-    `,
-    [userId, emailId],
-  );
-
-  return result.rows[0] ? mapEmailRuleRow(result.rows[0]) : null;
-}
-
-async function findConnectedMessageById(userId, emailId, subject) {
-  const accounts = await getConnectedEmailAccounts(userId);
-  const matches = [];
-
-  for (const account of accounts) {
-    if (!["gmail", "imap"].includes(account.provider)) {
-      continue;
-    }
-
-    try {
-      if (account.provider === "gmail") {
-        const accessToken = await getValidEmailAccountAccessToken(account);
-        const message = await fetchGmailMessageMetadata(accessToken, emailId);
-        matches.push({ account, message, subject: getHeaderValue(message, "subject") });
-      } else {
-        const match = await findImapMessageAccountMatch(account, emailId, subject);
-        if (match) {
-          matches.push({ account, message: match.message, subject: match.subject });
-        }
-      }
-    } catch (error) {
-      if (error.status !== 404) {
-        console.warn(`MCP message lookup failed for ${account.provider} ${account.email}:`, error.message);
-      }
-    }
-  }
-
-  if (matches.length === 0) {
-    return null;
-  }
-
-  if (matches.length === 1) {
-    return matches[0];
-  }
-
-  const normalizedSubject = normalizeSubject(subject);
-  return matches.find((match) => normalizeSubject(match.subject) === normalizedSubject) ?? null;
-}
-
-async function fetchGmailMessageMetadata(accessToken, emailId) {
-  const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}`);
-  url.searchParams.set("format", "metadata");
-  url.searchParams.set("metadataHeaders", "Subject");
-
-  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
-  return response.json();
-}
-
-async function providerFetch(url, accessToken, options) {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      ...(options.headers ?? {}),
-    },
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    const error = new Error(`Provider request failed with ${response.status}: ${text.slice(0, 300)}`);
-    error.status = response.status;
-    throw error;
-  }
-
-  return response;
-}
-
-function getHeaderValue(message, headerName) {
-  const header = (message.payload?.headers ?? []).find((item) => item.name?.toLowerCase() === headerName.toLowerCase());
-  return header?.value ?? "";
-}
-
-function normalizeSubject(subject) {
-  return String(subject ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 async function authenticateMcpRequest(req) {

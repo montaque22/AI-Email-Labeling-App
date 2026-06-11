@@ -6,6 +6,7 @@ import { ensureSsoEmailAccount, getConnectedEmailAccounts, getValidEmailAccountA
 import {
   createImapDraft,
   findImapMessageAccountMatch,
+  searchImapEmailContexts,
   moveImapMessageToFolders,
 } from "./imap-provider.js";
 import { ensureLabelSyncedToAccount } from "./label-sync.js";
@@ -20,7 +21,6 @@ const EMAIL_RULE_REQUIRED_FIELDS = [
   "fromName",
   "subject",
   "snippet",
-  "confidence",
   "labelsApplied",
 ];
 const EMAIL_RULE_COLUMNS = {
@@ -280,6 +280,60 @@ export function registerIntegrationRoutes(app) {
     }
   });
 
+  app.post("/api/email-rules/email-search", requireSession, async (req, res) => {
+    const query = typeof req.body?.query === "string" ? req.body.query.trim() : "";
+    const accountEmail = typeof req.body?.accountEmail === "string" ? req.body.accountEmail.trim().toLowerCase() : "";
+
+    if (!query && !accountEmail) {
+      res.status(400).json({ error: "Enter a subject search or choose an account" });
+      return;
+    }
+
+    try {
+      res.json({ emails: await searchConnectedEmailsForRules(req.user.id, { query, accountEmail }) });
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.post("/api/email-rules/review", requireSession, async (req, res) => {
+    const input = await parseManualRuleReviewInput(req.user.id, req.body);
+
+    if (!input.ok) {
+      res.status(400).json({ error: input.error, labels: input.labels });
+      return;
+    }
+
+    try {
+      const currentRule = await getEmailRuleByEmailId(req.user.id, input.rule.emailId);
+      const applied = await applySingleLabelToEmail(req.user.id, {
+        emailId: input.rule.emailId,
+        subject: input.rule.subject,
+        labelName: input.rule.labelsApplied[0],
+        source: "manual-rule-review",
+      });
+      const rule = await upsertEmailRule(req.user.id, {
+        ...input.rule,
+        confidence: 1,
+        isPending: false,
+        metadata: {
+          labelReasons: input.rule.metadata.labelReasons,
+          accountEmail: applied.accountEmail,
+          source: "manual-rule-review",
+        },
+      });
+
+      await emitWebhookEvent(req.user.id, currentRule ? "email_rule.modified" : "email_rule.created", {
+        rule,
+        payload: input.rule,
+        previous: currentRule,
+      });
+      res.status(currentRule ? 200 : 201).json({ rule });
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
   app.get("/api/email-rules/:emailId", requireSession, async (req, res) => {
     try {
       const rule = await getEmailRuleByEmailId(req.user.id, req.params.emailId);
@@ -299,17 +353,10 @@ export function registerIntegrationRoutes(app) {
     const labelsApplied = Array.isArray(req.body?.labelsApplied)
       ? req.body.labelsApplied.filter((label) => typeof label === "string").map((label) => label.trim()).filter(Boolean)
       : null;
-    const labelReasonsInput = parseLabelReasons(req.body?.labelReasons ?? {});
-    const recommendedAction =
-      typeof req.body?.recommendedAction === "string" ? req.body.recommendedAction.trim() : "";
+    const labelReasonsInput = parseLabelReasons(req.body?.labelReasons ?? {}, { allowEmpty: true });
 
     if (!labelsApplied) {
       res.status(400).json({ error: "labelsApplied must be an array of strings" });
-      return;
-    }
-
-    if (labelsApplied.length > 3) {
-      res.status(400).json({ error: "labelsApplied can include at most 3 labels" });
       return;
     }
 
@@ -319,8 +366,8 @@ export function registerIntegrationRoutes(app) {
     }
 
     const uniqueLabelsApplied = [...new Set(labelsApplied)];
-    if (uniqueLabelsApplied.length === 0) {
-      res.status(400).json({ error: "labelsApplied must include at least one label" });
+    if (uniqueLabelsApplied.length !== 1) {
+      res.status(400).json({ error: "Select exactly one label before marking the rule reviewed" });
       return;
     }
 
@@ -338,32 +385,32 @@ export function registerIntegrationRoutes(app) {
       return;
     }
 
-    const missingReasons = resolvedLabels.labels.filter(
-      (label) => !Object.entries(labelReasonsInput.labelReasons).some(([reasonLabel, reason]) => reasonLabel.toLowerCase() === label.toLowerCase() && reason),
-    );
-    if (missingReasons.length > 0) {
-      res.status(400).json({ error: "A reason is required for each selected label", labels: missingReasons });
-      return;
-    }
-
-    if (recommendedAction.length > 200) {
-      res.status(400).json({ error: "recommendedAction must be 200 characters or less" });
-      return;
-    }
-
     try {
+      const currentRule = await getEmailRuleByEmailId(req.user.id, req.params.emailId);
+      if (!currentRule) {
+        res.status(404).json({ error: "Email rule not found" });
+        return;
+      }
+
+      const applied = await applySingleLabelToEmail(req.user.id, {
+        emailId: currentRule.emailId,
+        subject: currentRule.subject,
+        labelName: resolvedLabels.labels[0],
+        source: "rule-review",
+      });
+      const normalizedReasons = normalizeLabelReasons(resolvedLabels.labels, labelReasonsInput.labelReasons);
       const result = await dbPool.query(
         `
           update email_rules
           set labels_applied = $3,
               is_pending = false,
               confidence = 1,
-              metadata = (metadata - 'reason' - 'userQuestion') || jsonb_build_object('recommendedAction', $4::text, 'labelReasons', $5::jsonb),
+              metadata = (metadata - 'reason' - 'userQuestion' - 'ruleSuggestion' - 'recommendedAction') || jsonb_build_object('labelReasons', $4::jsonb, 'accountEmail', $5::text),
               updated_at = now()
           where user_id = $1 and email_id = $2
           returning ${EMAIL_RULE_SELECT}
         `,
-        [req.user.id, req.params.emailId, resolvedLabels.labels, recommendedAction, JSON.stringify(normalizeLabelReasons(resolvedLabels.labels, labelReasonsInput.labelReasons))],
+        [req.user.id, req.params.emailId, resolvedLabels.labels, JSON.stringify(normalizedReasons), applied.accountEmail],
       );
 
       if (!result.rows[0]) {
@@ -376,11 +423,10 @@ export function registerIntegrationRoutes(app) {
         rule,
         changes: {
           labelsApplied: resolvedLabels.labels,
-          labelReasons: normalizeLabelReasons(resolvedLabels.labels, labelReasonsInput.labelReasons),
-          recommendedAction,
+          labelReasons: normalizedReasons,
           isPending: false,
           confidence: 1,
-          clearedFields: ["reason", "userQuestion"],
+          clearedFields: ["reason", "userQuestion", "ruleSuggestion", "recommendedAction"],
         },
       });
       res.json({ rule });
@@ -442,110 +488,9 @@ export function registerIntegrationRoutes(app) {
     }
   });
 
-  app.get("/api/integrations/labels", requireApiKey, async (req, res) => {
-    try {
-      const confidenceThreshold = await getConfidenceThreshold(req.integrationUser.id);
-      const result = await dbPool.query(
-        `
-	          select name, description
-	          from labels
-	          where user_id = $1
-              and system_key is null
-	          order by lower(name), created_at desc
-	        `,
-        [req.integrationUser.id],
-      );
-
-      res.json(
-        result.rows.map((label) => ({
-          name: label.name,
-          description: renderTemplateDescription(label.description, confidenceThreshold),
-        })),
-      );
-    } catch (error) {
-      handleError(res, error);
-    }
-  });
-
-  app.get("/api/integrations/confidence-threshold", requireApiKey, async (req, res) => {
-    try {
-      res.json({ confidenceThreshold: await getConfidenceThreshold(req.integrationUser.id) });
-    } catch (error) {
-      handleError(res, error);
-    }
-  });
-
-  app.get("/api/integrations/ai-prompts", requireApiKey, async (req, res) => {
+  app.get("/api/integrations/core-content", requireApiKey, async (req, res) => {
     try {
       res.json(await getRenderedAiPromptBundle(req.integrationUser.id));
-    } catch (error) {
-      handleError(res, error);
-    }
-  });
-
-  app.post("/api/integrations/email-rules", requireApiKey, async (req, res) => {
-    const input = await parseEmailRuleInput(req.integrationUser.id, req.body, { partial: false });
-
-    if (!input.ok) {
-      res.status(400).json({ error: input.error, labels: input.labels });
-      return;
-    }
-
-    try {
-      const previousRule = await getEmailRuleByEmailId(req.integrationUser.id, input.rule.emailId);
-      const rule = await upsertEmailRule(req.integrationUser.id, input.rule);
-      await emitEmailRuleUpsertWebhook(req.integrationUser.id, previousRule, rule, input.rule);
-      res.status(201).json({ rule });
-    } catch (error) {
-      handleError(res, error);
-    }
-  });
-
-  app.put("/api/integrations/email-rules/:emailId", requireApiKey, async (req, res) => {
-    const input = await parseEmailRuleInput(req.integrationUser.id, req.body, { partial: true });
-
-    if (!input.ok) {
-      res.status(400).json({ error: input.error, labels: input.labels });
-      return;
-    }
-
-    try {
-      const previousRule = await getEmailRuleByEmailId(req.integrationUser.id, req.params.emailId);
-      const rule = await updateEmailRule(req.integrationUser.id, req.params.emailId, input.rule);
-
-      if (!rule) {
-        res.status(404).json({ error: "Email rule not found" });
-        return;
-      }
-
-      await emitWebhookEvent(req.integrationUser.id, "email_rule.modified", {
-        rule,
-        changes: input.rule,
-        previous: previousRule,
-      });
-      res.json({ rule });
-    } catch (error) {
-      handleError(res, error);
-    }
-  });
-
-  app.delete("/api/integrations/email-rules/:emailId", requireApiKey, async (req, res) => {
-    try {
-      const result = await dbPool.query(
-        `
-          delete from email_rules
-          where user_id = $1 and email_id = $2
-          returning ${EMAIL_RULE_SELECT}
-        `,
-        [req.integrationUser.id, req.params.emailId],
-      );
-      const rule = result.rows[0] ? mapEmailRuleRow(result.rows[0]) : null;
-
-      if (rule) {
-        await emitWebhookEvent(req.integrationUser.id, "email_rule.deleted", { rule });
-      }
-
-      res.json({ deleted: result.rowCount });
     } catch (error) {
       handleError(res, error);
     }
@@ -578,15 +523,7 @@ export function registerIntegrationRoutes(app) {
   });
 
   app.post("/api/integrations/email/labels/add", requireApiKey, async (req, res) => {
-    await modifyMessageLabels(req, res, "add");
-  });
-
-  app.post("/api/integrations/email/labels/remove", requireApiKey, async (req, res) => {
-    await modifyMessageLabels(req, res, "remove");
-  });
-
-  app.post("/api/integrations/email/labels/evaluate", requireApiKey, async (req, res) => {
-    const input = await parseEmailRuleInput(req.integrationUser.id, req.body, { partial: false });
+    const input = await parseLabelClassificationInput(req.integrationUser.id, req.body);
 
     if (!input.ok) {
       res.status(400).json({ error: input.error, labels: input.labels });
@@ -594,7 +531,26 @@ export function registerIntegrationRoutes(app) {
     }
 
     try {
-      res.json(await evaluateAndApplyLabels(req.integrationUser.id, input.rule));
+      res.json(await classifyEmailWithLabelCandidates(req.integrationUser.id, input.rule, { source: "integration" }));
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.post("/api/integrations/email/labels/remove", requireApiKey, async (req, res) => {
+    await modifyMessageLabels(req, res, "remove");
+  });
+
+  app.post("/api/integrations/email/labels/evaluate", requireApiKey, async (req, res) => {
+    const input = await parseLabelClassificationInput(req.integrationUser.id, req.body);
+
+    if (!input.ok) {
+      res.status(400).json({ error: input.error, labels: input.labels });
+      return;
+    }
+
+    try {
+      res.json(await classifyEmailWithLabelCandidates(req.integrationUser.id, input.rule, { source: "integration" }));
     } catch (error) {
       handleProviderError(res, error);
     }
@@ -708,7 +664,7 @@ async function modifyMessageLabels(req, res, action) {
   }
 }
 
-async function evaluateAndApplyLabels(userId, rule) {
+export async function classifyEmailWithLabelCandidates(userId, rule, { source = "integration" } = {}) {
   const threshold = await getConfidenceThreshold(userId);
   const target = await findConnectedMessageById(userId, rule.emailId, rule.subject);
 
@@ -724,55 +680,26 @@ async function evaluateAndApplyLabels(userId, rule) {
     throw error;
   }
 
-  const shouldAutoLabel = rule.confidence >= threshold;
-  const requestedLabels = shouldAutoLabel ? [rule.labelsApplied[0]].filter(Boolean) : [];
-  const labels = await resolveProviderLabels(userId, target.account.id, requestedLabels);
+  const highestConfidence = rule.labelCandidates.reduce((highest, candidate) => Math.max(highest, candidate.confidence), 0);
+  const highestCandidates = rule.labelCandidates.filter((candidate) => candidate.confidence === highestConfidence);
+  const shouldAutoLabel = highestCandidates.length === 1 && highestConfidence >= threshold;
+  const selectedCandidate = shouldAutoLabel ? highestCandidates[0] : null;
 
-  if (shouldAutoLabel && !labels.ok) {
-    const error = new Error(labels.error);
-    error.status = labels.status;
-    error.labels = labels.labels;
-    throw error;
-  }
-
-  if (shouldAutoLabel && target.account.provider === "gmail") {
-    const accessToken = await getValidEmailAccountAccessToken(target.account);
-    await modifyGmailMessageLabels({
-      accessToken,
-      emailId: rule.emailId,
-      addLabelIds: labels.labels.map((label) => label.providerLabelId),
-      removeLabelIds: [],
-    });
-  } else if (shouldAutoLabel) {
-    await moveImapMessageToFolders({
-      account: target.account,
-      emailId: rule.emailId,
-      addFolders: labels.labels.map((label) => label.providerLabelId),
-      removeFolders: [],
-    });
-  }
-
-  if (shouldAutoLabel) {
-    await recordMetricEvent(userId, "email_labeled", {
-      emailId: rule.emailId,
-      accountEmail: target.account.email,
-      metadata: { provider: target.account.provider, labels: labels.labels.map((label) => label.name), source: "integration" },
-    });
-    await emitWebhookEvent(userId, "email.labels_updated", {
-      emailId: rule.emailId,
-      accountEmail: target.account.email,
-      added: labels.labels.map((label) => label.name),
-      removed: [],
-      labels: labels.labels,
-      source: "integration",
-    });
-  }
+  const labels = shouldAutoLabel
+    ? await applySingleLabelToEmail(userId, {
+        emailId: rule.emailId,
+        subject: rule.subject,
+        labelName: selectedCandidate.labelName,
+        target,
+        source,
+      })
+    : { labels: [] };
 
   if (shouldAutoLabel) {
     return {
       action: "labels_added",
       threshold,
-      confidence: rule.confidence,
+      confidence: highestConfidence,
       accountEmail: target.account.email,
       emailId: rule.emailId,
       added: labels.labels,
@@ -781,12 +708,20 @@ async function evaluateAndApplyLabels(userId, rule) {
 
   const previousRule = await getEmailRuleByEmailId(userId, rule.emailId);
   const pendingRule = await upsertEmailRule(userId, {
-    ...rule,
+    emailId: rule.emailId,
+    threadId: rule.threadId,
+    fromEmail: rule.fromEmail,
+    fromName: rule.fromName,
+    subject: rule.subject,
+    snippet: rule.snippet,
+    confidence: highestConfidence,
+    labelsApplied: rule.labelCandidates.map((candidate) => candidate.labelName),
     isPending: true,
     metadata: {
-      source: "integration",
+      source,
       threshold,
       accountEmail: target.account.email,
+      labelReasons: Object.fromEntries(rule.labelCandidates.map((candidate) => [candidate.labelName, candidate.reason])),
     },
   });
   await emitEmailRuleUpsertWebhook(userId, previousRule, pendingRule, rule);
@@ -794,11 +729,156 @@ async function evaluateAndApplyLabels(userId, rule) {
   return {
     action: "pending_rule_created",
     threshold,
-    confidence: rule.confidence,
+    confidence: highestConfidence,
     accountEmail: target.account.email,
     emailId: rule.emailId,
-    added: labels.labels,
     rule: pendingRule,
+  };
+}
+
+export async function applySingleLabelToEmail(userId, { emailId, subject, labelName, target = null, source = "integration" }) {
+  const messageTarget = target ?? await findConnectedMessageById(userId, emailId, subject);
+
+  if (!messageTarget) {
+    const error = new Error("Email was not found in connected email accounts");
+    error.status = 404;
+    throw error;
+  }
+
+  if (!["gmail", "imap"].includes(messageTarget.account.provider)) {
+    const error = new Error(`${messageTarget.account.provider} message labels are not implemented yet`);
+    error.status = 501;
+    throw error;
+  }
+
+  const labels = await resolveProviderLabels(userId, messageTarget.account.id, [labelName]);
+
+  if (!labels.ok) {
+    const error = new Error(labels.error);
+    error.status = labels.status;
+    error.labels = labels.labels;
+    throw error;
+  }
+
+  if (messageTarget.account.provider === "gmail") {
+    const accessToken = await getValidEmailAccountAccessToken(messageTarget.account);
+    await modifyGmailMessageLabels({
+      accessToken,
+      emailId,
+      addLabelIds: labels.labels.map((label) => label.providerLabelId),
+      removeLabelIds: [],
+    });
+  } else {
+    await moveImapMessageToFolders({
+      account: messageTarget.account,
+      emailId,
+      addFolders: labels.labels.map((label) => label.providerLabelId),
+      removeFolders: [],
+    });
+  }
+
+  await recordMetricEvent(userId, "email_labeled", {
+    emailId,
+    accountEmail: messageTarget.account.email,
+    metadata: { provider: messageTarget.account.provider, labels: labels.labels.map((label) => label.name), source },
+  });
+  await emitWebhookEvent(userId, "email.labels_updated", {
+    emailId,
+    accountEmail: messageTarget.account.email,
+    added: labels.labels.map((label) => label.name),
+    removed: [],
+    labels: labels.labels,
+    source,
+  });
+
+  return {
+    accountEmail: messageTarget.account.email,
+    emailId,
+    labels: labels.labels,
+  };
+}
+
+async function searchConnectedEmailsForRules(userId, { query, accountEmail }) {
+  const accounts = await getConnectedEmailAccounts(userId);
+  const results = [];
+  const selectedAccounts = accountEmail
+    ? accounts.filter((account) => account.email.toLowerCase() === accountEmail)
+    : accounts;
+
+  if (accountEmail && selectedAccounts.length === 0) {
+    const error = new Error("Email account not found");
+    error.status = 404;
+    throw error;
+  }
+
+  for (const account of selectedAccounts) {
+    if (results.length >= 10) {
+      break;
+    }
+
+    if (!["gmail", "imap"].includes(account.provider)) {
+      continue;
+    }
+
+    try {
+      if (account.provider === "gmail") {
+        const accessToken = await getValidEmailAccountAccessToken(account);
+        const emails = await searchGmailEmailsForRules(accessToken, { query }, 10 - results.length);
+        results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
+      } else {
+        const emails = await searchImapEmailContexts(account, { subject: query }, 10 - results.length);
+        results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
+      }
+    } catch (error) {
+      if (error.status !== 404) {
+        console.warn(`Rule email search failed for ${account.provider} ${account.email}:`, error.message);
+      }
+    }
+  }
+
+  return results.slice(0, 10);
+}
+
+async function searchGmailEmailsForRules(accessToken, { query }, limit) {
+  const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+  if (query) {
+    url.searchParams.set("q", `subject:${quoteGmailSearchValue(query)}`);
+  }
+  url.searchParams.set("maxResults", String(Math.min(Math.max(limit, 1), 10)));
+
+  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+  const data = await response.json();
+  const messages = data.messages ?? [];
+  const emails = [];
+
+  for (const item of messages) {
+    const message = await fetchGmailMessageFull(accessToken, item.id);
+    emails.push(gmailMessageToRuleSearchResult(message, item.id));
+  }
+
+  return emails;
+}
+
+async function fetchGmailMessageFull(accessToken, emailId) {
+  const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}`);
+  url.searchParams.set("format", "full");
+
+  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+  return response.json();
+}
+
+function gmailMessageToRuleSearchResult(message, fallbackEmailId) {
+  const headers = getGmailHeaders(message);
+  const fromEmail = extractEmailAddress(headers.from || "");
+
+  return {
+    emailId: message.id || fallbackEmailId,
+    threadId: message.threadId || message.id || fallbackEmailId,
+    fromEmail,
+    fromName: extractDisplayName(headers.from || "") || fromEmail,
+    to: formatEmailList(headers.to || ""),
+    subject: headers.subject || "",
+    snippet: extractGmailTextBody(message.payload) || message.snippet || "",
   };
 }
 
@@ -911,7 +991,7 @@ function parseLabelMutationInput(body) {
   return { ok: true, accountEmail, emailId, labels: uniqueLabels };
 }
 
-function parseLabelReasons(value) {
+function parseLabelReasons(value, { allowEmpty = false } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ok: false, error: "labelReasons must be an object keyed by label name" };
   }
@@ -926,7 +1006,7 @@ function parseLabelReasons(value) {
       return { ok: false, error: "labelReasons cannot include an empty label name" };
     }
 
-    if (!reasonText) {
+    if (!allowEmpty && !reasonText) {
       return { ok: false, error: `Reason is required for ${labelName}` };
     }
 
@@ -938,6 +1018,62 @@ function parseLabelReasons(value) {
   }
 
   return { ok: true, labelReasons };
+}
+
+async function parseManualRuleReviewInput(userId, body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, error: "Request body must be an object" };
+  }
+
+  const rule = {};
+  const stringFields = ["emailId", "threadId", "fromEmail", "fromName", "subject", "snippet"];
+
+  for (const field of stringFields) {
+    if (typeof body[field] !== "string" || body[field].trim().length === 0) {
+      return { ok: false, error: `${field} must be a non-empty string` };
+    }
+
+    rule[field] = body[field].trim();
+  }
+
+  const labelsApplied = Array.isArray(body.labelsApplied)
+    ? body.labelsApplied.filter((label) => typeof label === "string").map((label) => label.trim()).filter(Boolean)
+    : [];
+  const uniqueLabelsApplied = [...new Set(labelsApplied)];
+
+  if (uniqueLabelsApplied.length !== 1) {
+    return { ok: false, error: "Select exactly one label before marking the rule reviewed" };
+  }
+
+  const resolvedLabels = await resolveAppLabelsByName(userId, uniqueLabelsApplied);
+  if (!resolvedLabels.ok) {
+    return resolvedLabels;
+  }
+
+  const labelReasonsInput = parseLabelReasons(body.labelReasons ?? {}, { allowEmpty: true });
+  if (!labelReasonsInput.ok) {
+    return labelReasonsInput;
+  }
+
+  const unexpectedReasons = Object.keys(labelReasonsInput.labelReasons).filter(
+    (label) => !resolvedLabels.labels.some((selectedLabel) => selectedLabel.toLowerCase() === label.toLowerCase()),
+  );
+  if (unexpectedReasons.length > 0) {
+    return { ok: false, error: "labelReasons can only include labels listed in labelsApplied", labels: unexpectedReasons };
+  }
+
+  return {
+    ok: true,
+    rule: {
+      ...rule,
+      confidence: 1,
+      labelsApplied: resolvedLabels.labels,
+      isPending: false,
+      metadata: {
+        labelReasons: normalizeLabelReasons(resolvedLabels.labels, labelReasonsInput.labelReasons),
+      },
+    },
+  };
 }
 
 function normalizeLabelReasons(labels, labelReasons) {
@@ -1117,6 +1253,104 @@ export async function parseEmailRuleInput(userId, body, { partial }) {
 
   if (partial && Object.keys(rule).length === 0) {
     return { ok: false, error: "At least one email rule field is required" };
+  }
+
+  return { ok: true, rule };
+}
+
+export async function parseLabelClassificationInput(userId, body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, error: "Request body must be an object" };
+  }
+
+  for (const field of EMAIL_RULE_REQUIRED_FIELDS) {
+    if (!(field in body)) {
+      return { ok: false, error: `${field} is required` };
+    }
+  }
+
+  const rule = {};
+  const stringFields = ["emailId", "threadId", "fromEmail", "fromName", "subject", "snippet"];
+
+  for (const field of stringFields) {
+    if (typeof body[field] !== "string" || body[field].trim().length === 0) {
+      return { ok: false, error: `${field} must be a non-empty string` };
+    }
+
+    rule[field] = body[field].trim();
+  }
+
+  if (!Array.isArray(body.labelsApplied)) {
+    return { ok: false, error: "labelsApplied must be an array of label candidate objects" };
+  }
+
+  if (body.labelsApplied.length > 3) {
+    return { ok: false, error: "labelsApplied can include at most 3 label candidates" };
+  }
+
+  const parsedCandidates = [];
+
+  for (const [index, candidate] of body.labelsApplied.entries()) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return { ok: false, error: `labelsApplied[${index}] must be an object` };
+    }
+
+    const labelName = typeof candidate.labelName === "string" ? candidate.labelName.trim() : "";
+    const confidence = Number(candidate.confidence);
+    const reason = typeof candidate.reason === "string" ? candidate.reason.trim() : "";
+
+    if (!labelName) {
+      return { ok: false, error: `labelsApplied[${index}].labelName must be a non-empty string` };
+    }
+
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+      return { ok: false, error: `labelsApplied[${index}].confidence must be a number between 0 and 1` };
+    }
+
+    if (!reason) {
+      return { ok: false, error: `labelsApplied[${index}].reason is required` };
+    }
+
+    if (reason.length > 200) {
+      return { ok: false, error: `labelsApplied[${index}].reason must be 200 characters or less` };
+    }
+
+    parsedCandidates.push({ labelName, confidence, reason });
+  }
+
+  const uniqueCandidates = [];
+  const candidatesByLowerName = new Map();
+
+  for (const candidate of parsedCandidates) {
+    const lowerName = candidate.labelName.toLowerCase();
+    const existing = candidatesByLowerName.get(lowerName);
+
+    if (!existing || candidate.confidence > existing.confidence) {
+      candidatesByLowerName.set(lowerName, candidate);
+    }
+  }
+
+  uniqueCandidates.push(...candidatesByLowerName.values());
+
+  const labels = await resolveAppLabelsByName(userId, uniqueCandidates.map((candidate) => candidate.labelName));
+  if (!labels.ok) {
+    return labels;
+  }
+
+  const canonicalLabelsByLowerName = new Map(labels.labels.map((label) => [label.toLowerCase(), label]));
+  rule.labelCandidates = uniqueCandidates.map((candidate) => ({
+    ...candidate,
+    labelName: canonicalLabelsByLowerName.get(candidate.labelName.toLowerCase()) ?? candidate.labelName,
+  }));
+
+  if ("accountEmail" in body) {
+    if (typeof body.accountEmail !== "string" || body.accountEmail.trim().length === 0) {
+      return { ok: false, error: "accountEmail must be a non-empty string" };
+    }
+
+    rule.metadata = {
+      accountEmail: body.accountEmail.trim().toLowerCase(),
+    };
   }
 
   return { ok: true, rule };
@@ -1568,7 +1802,13 @@ function parsePendingFilter(value) {
 }
 
 export function mapEmailRuleRow(row) {
-  const metadata = row.metadata ?? {};
+  const {
+    reason: _reason,
+    userQuestion: _userQuestion,
+    ruleSuggestion: _ruleSuggestion,
+    recommendedAction: _recommendedAction,
+    ...metadata
+  } = row.metadata ?? {};
 
   return {
     id: row.id,
@@ -1634,10 +1874,6 @@ function escapeCsvCell(value) {
   }
 
   return value;
-}
-
-function renderTemplateDescription(description, confidenceThreshold) {
-  return String(description ?? "").split("{confidenceThreshold}").join(String(confidenceThreshold));
 }
 
 export async function getUserEmailAccount(userId, accountEmail) {
@@ -1858,6 +2094,60 @@ function buildReplyAllRecipients(headers, accountEmail) {
 function extractEmailAddress(value = "") {
   const match = value.match(/<([^>]+)>/);
   return (match?.[1] ?? value).trim();
+}
+
+function extractDisplayName(value = "") {
+  const match = String(value).match(/^"?([^"<]+)"?\s*</);
+  return (match?.[1] ?? "").trim();
+}
+
+function formatEmailList(value = "") {
+  return String(value)
+    .split(",")
+    .map((item) => extractEmailAddress(item))
+    .filter(Boolean)
+    .join(", ");
+}
+
+function quoteGmailSearchValue(value) {
+  const escaped = String(value).trim().replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
+function extractGmailTextBody(part) {
+  if (!part) {
+    return "";
+  }
+
+  if (part.mimeType === "text/plain" && part.body?.data) {
+    return decodeBase64Url(part.body.data);
+  }
+
+  for (const childPart of part.parts ?? []) {
+    const body = extractGmailTextBody(childPart);
+    if (body) {
+      return body;
+    }
+  }
+
+  if (part.body?.data) {
+    return stripHtml(decodeBase64Url(part.body.data));
+  }
+
+  return "";
+}
+
+function decodeBase64Url(value) {
+  return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+}
+
+function stripHtml(value) {
+  return String(value)
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeReplySubject(subject) {
