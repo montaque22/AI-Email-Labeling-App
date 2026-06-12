@@ -21,6 +21,7 @@ import {
   Inbox,
   LogOut,
   MailCheck,
+  Menu,
   Pencil,
   Plus,
   Save,
@@ -438,7 +439,7 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-zinc-700">Name</span>
               <input
-                className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
                 onChange={(event) => setName(event.target.value)}
                 required
                 value={name}
@@ -449,7 +450,7 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
             <span className="mb-1 block text-sm font-medium text-zinc-700">Email</span>
             <input
               autoComplete="email"
-              className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
               onChange={(event) => setEmail(event.target.value)}
               required
               type="email"
@@ -460,7 +461,7 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
             <span className="mb-1 block text-sm font-medium text-zinc-700">Password</span>
             <input
               autoComplete={mode === "login" ? "current-password" : "new-password"}
-              className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
               minLength={8}
               onChange={(event) => setPassword(event.target.value)}
               required
@@ -519,20 +520,45 @@ function AuthenticatedLayout({
   user: AuthUser;
 }) {
   const title = useMemo(() => getPageTitle(activePage), [activePage]);
+  const [privacyMode, setPrivacyMode] = useState(() => localStorage.getItem("emailable-privacy-mode") === "true");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("emailable-sidebar-collapsed") === "true");
+
+  useEffect(() => {
+    localStorage.setItem("emailable-privacy-mode", String(privacyMode));
+  }, [privacyMode]);
+
+  useEffect(() => {
+    localStorage.setItem("emailable-sidebar-collapsed", String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-950">
-      <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-zinc-200 bg-white md:flex md:flex-col">
-        <div className="flex h-16 items-center gap-3 border-b border-zinc-200 px-5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-zinc-950 text-white">
-            <Inbox className="h-5 w-5" />
+    <div className="min-h-screen bg-transparent text-zinc-950">
+      <aside className={cn("fixed inset-y-0 left-0 hidden border-r border-white/60 bg-white/55 shadow-sm backdrop-blur-2xl transition-all md:flex md:flex-col", sidebarCollapsed ? "w-20" : "w-64")}>
+        <div className={cn("flex h-16 items-center border-b border-zinc-200 px-4", sidebarCollapsed ? "justify-center" : "justify-between gap-3")}>
+          <div className={cn("flex min-w-0 items-center gap-3", sidebarCollapsed && "justify-center")}>
+            <EmailableLogo className="h-9 w-9 shrink-0" />
+            {!sidebarCollapsed ? (
+              <div className="min-w-0">
+                <p className="truncate bg-gradient-to-r from-cyan-500 via-blue-600 to-violet-600 bg-clip-text text-xl font-bold text-transparent">
+                  Emailable
+                </p>
+              </div>
+            ) : null}
           </div>
-          <div className="min-w-0">
-            <p className="text-sm font-semibold">Email Labeling</p>
-            <p className="truncate text-xs text-zinc-500">{user.email}</p>
-          </div>
+          {!sidebarCollapsed ? (
+            <Button aria-label="Collapse menu" onClick={() => setSidebarCollapsed(true)} size="icon" type="button" variant="ghost">
+              <Menu className="h-4 w-4" />
+            </Button>
+          ) : null}
         </div>
-        <nav className="flex-1 space-y-1 px-3 py-4">
+        {sidebarCollapsed ? (
+          <div className="border-b border-zinc-200 p-3">
+            <Button aria-label="Expand menu" className="w-full" onClick={() => setSidebarCollapsed(false)} size="icon" type="button" variant="ghost">
+              <Menu className="h-4 w-4" />
+            </Button>
+          </div>
+        ) : null}
+        <nav className={cn("flex-1 space-y-1 py-4", sidebarCollapsed ? "px-2" : "px-3")}>
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive =
@@ -544,21 +570,25 @@ function AuthenticatedLayout({
               <div key={item.id}>
                 <button
                   className={cn(
-                    "flex h-10 w-full items-center gap-3 rounded-md px-3 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 hover:text-zinc-950",
-                    isActive && "bg-zinc-950 text-white hover:bg-zinc-950 hover:text-white",
+                    "flex h-10 w-full items-center rounded-md text-sm font-medium text-zinc-600 transition-colors hover:bg-white/55 hover:text-zinc-950",
+                    sidebarCollapsed ? "justify-center px-0" : "gap-3 px-3 text-left",
+                    isActive &&
+                      "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl hover:bg-white/80 hover:text-zinc-950",
                   )}
                   onClick={() => onNavigate(item.id)}
+                  title={sidebarCollapsed ? item.label : undefined}
                 >
-                  <Icon className="h-4 w-4" />
-                  {item.label}
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {!sidebarCollapsed ? item.label : null}
                 </button>
-                {item.id === "settings" && isSettingsPage(activePage) ? (
+                {!sidebarCollapsed && item.id === "settings" && isSettingsPage(activePage) ? (
                   <div className="mt-1 space-y-1 pl-7">
                     {settingsSubItems.map((subItem) => (
                       <button
                         className={cn(
-                          "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-950",
-                          activePage === subItem.id && "bg-zinc-100 text-zinc-950",
+                          "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-white/55 hover:text-zinc-950",
+                          activePage === subItem.id &&
+                            "border border-white/70 bg-white/65 text-zinc-950 shadow-sm backdrop-blur-xl",
                         )}
                         key={subItem.id}
                         onClick={() => onNavigate(subItem.id)}
@@ -568,13 +598,14 @@ function AuthenticatedLayout({
                     ))}
                   </div>
                 ) : null}
-                {item.id === "ai-prompts" && isAiPromptsPage(activePage) ? (
+                {!sidebarCollapsed && item.id === "ai-prompts" && isAiPromptsPage(activePage) ? (
                   <div className="mt-1 space-y-1 pl-7">
                     {aiPromptSubItems.map((subItem) => (
                       <button
                         className={cn(
-                          "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-950",
-                          activePage === subItem.id && "bg-zinc-100 text-zinc-950",
+                          "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-white/55 hover:text-zinc-950",
+                          activePage === subItem.id &&
+                            "border border-white/70 bg-white/65 text-zinc-950 shadow-sm backdrop-blur-xl",
                         )}
                         key={subItem.id}
                         onClick={() => onNavigate(subItem.id)}
@@ -588,25 +619,48 @@ function AuthenticatedLayout({
             );
           })}
         </nav>
-        <div className="border-t border-zinc-200 p-3">
-          <Button className="w-full justify-start" variant="ghost" onClick={onSignOut}>
+        <div className={cn("relative space-y-2 border-t border-zinc-200 p-3", sidebarCollapsed && "px-2")}>
+          <label className={cn("flex min-h-10 cursor-pointer items-center rounded-md text-sm font-medium text-zinc-600 hover:bg-zinc-50", sidebarCollapsed ? "justify-center" : "justify-between gap-3 px-3")}>
+            {!sidebarCollapsed ? (
+              <span className="flex items-center gap-2">
+                <ShieldCheck className={cn("h-4 w-4", privacyMode && "text-emerald-600")} />
+                Privacy
+              </span>
+            ) : (
+              <ShieldCheck className={cn("h-4 w-4", privacyMode && "text-emerald-600")} />
+            )}
+            <input
+              aria-label="Privacy mode"
+              checked={privacyMode}
+              className="peer sr-only"
+              onChange={(event) => setPrivacyMode(event.target.checked)}
+              title={sidebarCollapsed ? "Privacy" : undefined}
+              type="checkbox"
+            />
+            {!sidebarCollapsed ? (
+              <span className="relative h-5 w-9 rounded-full bg-zinc-200 transition-colors peer-checked:bg-zinc-950 peer-checked:[&>span]:translate-x-4">
+                <span className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform" />
+              </span>
+            ) : null}
+          </label>
+          <Button className={cn("w-full", sidebarCollapsed ? "justify-center px-0" : "justify-start")} variant="ghost" onClick={onSignOut} title={sidebarCollapsed ? "Sign out" : undefined}>
             <LogOut className="h-4 w-4" />
-            Sign out
+            {!sidebarCollapsed ? "Sign out" : null}
           </Button>
         </div>
       </aside>
 
-      <div className="min-w-0 md:pl-64">
-        <header className="sticky top-0 z-10 flex min-h-16 flex-col gap-3 border-b border-zinc-200 bg-white/95 px-5 py-3 backdrop-blur md:h-16 md:flex-row md:items-center md:justify-between md:py-0">
+      <div className={cn("min-w-0 transition-all", sidebarCollapsed ? "md:pl-20" : "md:pl-64")}>
+        <header className="sticky top-0 z-10 flex min-h-16 flex-col gap-3 border-b border-white/60 bg-white/55 px-5 py-3 shadow-sm backdrop-blur-xl md:h-16 md:flex-row md:items-center md:justify-between md:py-0">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase text-zinc-500">Dashboard</p>
             <h2 className="truncate text-xl font-semibold">{title}</h2>
           </div>
           <div className="hidden min-w-0 items-center gap-3 md:flex">
-            {user.picture ? <img alt="" className="h-8 w-8 rounded-full" src={user.picture} /> : null}
+            <UserAvatar className="h-8 w-8" user={user} />
             <div className="min-w-0 text-right">
-              <p className="truncate text-sm font-medium">{user.name}</p>
-              <p className="truncate text-xs text-zinc-500">{user.email}</p>
+              <p className="truncate text-sm font-medium">{formatEmailTextForPrivacy(user.name, privacyMode)}</p>
+              <p className="truncate text-xs text-zinc-500">{formatEmailForPrivacy(user.email, privacyMode)}</p>
             </div>
           </div>
           <div className="flex gap-2 overflow-x-auto md:hidden">
@@ -616,39 +670,41 @@ function AuthenticatedLayout({
               ...(isSettingsPage(activePage) ? settingsSubItems : []),
             ].map((item) => (
               <Button
+                className={cn(
+                  activePage === item.id ||
+                    (item.id === "settings" && isSettingsPage(activePage)) ||
+                    (item.id === "ai-prompts" && isAiPromptsPage(activePage))
+                    ? "border-white/70 bg-white/70 text-zinc-950 shadow-sm hover:bg-white/80"
+                    : undefined,
+                )}
                 key={item.id}
                 onClick={() => onNavigate(item.id)}
                 size="sm"
-                variant={
-                  activePage === item.id ||
-                  (item.id === "settings" && isSettingsPage(activePage)) ||
-                  (item.id === "ai-prompts" && isAiPromptsPage(activePage))
-                    ? "default"
-                    : "outline"
-                }
+                variant="outline"
               >
                 {item.label}
               </Button>
             ))}
           </div>
         </header>
-        <main className="min-w-0 overflow-x-hidden p-4 sm:p-5 lg:p-8">
+        <main className="min-h-[calc(100vh-4rem)] min-w-0 overflow-x-hidden p-4 sm:p-5 lg:p-8">
           {activePage === "overview" && (
             <OverviewPage
               onNavigate={onNavigate}
               onOpenPendingRuleReview={onOpenPendingRuleReview}
               onOpenRuleReview={onOpenRuleReview}
+              privacyMode={privacyMode}
             />
           )}
-          {activePage === "labels" && <LabelsPage />}
-          {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} />}
+          {activePage === "labels" && <LabelsPage privacyMode={privacyMode} />}
+          {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} privacyMode={privacyMode} />}
           {activePage === "metrics" && <MetricsPage />}
           {activePage === "ai-prompts" && <AiPromptsPage onNavigate={onNavigate} />}
           {activePage === "ai-email-label" && <AiPromptEditorPage promptKey="email-label" />}
-          {activePage === "ai-draft-reply" && <AiPromptEditorPage promptKey="draft-reply" />}
+          {activePage === "ai-draft-reply" && <AiPromptEditorPage promptKey="draft-reply" privacyMode={privacyMode} />}
           {activePage === "settings" && <SettingsPage onNavigate={onNavigate} />}
           {activePage === "confidence-threshold" && <ConfidenceThresholdPage />}
-          {activePage === "email-accounts" && <EmailAccountsPage />}
+          {activePage === "email-accounts" && <EmailAccountsPage privacyMode={privacyMode} />}
           {activePage === "endpoints" && <EndpointsPage />}
           {activePage === "webhook" && <WebhookPage />}
           {activePage === "mcp-server" && <McpServerPage />}
@@ -662,10 +718,12 @@ function OverviewPage({
   onNavigate,
   onOpenPendingRuleReview,
   onOpenRuleReview,
+  privacyMode,
 }: {
   onNavigate: (page: Page) => void;
   onOpenPendingRuleReview: () => void;
   onOpenRuleReview: (emailId: string) => void;
+  privacyMode: boolean;
 }) {
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -758,8 +816,8 @@ function OverviewPage({
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-zinc-950">{rule.subject}</p>
-                  <p className="mt-1 truncate text-sm text-zinc-500">{rule.fromEmail}</p>
-                  <p className="mt-1 truncate text-xs text-zinc-500">Account: {rule.accountEmail || "Unknown account"}</p>
+                  <p className="mt-1 truncate text-sm text-zinc-500">{formatEmailForPrivacy(rule.fromEmail, privacyMode)}</p>
+                  <p className="mt-1 truncate text-xs text-zinc-500">Account: {formatEmailForPrivacy(rule.accountEmail || "Unknown account", privacyMode)}</p>
                   <p className="mt-1 line-clamp-2 text-sm text-zinc-600">
                     {formatRuleLabelReasons(rule)}
                   </p>
@@ -780,7 +838,7 @@ function OverviewPage({
   );
 }
 
-function LabelsPage() {
+function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
   const [labels, setLabels] = useState<Label[]>([]);
   const [connectedAccountCount, setConnectedAccountCount] = useState(0);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -1205,7 +1263,7 @@ function LabelsPage() {
     <div className="space-y-6">
       {uploadError ? (
         <div
-          className="fixed right-5 top-5 z-50 w-[min(420px,calc(100vw-2.5rem))] rounded-md border border-red-200 bg-white p-4 text-sm text-red-700 shadow-lg"
+          className="fixed right-5 top-5 z-50 w-[min(420px,calc(100vw-2.5rem))] glass-surface rounded-md border border-red-200 p-4 text-sm text-red-700 shadow-lg"
           role="alert"
         >
           <div className="flex items-start gap-3">
@@ -1220,8 +1278,8 @@ function LabelsPage() {
         </div>
       ) : null}
       {deleteConfirmationIds.length > 0 ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-[min(460px,100%)] rounded-md border border-zinc-200 bg-white p-5 shadow-xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
+          <div className="w-[min(460px,100%)] glass-panel rounded-md border p-5 shadow-xl">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-base font-semibold text-zinc-950">Delete label?</h2>
@@ -1306,7 +1364,7 @@ function LabelsPage() {
             <form className="grid gap-3 2xl:grid-cols-[minmax(0,220px)_1fr_auto]" onSubmit={handleAddLabel}>
               <div>
                 <input
-                  className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                  className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
                   maxLength={LABEL_NAME_MAX_LENGTH}
                   onChange={(event) => setNewName(event.target.value)}
                   pattern="[A-Za-z0-9 _-]+"
@@ -1324,7 +1382,7 @@ function LabelsPage() {
               <div>
                 <div className="flex gap-2">
                   <input
-                    className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                    className="h-10 min-w-0 flex-1 glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
                     maxLength={LABEL_DESCRIPTION_MAX_LENGTH}
                     onBlur={() => window.setTimeout(() => setActiveDescriptionInput(null), 0)}
                     onChange={(event) => setNewDescription(event.target.value)}
@@ -1398,7 +1456,7 @@ function LabelsPage() {
             </div>
           ) : (
             <div className="overflow-x-auto rounded-md border border-zinc-200">
-              <div className="grid min-w-[720px] grid-cols-[44px_1fr_1.5fr_160px] gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-xs font-medium uppercase text-zinc-500">
+              <div className="grid min-w-[720px] grid-cols-[44px_1fr_1.5fr_160px] gap-3 border-b border-zinc-200 glass-panel px-4 py-3 text-xs font-medium uppercase text-zinc-500">
                 <span />
                 <span>Name</span>
                 <span>Description</span>
@@ -1426,7 +1484,7 @@ function LabelsPage() {
                         <>
                           <div>
                             <input
-                              className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
                               maxLength={LABEL_NAME_MAX_LENGTH}
                               onChange={(event) => setEditName(event.target.value)}
                               pattern="[A-Za-z0-9 _-]+"
@@ -1442,7 +1500,7 @@ function LabelsPage() {
                           <div>
                             <div className="flex gap-2">
                               <input
-	                                className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+	                                className="h-10 min-w-0 flex-1 glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
 	                                maxLength={LABEL_DESCRIPTION_MAX_LENGTH}
 	                                onBlur={() => window.setTimeout(() => setActiveDescriptionInput(null), 0)}
                                 onChange={(event) => setEditDescription(event.target.value)}
@@ -1505,7 +1563,7 @@ function LabelsPage() {
                             {renderLabelDescription(label.description, confidenceThreshold)}
                             {hasFailedSyncs ? (
                               <span className="mt-2 block text-xs text-red-600">
-                                {failedSyncs.map((sync) => `${providerLabel(sync.provider)} ${sync.email}: ${sync.lastError}`).join("; ")}
+                                {failedSyncs.map((sync) => `${providerLabel(sync.provider)} ${formatEmailForPrivacy(sync.email, privacyMode)}: ${sync.lastError}`).join("; ")}
                               </span>
                             ) : null}
                           </p>
@@ -1620,9 +1678,11 @@ function MetricsPage() {
 function RuleReviewPage({
   initialEmailId,
   initialPendingFilter,
+  privacyMode,
 }: {
   initialEmailId: string | null;
   initialPendingFilter: RulePendingFilter | null;
+  privacyMode: boolean;
 }) {
   const [rules, setRules] = useState<EmailRule[]>([]);
   const [labels, setLabels] = useState<Label[]>([]);
@@ -2056,7 +2116,7 @@ function RuleReviewPage({
               <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Search</span>
               <div className="flex gap-2">
                 <input
-                  className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                  className="h-10 min-w-0 flex-1 glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
                   onChange={(event) => setSearchInput(event.target.value)}
                   placeholder="Search sender, subject, labels..."
                   value={searchInput}
@@ -2074,7 +2134,7 @@ function RuleReviewPage({
             <label className="block">
               <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Rules shown</span>
               <select
-                className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm"
+                className="h-10 w-full glass-panel rounded-md border px-3 text-sm"
                 onChange={(event) => {
                   setPageSize(Number(event.target.value));
                   setPage(1);
@@ -2091,7 +2151,7 @@ function RuleReviewPage({
             <label className="block">
               <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Filter</span>
               <select
-                className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm"
+                className="h-10 w-full glass-panel rounded-md border px-3 text-sm"
                 onChange={(event) => {
                   setPendingFilter(event.target.value as RulePendingFilter);
                   setPage(1);
@@ -2106,7 +2166,7 @@ function RuleReviewPage({
             <label className="block">
               <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Group by</span>
               <select
-                className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm"
+                className="h-10 w-full glass-panel rounded-md border px-3 text-sm"
                 onChange={(event) => setGroupBy(event.target.value as RuleGroupBy)}
                 value={groupBy}
               >
@@ -2168,7 +2228,7 @@ function RuleReviewPage({
               <div className="space-y-4">
                 {groupedRules.map((group) => (
                   <div key={group.label}>
-                    {groupBy !== "none" ? <p className="mb-2 text-xs font-medium uppercase text-zinc-500">{group.label}</p> : null}
+                    {groupBy !== "none" ? <p className="mb-2 text-xs font-medium uppercase text-zinc-500">{groupBy === "fromEmail" ? formatEmailForPrivacy(group.label, privacyMode) : group.label}</p> : null}
                     <div className="divide-y divide-zinc-200 overflow-hidden rounded-md border border-zinc-200">
                       {group.rules.map((rule) => {
                         const isRuleSelected = selectedRuleIds.includes(rule.emailId);
@@ -2195,10 +2255,10 @@ function RuleReviewPage({
                                 <Badge className={rule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
                                   {rule.isPending ? "Pending" : "Reviewed"}
                                 </Badge>
-                                <p className="truncate text-sm font-medium text-zinc-950">{rule.fromEmail}</p>
+                                <p className="truncate text-sm font-medium text-zinc-950">{formatEmailForPrivacy(rule.fromEmail, privacyMode)}</p>
                               </div>
                               <p className="mt-1 truncate text-xs text-zinc-500">
-                                Account: {rule.accountEmail || "Unknown account"}
+                                Account: {formatEmailForPrivacy(rule.accountEmail || "Unknown account", privacyMode)}
                               </p>
                               <p className="mt-1 truncate text-xs text-zinc-500">
                                 Created: {formatDate(rule.createdAt)}
@@ -2232,7 +2292,7 @@ function RuleReviewPage({
         </Card>
 
         {addRuleStep === "search" ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
           <Card className="min-h-[720px] max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden">
             <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
               <div className="min-w-0">
@@ -2249,7 +2309,7 @@ function RuleReviewPage({
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Subject search</span>
                   <input
-                    className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                    className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
                     onChange={(event) => setAddRuleSearchQuery(event.target.value)}
                     placeholder="Search by subject"
                     value={addRuleSearchQuery}
@@ -2258,14 +2318,14 @@ function RuleReviewPage({
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">Account</span>
                   <select
-                    className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm"
+                    className="h-10 w-full glass-panel rounded-md border px-3 text-sm"
                     onChange={(event) => setAddRuleAccountEmail(event.target.value)}
                     value={addRuleAccountEmail}
                   >
                     <option value="">All accounts</option>
                     {emailAccounts.map((account) => (
                       <option key={account.id} value={account.email}>
-                        {account.email}
+                        {formatEmailForPrivacy(account.email, privacyMode)}
                       </option>
                     ))}
                   </select>
@@ -2294,9 +2354,9 @@ function RuleReviewPage({
                       type="button"
                     >
                       <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500">
-                        <span className="min-w-0 max-w-full truncate">To: {email.to || "Unknown"}</span>
-                        <span className="min-w-0 max-w-full truncate">From: {email.fromEmail || "Unknown"}</span>
-                        <span className="min-w-0 max-w-full truncate">Account: {email.accountEmail}</span>
+                        <span className="min-w-0 max-w-full truncate">To: {formatEmailTextForPrivacy(email.to || "Unknown", privacyMode)}</span>
+                        <span className="min-w-0 max-w-full truncate">From: {formatEmailForPrivacy(email.fromEmail || "Unknown", privacyMode)}</span>
+                        <span className="min-w-0 max-w-full truncate">Account: {formatEmailForPrivacy(email.accountEmail, privacyMode)}</span>
                       </div>
                       <p className="mt-2 truncate text-sm font-medium text-zinc-950">{email.subject || "(no subject)"}</p>
                       <p className="mt-1 line-clamp-2 text-sm leading-5 text-zinc-600">{email.snippet || "No snippet available."}</p>
@@ -2310,7 +2370,7 @@ function RuleReviewPage({
         ) : null}
 
         {selectedRule ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
         <Card className="max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden">
           <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
             <div className="min-w-0">
@@ -2328,8 +2388,8 @@ function RuleReviewPage({
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-zinc-950">{selectedRule.fromName}</p>
-                      <p className="truncate text-sm text-zinc-500">{selectedRule.fromEmail}</p>
-                      <p className="truncate text-xs text-zinc-500">Account: {selectedRule.accountEmail || "Unknown account"}</p>
+                      <p className="truncate text-sm text-zinc-500">{formatEmailForPrivacy(selectedRule.fromEmail, privacyMode)}</p>
+                      <p className="truncate text-xs text-zinc-500">Account: {formatEmailForPrivacy(selectedRule.accountEmail || "Unknown account", privacyMode)}</p>
                       <p className="truncate text-xs text-zinc-500">Created: {formatDate(selectedRule.createdAt)}</p>
                     </div>
                     <Badge className={selectedRule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
@@ -2352,7 +2412,7 @@ function RuleReviewPage({
                       {availableLabels.map((label) => (
                         <button
                           className={cn(
-                            "w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-left text-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50",
+                            "w-full glass-panel rounded-md border px-3 py-2 text-left text-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50",
                             draftLabels.includes(label.name)
                               ? "cursor-not-allowed border-emerald-200 bg-emerald-50 text-emerald-900 hover:border-emerald-200 hover:bg-emerald-50"
                               : "cursor-grab active:cursor-grabbing",
@@ -2427,7 +2487,7 @@ function RuleReviewPage({
                             <label className="mt-2 block">
                               <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">When to use this label</span>
                               <textarea
-                                className="min-h-20 w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
+                                className="min-h-20 w-full glass-panel rounded-md border px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
                                 maxLength={200}
                                 onChange={(event) => updateDraftLabelReason(label, event.target.value)}
                                 placeholder="Explain when the AI should choose this label."
@@ -2521,7 +2581,7 @@ function AiPromptsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
   );
 }
 
-function AiPromptEditorPage({ promptKey }: { promptKey: string }) {
+function AiPromptEditorPage({ promptKey, privacyMode = false }: { promptKey: string; privacyMode?: boolean }) {
   const [prompt, setPrompt] = useState<AiPrompt | null>(null);
   const [markdown, setMarkdown] = useState("");
   const [savedMarkdown, setSavedMarkdown] = useState("");
@@ -2796,18 +2856,18 @@ function AiPromptEditorPage({ promptKey }: { promptKey: string }) {
 		              </CardHeader>
 		              {isEmailExamplesOpen ? <CardContent>
 		                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
-	                  <div className="space-y-3 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+	                  <div className="space-y-3 rounded-md border border-zinc-200 glass-panel p-3">
 	                    <form className="space-y-3" onSubmit={searchDraftSentEmails}>
 	                      <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
 	                        <input
-	                          className="h-10 min-w-0 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+	                          className="h-10 min-w-0 glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
 	                          disabled={isSearchingDraftEmails}
 	                          onChange={(event) => setDraftSearchRecipient(event.target.value)}
 	                          placeholder="Recipient email"
 	                          value={draftSearchRecipient}
 	                        />
 	                        <input
-	                          className="h-10 min-w-0 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+	                          className="h-10 min-w-0 glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
 	                          disabled={isSearchingDraftEmails}
 	                          onChange={(event) => setDraftSearchSubject(event.target.value)}
 	                          placeholder="Subject"
@@ -2844,13 +2904,13 @@ function AiPromptEditorPage({ promptKey }: { promptKey: string }) {
 	                          const isAdded = draftEmailExamples.some((example) => example.emailId === result.emailId);
 	                          return (
 	                            <div
-	                              className="flex flex-col gap-2 rounded-md border border-zinc-200 bg-white p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+	                              className="flex flex-col gap-2 glass-panel rounded-md border p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
 	                              key={`${result.provider}-${result.accountEmail}-${result.emailId}`}
 	                            >
 	                              <div className="min-w-0">
 	                                <p className="truncate font-medium text-zinc-950">{result.subject || "No subject"}</p>
 	                                <p className="truncate text-zinc-500">
-	                                  To {result.to || "Unknown recipient"} from {result.accountEmail}
+	                                  To {formatEmailTextForPrivacy(result.to || "Unknown recipient", privacyMode)} from {formatEmailForPrivacy(result.accountEmail, privacyMode)}
 	                                </p>
 	                              </div>
 	                              <Button
@@ -2877,13 +2937,13 @@ function AiPromptEditorPage({ promptKey }: { promptKey: string }) {
 	                    </div>
 	                    <div className="space-y-2">
 	                      {draftEmailExamples.length === 0 ? (
-	                        <p className="rounded-md border border-dashed border-emerald-200 bg-white/70 px-3 py-6 text-center text-sm text-emerald-800">
+	                        <p className="glass-panel rounded-md border border-dashed border-emerald-200 px-3 py-6 text-center text-sm text-emerald-800">
 	                          No examples added.
 	                        </p>
 	                      ) : (
 	                        draftEmailExamples.map((example) => (
 	                          <div
-	                            className="flex max-w-full items-center gap-2 rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm text-emerald-900"
+	                            className="flex max-w-full items-center gap-2 glass-panel rounded-md border border-emerald-200 px-3 py-2 text-sm text-emerald-900"
 	                            key={example.emailId}
 	                            title={example.subject || "No subject"}
 	                          >
@@ -2909,7 +2969,7 @@ function AiPromptEditorPage({ promptKey }: { promptKey: string }) {
 	              <label className="block">
 	                <span className="mb-1 block text-sm font-medium text-zinc-700">Markdown prompt</span>
 	                <textarea
-	                  className="h-[420px] w-full resize-none overflow-auto rounded-md border border-zinc-200 bg-white px-3 py-3 font-mono text-sm outline-none transition-colors focus:border-zinc-400"
+	                  className="h-[420px] w-full resize-none overflow-auto glass-panel rounded-md border px-3 py-3 font-mono text-sm outline-none transition-colors focus:border-zinc-400"
 	                  disabled={isLoading}
                   onChange={(event) => {
                     setMarkdown(event.target.value);
@@ -2926,7 +2986,7 @@ function AiPromptEditorPage({ promptKey }: { promptKey: string }) {
 	                <p className="text-sm font-medium text-zinc-700">Rendered preview</p>
 	                {isPreviewing ? <span className="text-xs text-zinc-500">Updating...</span> : null}
 	              </div>
-	              <div className="h-[420px] overflow-auto rounded-md border border-zinc-200 bg-white p-4">
+	              <div className="h-[420px] overflow-auto glass-panel rounded-md border p-4">
 	                <div
                   className="max-w-none space-y-3 text-sm leading-6 text-zinc-800 [&_code]:rounded [&_code]:bg-zinc-100 [&_code]:px-1 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:text-lg [&_h3]:font-semibold [&_li]:ml-5 [&_li]:list-disc [&_strong]:font-semibold"
                   dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(previewMarkdown || markdown) }}
@@ -3111,7 +3171,7 @@ function WebhookPage() {
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-zinc-700">Webhook URL</span>
             <input
-              className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
               disabled={isLoading}
               onChange={(event) => {
                 setWebhookUrl(event.target.value);
@@ -3145,7 +3205,7 @@ function WebhookPage() {
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-zinc-700">Bearer token</span>
               <input
-                className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
                 disabled={isLoading}
                 onChange={(event) => {
                   setBearerToken(event.target.value);
@@ -3243,7 +3303,7 @@ function WebhookPage() {
   );
 }
 
-function EmailAccountsPage() {
+function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [providers, setProviders] = useState<EmailProvider[]>([]);
   const [imapForm, setImapForm] = useState({
@@ -3406,7 +3466,7 @@ function EmailAccountsPage() {
               {providers.map((provider) => (
                 <button
                   className={cn(
-                    "rounded-md border border-zinc-200 bg-white p-4 text-left transition-colors hover:bg-zinc-50",
+                    "glass-panel rounded-md border p-4 text-left transition-colors hover:bg-zinc-50",
                     !provider.configured && "cursor-not-allowed opacity-60",
                   )}
                   disabled={!provider.configured}
@@ -3435,7 +3495,7 @@ function EmailAccountsPage() {
             </div>
           ) : (
             <div className="overflow-hidden rounded-md border border-zinc-200">
-              <div className="grid grid-cols-[1fr_140px_140px_120px] gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-xs font-medium uppercase text-zinc-500">
+              <div className="grid grid-cols-[1fr_140px_140px_120px] gap-3 border-b border-zinc-200 glass-panel px-4 py-3 text-xs font-medium uppercase text-zinc-500">
                 <span>Account</span>
                 <span>Provider</span>
                 <span>Source</span>
@@ -3445,7 +3505,7 @@ function EmailAccountsPage() {
                 {accounts.map((account) => (
                   <div className="grid grid-cols-[1fr_140px_140px_120px] items-center gap-3 px-4 py-3" key={account.id}>
                     <div>
-                      <p className="text-sm font-medium text-zinc-950">{account.email}</p>
+                      <p className="text-sm font-medium text-zinc-950">{formatEmailForPrivacy(account.email, privacyMode)}</p>
                       <p className="text-sm text-zinc-500">{account.displayName || "No display name"}</p>
                     </div>
                     <Badge className="w-fit capitalize">{providerLabel(account.provider)}</Badge>
@@ -3476,8 +3536,8 @@ function EmailAccountsPage() {
       </Card>
 
       {showImapModal ? (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-md bg-white shadow-xl">
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto glass-surface rounded-md shadow-xl">
             <div className="flex items-start justify-between gap-4 border-b border-zinc-200 p-5">
               <div>
                 <h3 className="text-lg font-semibold text-zinc-950">Connect IMAP Account</h3>
@@ -3518,7 +3578,7 @@ function EmailAccountsPage() {
                 </label>
               </div>
 
-              <div className="rounded-md border border-zinc-200 bg-zinc-50 p-4">
+              <div className="rounded-md border border-zinc-200 glass-panel p-4">
                 <p className="text-sm font-medium text-zinc-950">Provider setup help</p>
                 <div className="mt-2 flex flex-wrap gap-2 text-sm">
                   <a className="text-blue-700 hover:underline" href="https://support.google.com/mail/answer/7126229?hl=en" rel="noreferrer" target="_blank">
@@ -3592,7 +3652,7 @@ function InputField({
     <label className="block">
       <span className="mb-1 block text-sm font-medium text-zinc-700">{label}</span>
       <input
-        className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+        className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
         type={type}
@@ -3700,7 +3760,7 @@ function EndpointsPage() {
         <CardContent className="space-y-5">
           <div className="grid gap-3 md:grid-cols-[minmax(0,260px)_auto]">
             <input
-              className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
               maxLength={60}
               onChange={(event) => setKeyName(event.target.value)}
               placeholder="Key name"
@@ -3715,14 +3775,14 @@ function EndpointsPage() {
           {newToken ? (
             <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4">
               <p className="text-sm font-medium text-emerald-900">Copy this key now. It will only be shown once.</p>
-              <code className="mt-2 block overflow-x-auto rounded-md bg-white p-3 text-xs text-zinc-900">{newToken}</code>
+              <code className="mt-2 block overflow-x-auto glass-panel rounded-md p-3 text-xs text-zinc-900">{newToken}</code>
             </div>
           ) : null}
 
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
           <div className="overflow-hidden rounded-md border border-zinc-200">
-            <div className="grid grid-cols-[1fr_140px_120px] gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-xs font-medium uppercase text-zinc-500">
+            <div className="grid grid-cols-[1fr_140px_120px] gap-3 border-b border-zinc-200 glass-panel px-4 py-3 text-xs font-medium uppercase text-zinc-500">
               <span>Key</span>
               <span>Last used</span>
               <span className="text-right">Actions</span>
@@ -3988,13 +4048,13 @@ function McpServerPage() {
           <CardDescription>Use Streamable HTTP with Authorization: Bearer &lt;token&gt;.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="rounded-md border border-zinc-200 bg-zinc-50 p-4">
+          <div className="rounded-md border border-zinc-200 glass-panel p-4">
             <p className="text-sm font-medium text-zinc-950">Streamable HTTP endpoint</p>
-            <code className="mt-2 block overflow-x-auto rounded-md bg-white p-3 text-xs text-zinc-900">{mcpEndpoint}</code>
+            <code className="mt-2 block overflow-x-auto glass-panel rounded-md p-3 text-xs text-zinc-900">{mcpEndpoint}</code>
           </div>
           <div className="grid gap-3 md:grid-cols-[minmax(0,260px)_auto]">
             <input
-              className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
               maxLength={60}
               onChange={(event) => setKeyName(event.target.value)}
               placeholder="Key name"
@@ -4009,14 +4069,14 @@ function McpServerPage() {
           {newToken ? (
             <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4">
               <p className="text-sm font-medium text-emerald-900">Copy this key now. It will only be shown once.</p>
-              <code className="mt-2 block overflow-x-auto rounded-md bg-white p-3 text-xs text-zinc-900">{newToken}</code>
+              <code className="mt-2 block overflow-x-auto glass-panel rounded-md p-3 text-xs text-zinc-900">{newToken}</code>
             </div>
           ) : null}
 
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
           <div className="overflow-hidden rounded-md border border-zinc-200">
-            <div className="grid grid-cols-[1fr_140px_120px] gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-xs font-medium uppercase text-zinc-500">
+            <div className="grid grid-cols-[1fr_140px_120px] gap-3 border-b border-zinc-200 glass-panel px-4 py-3 text-xs font-medium uppercase text-zinc-500">
               <span>Key</span>
               <span>Last used</span>
               <span className="text-right">Actions</span>
@@ -4128,7 +4188,7 @@ function EndpointDoc({
   notes?: string[];
 }) {
   return (
-    <details className="rounded-md border border-zinc-200 bg-white">
+    <details className="glass-panel rounded-md border">
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-zinc-950">
         {title}
         <span className="ml-2 rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-600">
@@ -4137,7 +4197,7 @@ function EndpointDoc({
       </summary>
       <div className="space-y-3 border-t border-zinc-200 p-4">
         {notes?.length ? (
-          <div className="rounded-md bg-zinc-50 p-3 text-sm text-zinc-600">
+          <div className="rounded-md glass-panel p-3 text-sm text-zinc-600">
             {notes.map((note) => (
               <p key={note}>{note}</p>
             ))}
@@ -4253,7 +4313,7 @@ function ConfidenceThresholdPage() {
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-zinc-700">Threshold</span>
               <input
-                className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
                 disabled={isLoading}
                 max="1"
                 min="0.01"
@@ -4270,7 +4330,7 @@ function ConfidenceThresholdPage() {
           </div>
 
           <div className="overflow-hidden rounded-md border border-zinc-200">
-            <div className="grid grid-cols-[120px_1fr] border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-xs font-medium uppercase text-zinc-500">
+            <div className="grid grid-cols-[120px_1fr] border-b border-zinc-200 glass-panel px-4 py-3 text-xs font-medium uppercase text-zinc-500">
               <span>Threshold</span>
               <span>Behavior</span>
             </div>
@@ -4342,7 +4402,7 @@ function StepProgress({ currentStep, steps }: { currentStep: number; steps: stri
   const progressPercent = steps.length <= 1 ? 100 : ((currentStep - 1) / (steps.length - 1)) * 100;
 
   return (
-    <div className="mb-5">
+    <div className="mx-auto mb-5 w-full max-w-56 sm:w-1/2">
       <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>
         {steps.map((step, index) => {
           const stepNumber = index + 1;
@@ -4526,6 +4586,93 @@ function Tooltip({ children, text }: { children: ReactNode; text: string }) {
 
 function Loader() {
   return <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />;
+}
+
+function EmailableLogo({ className }: { className?: string }) {
+  return (
+    <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient gradientUnits="userSpaceOnUse" id="emailable-logo-gradient" x1="8" x2="56" y1="14" y2="50">
+          <stop stopColor="#06b6d4" />
+          <stop offset="0.52" stopColor="#2563eb" />
+          <stop offset="1" stopColor="#7c3aed" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M13 19.5h39a3.5 3.5 0 0 1 2.1 6.3L35.4 39.9a5.6 5.6 0 0 1-6.8 0L9.9 25.8A3.5 3.5 0 0 1 12 19.5h1Z"
+        stroke="url(#emailable-logo-gradient)"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="5"
+      />
+      <path
+        d="M9.5 24v22.5A5.5 5.5 0 0 0 15 52h34a5.5 5.5 0 0 0 5.5-5.5V31.5"
+        stroke="url(#emailable-logo-gradient)"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="5"
+      />
+    </svg>
+  );
+}
+
+function UserAvatar({ className, user }: { className?: string; user: AuthUser }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const initials = getUserInitials(user);
+
+  if (user.picture && !imageFailed) {
+    return (
+      <img
+        alt=""
+        className={cn("rounded-full border border-zinc-200 bg-zinc-100 object-cover", className)}
+        onError={() => setImageFailed(true)}
+        referrerPolicy="no-referrer"
+        src={user.picture}
+      />
+    );
+  }
+
+  return (
+    <span className={cn("flex items-center justify-center rounded-full bg-zinc-950 text-xs font-semibold text-white", className)}>
+      {initials}
+    </span>
+  );
+}
+
+function getUserInitials(user: AuthUser) {
+  const source = user.name || user.email || "User";
+  const words = source
+    .replace(/@.*/, "")
+    .split(/\s+|[._-]+/)
+    .map((word) => word.trim())
+    .filter(Boolean);
+
+  return (words[0]?.[0] ?? "U").toUpperCase() + (words[1]?.[0] ?? "").toUpperCase();
+}
+
+function formatEmailForPrivacy(value: string, privacyMode: boolean) {
+  if (!privacyMode) {
+    return value;
+  }
+
+  const [localPart, domain] = value.split("@");
+  if (!localPart || !domain) {
+    return value;
+  }
+
+  const first = localPart.slice(0, 2);
+  const last = localPart.slice(-2);
+  const maskLength = Math.max(4, localPart.length - first.length - last.length);
+
+  return `${first}${"*".repeat(maskLength)}${last}@${domain}`;
+}
+
+function formatEmailTextForPrivacy(value: string, privacyMode: boolean) {
+  if (!privacyMode) {
+    return value;
+  }
+
+  return value.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, (email) => formatEmailForPrivacy(email, true));
 }
 
 function mapAuthUser(user: { email?: string | null; name?: string | null; image?: string | null }): AuthUser {
