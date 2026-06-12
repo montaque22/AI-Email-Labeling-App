@@ -130,10 +130,14 @@ export async function moveImapMessageToFolders({ account, emailId, addFolders = 
       throw providerNotFoundError("IMAP message was not found");
     }
 
-    for (const folder of addFolders) {
-      await ensureImapMailbox(client, folder);
-      await client.mailboxOpen(found.mailbox);
-      await client.messageCopy([found.uid], folder, { uid: true });
+    if (addFolders.length > 0) {
+      const [targetFolder] = addFolders;
+      await ensureImapMailbox(client, targetFolder);
+      if (found.mailbox !== targetFolder) {
+        await client.mailboxOpen(found.mailbox);
+        await client.messageMove([found.uid], targetFolder, { uid: true });
+      }
+      return { uid: found.uid, mailbox: targetFolder };
     }
 
     for (const folder of removeFolders) {

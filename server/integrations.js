@@ -312,6 +312,7 @@ export function registerIntegrationRoutes(app) {
         emailId: input.rule.emailId,
         subject: input.rule.subject,
         labelName: input.rule.labelsApplied[0],
+        removeLabelNames: currentRule?.labelsApplied ?? [],
         source: "manual-rule-review",
       });
       const rule = await upsertEmailRule(req.user.id, {
@@ -398,6 +399,7 @@ export function registerIntegrationRoutes(app) {
         emailId: currentRule.emailId,
         subject: currentRule.subject,
         labelName: resolvedLabels.labels[0],
+        removeLabelNames: currentRule.labelsApplied ?? [],
         source: "rule-review",
       });
       const normalizedReasons = normalizeLabelReasons(resolvedLabels.labels, labelReasonsInput.labelReasons);
@@ -738,7 +740,7 @@ export async function classifyEmailWithLabelCandidates(userId, rule, { source = 
   };
 }
 
-export async function applySingleLabelToEmail(userId, { emailId, subject, labelName, target = null, source = "integration" }) {
+export async function applySingleLabelToEmail(userId, { emailId, subject, labelName, removeLabelNames = [], target = null, source = "integration" }) {
   const messageTarget = target ?? await findConnectedMessageById(userId, emailId, subject);
 
   if (!messageTarget) {
@@ -753,12 +755,24 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
     throw error;
   }
 
+  const labelsToRemove = removeLabelNames
+    .filter((name) => typeof name === "string")
+    .map((name) => name.trim())
+    .filter((name) => name && name.toLowerCase() !== labelName.toLowerCase());
   const labels = await resolveProviderLabels(userId, messageTarget.account.id, [labelName]);
+  const removedLabels = labelsToRemove.length > 0 ? await resolveProviderLabels(userId, messageTarget.account.id, labelsToRemove) : { ok: true, labels: [] };
 
   if (!labels.ok) {
     const error = new Error(labels.error);
     error.status = labels.status;
     error.labels = labels.labels;
+    throw error;
+  }
+
+  if (!removedLabels.ok) {
+    const error = new Error(removedLabels.error);
+    error.status = removedLabels.status;
+    error.labels = removedLabels.labels;
     throw error;
   }
 
@@ -770,12 +784,20 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
       addLabelIds: labels.labels.map((label) => label.providerLabelId),
       removeLabelIds: [],
     });
+    if (removedLabels.labels.length > 0) {
+      await modifyGmailMessageLabels({
+        accessToken,
+        emailId,
+        addLabelIds: [],
+        removeLabelIds: removedLabels.labels.map((label) => label.providerLabelId),
+      });
+    }
   } else {
     await moveImapMessageToFolders({
       account: messageTarget.account,
       emailId,
       addFolders: labels.labels.map((label) => label.providerLabelId),
-      removeFolders: [],
+      removeFolders: removedLabels.labels.map((label) => label.providerLabelId),
     });
   }
 
@@ -788,7 +810,7 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
     emailId,
     accountEmail: messageTarget.account.email,
     added: labels.labels.map((label) => label.name),
-    removed: [],
+    removed: removedLabels.labels.map((label) => label.name),
     labels: labels.labels,
     source,
   });
