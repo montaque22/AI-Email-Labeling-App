@@ -1,4 +1,5 @@
 import { dbPool } from "./db.js";
+import { logSystemEvent } from "./system-logs.js";
 
 const WEBHOOK_TIMEOUT_MS = 8000;
 
@@ -34,9 +35,31 @@ export async function emitWebhookEvent(userId, eventName, payload) {
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
+      await logSystemEvent(userId, {
+        category: "webhook",
+        eventName,
+        status: "error",
+        message: `Webhook ${eventName} failed with ${response.status}.`,
+        payload: { event, response: text.slice(0, 500) },
+      });
       console.warn(`Webhook ${eventName} failed with ${response.status}: ${text.slice(0, 300)}`);
+    } else {
+      await logSystemEvent(userId, {
+        category: "webhook",
+        eventName,
+        status: "success",
+        message: `Webhook ${eventName} delivered.`,
+        payload: event,
+      });
     }
   } catch (error) {
+    await logSystemEvent(userId, {
+      category: "webhook",
+      eventName,
+      status: "error",
+      message: `Webhook ${eventName} delivery failed: ${error.message}`,
+      payload: event,
+    });
     console.warn(`Webhook ${eventName} delivery failed:`, error.message);
   } finally {
     clearTimeout(timeout);

@@ -19,6 +19,7 @@ import {
   recordMetricEvent,
 } from "./integrations.js";
 import { emitWebhookEvent } from "./webhooks.js";
+import { logSystemEvent } from "./system-logs.js";
 
 const MCP_KEY_PREFIX = "mcp";
 
@@ -159,8 +160,7 @@ function createMcpServer(userId) {
       },
     },
     async (input) => {
-      const result = await createDraftReplyTool(userId, input);
-      return jsonToolResult(result);
+      return loggedMcpToolResult(userId, "create_draft_reply", input, "/api/integrations/email/drafts/reply", () => createDraftReplyTool(userId, input));
     },
   );
 
@@ -185,8 +185,7 @@ function createMcpServer(userId) {
       },
     },
     async (input) => {
-      const result = await addLabelsOnEmailTool(userId, input);
-      return jsonToolResult(result);
+      return loggedMcpToolResult(userId, "add_labels_on_email", input, "/api/integrations/email/labels/add", () => addLabelsOnEmailTool(userId, input));
     },
   );
 
@@ -201,8 +200,7 @@ function createMcpServer(userId) {
       },
     },
     async (input) => {
-      const result = await queryEmailRulesTool(userId, input);
-      return jsonToolResult(result);
+      return loggedMcpToolResult(userId, "query_email_rules", input, "/api/integrations/email-rules/query", () => queryEmailRulesTool(userId, input));
     },
   );
 
@@ -340,6 +338,29 @@ function jsonToolResult(result) {
       },
     ],
   };
+}
+
+async function loggedMcpToolResult(userId, toolName, payload, internalEndpoint, fn) {
+  try {
+    const result = await fn();
+    await logSystemEvent(userId, {
+      category: "mcp-server",
+      eventName: toolName,
+      status: "success",
+      message: `${toolName} triggered ${internalEndpoint}.`,
+      payload: { toolPayload: payload, internalEndpoint, result },
+    });
+    return jsonToolResult(result);
+  } catch (error) {
+    await logSystemEvent(userId, {
+      category: "mcp-server",
+      eventName: toolName,
+      status: "error",
+      message: `${toolName} failed while triggering ${internalEndpoint}: ${error.message}`,
+      payload: { toolPayload: payload, internalEndpoint, error: error.message },
+    });
+    throw error;
+  }
 }
 
 function handleHttpError(res, error) {

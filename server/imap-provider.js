@@ -258,6 +258,40 @@ export async function findImapMessageAccountMatch(account, emailId, subject) {
   });
 }
 
+export async function fetchImapEmailContextById(account, emailId, subject = "") {
+  return withImapClient(account, async (client, metadata) => {
+    const mailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
+    const found = await findImapMessage(client, mailbox, emailId);
+    if (!found) {
+      return null;
+    }
+
+    if (subject && normalizeSubject(found.subject) !== normalizeSubject(subject)) {
+      return null;
+    }
+
+    await client.mailboxOpen(found.mailbox);
+    const message = await client.fetchOne(String(found.uid), { uid: true, envelope: true, source: true }, { uid: true });
+    if (!message) {
+      return null;
+    }
+
+    const bodyText = extractTextFromRawMessage(message.source?.toString() ?? "");
+    return {
+      emailId: String(message.uid),
+      threadId: String(message.uid),
+      accountEmail: account.email,
+      provider: account.provider,
+      fromEmail: (message.envelope?.from ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+      fromName: (message.envelope?.from ?? []).map((address) => address?.name).filter(Boolean).join(", "),
+      to: (message.envelope?.to ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+      subject: message.envelope?.subject ?? "",
+      snippet: bodyText.slice(0, 300),
+      bodyText,
+    };
+  });
+}
+
 async function ensureImapMailbox(client, name) {
   const existing = await findImapMailbox(client, name);
   if (existing) {

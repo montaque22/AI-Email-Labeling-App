@@ -4,12 +4,14 @@ import { fileURLToPath } from "node:url";
 import { toNodeHandler } from "better-auth/node";
 import { auth, googleOAuthEnabled } from "./auth.js";
 import { ensureAiPromptsTable, registerAiPromptRoutes } from "./ai-prompts.js";
+import { ensureByoAiTables, registerByoAiRoutes } from "./byoai.js";
 import { dbPool } from "./db.js";
 import { ensureEmailAccountsTable, registerEmailAccountRoutes } from "./email-accounts.js";
 import { ensureIntegrationTables, registerIntegrationRoutes } from "./integrations.js";
 import { ensureLabelsTable, registerLabelRoutes } from "./labels.js";
 import { ensureMcpTables, registerMcpRoutes } from "./mcp-server.js";
 import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
+import { ensureSystemLogsTable } from "./system-logs.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -67,6 +69,7 @@ registerSettingsRoutes(app);
 registerEmailAccountRoutes(app);
 registerIntegrationRoutes(app);
 registerAiPromptRoutes(app);
+registerByoAiRoutes(app);
 registerMcpRoutes(app);
 
 app.use(express.static(distDir));
@@ -90,7 +93,9 @@ async function startServer() {
     await ensureLabelsTable();
     await ensureSettingsTable();
     await ensureIntegrationTables();
+    await ensureSystemLogsTable();
     await ensureAiPromptsTable();
+    await ensureByoAiTables();
     await ensureMcpTables();
   } catch (error) {
     console.error("Failed to initialize database tables:", error);

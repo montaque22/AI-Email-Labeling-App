@@ -5,6 +5,7 @@ import { dbPool } from "./db.js";
 import { ensureSsoEmailAccount, getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
 import {
   createImapDraft,
+  fetchImapEmailContextById,
   findImapMessageAccountMatch,
   searchImapEmailContexts,
   moveImapMessageToFolders,
@@ -12,6 +13,7 @@ import {
 import { ensureLabelSyncedToAccount } from "./label-sync.js";
 import { getConfidenceThreshold } from "./settings.js";
 import { emitWebhookEvent } from "./webhooks.js";
+import { listSystemLogs, logSystemEvent } from "./system-logs.js";
 
 const API_KEY_PREFIX = "n8n";
 const EMAIL_RULE_REQUIRED_FIELDS = [
@@ -261,6 +263,19 @@ export function registerIntegrationRoutes(app) {
     }
   });
 
+  app.get("/api/system-logs", requireSession, async (req, res) => {
+    try {
+      res.json({
+        logs: await listSystemLogs(req.user.id, {
+          category: typeof req.query.category === "string" ? req.query.category : "all",
+          limit: Number(req.query.limit ?? 100),
+        }),
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   app.get("/api/email-rules/export", requireSession, async (req, res) => {
     try {
       const result = await dbPool.query(
@@ -494,8 +509,11 @@ export function registerIntegrationRoutes(app) {
 
   app.get("/api/integrations/core-content", requireApiKey, async (req, res) => {
     try {
-      res.json(await getRenderedAiPromptBundle(req.integrationUser.id));
+      const result = await getRenderedAiPromptBundle(req.integrationUser.id);
+      await logEndpointCall(req.integrationUser.id, "GET /api/integrations/core-content", {}, "success", result);
+      res.json(result);
     } catch (error) {
+      await logEndpointCall(req.integrationUser.id, "GET /api/integrations/core-content", {}, "error", { error: error.message });
       handleError(res, error);
     }
   });
@@ -520,8 +538,13 @@ export function registerIntegrationRoutes(app) {
         [req.integrationUser.id, ...query.values, parseQueryLimit(req.body?.limit)],
       );
 
-      res.json({ rules: await hydrateRuleAccountEmails(req.integrationUser.id, result.rows.map(mapEmailRuleRow)) });
+      const responsePayload = { rules: await hydrateRuleAccountEmails(req.integrationUser.id, result.rows.map(mapEmailRuleRow)) };
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email-rules/query", req.body, "success", {
+        count: responsePayload.rules.length,
+      });
+      res.json(responsePayload);
     } catch (error) {
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email-rules/query", req.body, "error", { error: error.message });
       handleError(res, error);
     }
   });
@@ -535,8 +558,11 @@ export function registerIntegrationRoutes(app) {
     }
 
     try {
-      res.json(await classifyEmailWithLabelCandidates(req.integrationUser.id, input.rule, { source: "integration" }));
+      const result = await classifyEmailWithLabelCandidates(req.integrationUser.id, input.rule, { source: "integration" });
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/labels/add", req.body, "success", result);
+      res.json(result);
     } catch (error) {
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/labels/add", req.body, "error", { error: error.message });
       handleProviderError(res, error);
     }
   });
@@ -554,8 +580,11 @@ export function registerIntegrationRoutes(app) {
     }
 
     try {
-      res.json(await classifyEmailWithLabelCandidates(req.integrationUser.id, input.rule, { source: "integration" }));
+      const result = await classifyEmailWithLabelCandidates(req.integrationUser.id, input.rule, { source: "integration" });
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/labels/evaluate", req.body, "success", result);
+      res.json(result);
     } catch (error) {
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/labels/evaluate", req.body, "error", { error: error.message });
       handleProviderError(res, error);
     }
   });
@@ -590,11 +619,23 @@ export function registerIntegrationRoutes(app) {
         threadId: draft.message?.threadId ?? draft.conversationId ?? null,
       };
       await emitWebhookEvent(req.integrationUser.id, "email.drafted", buildDraftWebhookPayload({ account, input, draft }));
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/drafts/reply", req.body, "success", draftResponse);
 
       res.status(201).json(draftResponse);
     } catch (error) {
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/drafts/reply", req.body, "error", { error: error.message });
       handleProviderError(res, error);
     }
+  });
+}
+
+async function logEndpointCall(userId, endpoint, payload, status, response) {
+  await logSystemEvent(userId, {
+    category: "endpoints",
+    eventName: endpoint,
+    status: status === "success" ? "success" : "error",
+    message: `${endpoint} ${status === "success" ? "succeeded" : "failed"}`,
+    payload: { request: payload, response },
   });
 }
 
@@ -661,9 +702,11 @@ async function modifyMessageLabels(req, res, action) {
       removed: action === "remove" ? labels.labels.map((label) => label.name) : [],
       labels: labels.labels,
     });
+    await logEndpointCall(req.integrationUser.id, `POST /api/integrations/email/labels/${action}`, req.body, "success", responsePayload);
 
     res.json(responsePayload);
   } catch (error) {
+    await logEndpointCall(req.integrationUser.id, `POST /api/integrations/email/labels/${action}`, req.body, "error", { error: error.message });
     handleProviderError(res, error);
   }
 }
@@ -945,6 +988,70 @@ async function findConnectedMessageById(userId, emailId, subject) {
   return matches.find((match) => normalizeComparableSubject(match.subject) === normalizedSubject) ?? null;
 }
 
+export async function findConnectedEmailContextById(userId, { emailId, accountEmail = "", subject = "" }) {
+  const accounts = await getConnectedEmailAccounts(userId);
+  const selectedAccounts = accountEmail
+    ? accounts.filter((account) => account.email.toLowerCase() === String(accountEmail).trim().toLowerCase())
+    : accounts;
+  const matches = [];
+
+  if (accountEmail && selectedAccounts.length === 0) {
+    const error = new Error("Email account not found");
+    error.status = 404;
+    throw error;
+  }
+
+  for (const account of selectedAccounts) {
+    if (!["gmail", "imap"].includes(account.provider)) {
+      continue;
+    }
+
+    try {
+      if (account.provider === "gmail") {
+        const accessToken = await getValidEmailAccountAccessToken(account);
+        const message = await fetchGmailMessageFull(accessToken, emailId);
+        const headers = getGmailHeaders(message);
+        const bodyText = extractGmailTextBody(message.payload) || message.snippet || "";
+        matches.push({
+          account,
+          email: {
+            emailId: message.id || emailId,
+            threadId: message.threadId || message.id || emailId,
+            accountEmail: account.email,
+            provider: account.provider,
+            fromEmail: extractEmailAddress(headers.from || ""),
+            fromName: extractDisplayName(headers.from || "") || extractEmailAddress(headers.from || ""),
+            to: formatEmailList(headers.to || ""),
+            subject: headers.subject || "",
+            snippet: bodyText.slice(0, 300),
+            bodyText,
+          },
+        });
+      } else {
+        const email = await fetchImapEmailContextById(account, emailId, subject);
+        if (email) {
+          matches.push({ account, email });
+        }
+      }
+    } catch (error) {
+      if (error.status !== 404) {
+        console.warn(`Integration full message lookup failed for ${account.provider} ${account.email}:`, error.message);
+      }
+    }
+  }
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  if (matches.length === 1 || !subject) {
+    return matches[0];
+  }
+
+  const normalizedSubject = normalizeComparableSubject(subject);
+  return matches.find((match) => normalizeComparableSubject(match.email.subject) === normalizedSubject) ?? matches[0];
+}
+
 async function requireSession(req, res, next) {
   const session = await auth.api.getSession({
     headers: toWebHeaders(req.headers),
@@ -959,7 +1066,7 @@ async function requireSession(req, res, next) {
   next();
 }
 
-async function requireApiKey(req, res, next) {
+export async function requireApiKey(req, res, next) {
   const authorization = req.get("authorization") ?? "";
   const [scheme, token] = authorization.split(" ");
 

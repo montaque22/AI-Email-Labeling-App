@@ -12,12 +12,15 @@ import {
 } from "recharts";
 import {
   BarChart3,
+  ArrowDown,
+  ArrowUp,
   CheckCircle2,
   ChevronRight,
   Download,
   GaugeCircle,
   FileCheck2,
   Gauge,
+  GripVertical,
   Inbox,
   LogOut,
   MailCheck,
@@ -47,6 +50,8 @@ type Page =
   | "rules"
   | "metrics"
   | "ai-prompts"
+  | "ai-byoai"
+  | "ai-prompt-library"
   | "ai-email-label"
   | "ai-draft-reply"
   | "settings"
@@ -161,6 +166,16 @@ type MetricsData = {
   draftsCreated: TimelinePoint[];
 };
 
+type SystemLog = {
+  id: string;
+  category: "ai" | "endpoints" | "webhook" | "mcp-server";
+  eventName: string;
+  status: "success" | "error" | "warning" | "info";
+  message: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
 type OverviewData = {
   todayLabeled: number;
   syncedLabels: number;
@@ -189,6 +204,58 @@ type DraftEmailExample = {
 
 type DraftEmailSearchResult = DraftEmailExample;
 
+type AiProviderDefinition = {
+  label: string;
+  defaultModel: string;
+  models: string[];
+  local?: boolean;
+};
+
+type AiPlatform = {
+  id: string;
+  provider: string;
+  providerLabel: string;
+  model: string;
+  baseUrl: string;
+  sortOrder: number;
+  status: "connected" | "untested" | "failed";
+  lastError?: string;
+  hasApiKey?: boolean;
+  hasBearerToken?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type AiPlatformDraft = AiPlatform & {
+  apiKey: string;
+  bearerToken: string;
+  isDraft?: boolean;
+};
+
+type ByoAiConfig = {
+  providers: Record<string, AiProviderDefinition>;
+  platforms: AiPlatform[];
+  aiEnabled: boolean;
+  canEnableAi: boolean;
+  mcpClient: AiMcpClientConfig;
+};
+
+type AiMcpTool = {
+  name: string;
+  description: string;
+  inputSchema?: unknown;
+};
+
+type AiMcpClientConfig = {
+  serverUrl: string;
+  enabled: boolean;
+  status: "connected" | "untested" | "failed";
+  lastError?: string;
+  tools: AiMcpTool[];
+  selectedTools: string[];
+  hasBearerToken?: boolean;
+};
+
 const LABEL_NAME_MAX_LENGTH = 25;
 const LABEL_DESCRIPTION_MAX_LENGTH = 200;
 const LABEL_NAME_PATTERN = /^[A-Za-z0-9 _-]+$/;
@@ -199,13 +266,13 @@ const navItems = [
   { id: "labels" as const, label: "Labels", icon: Tag },
   { id: "rules" as const, label: "Rule Review", icon: FileCheck2 },
   { id: "metrics" as const, label: "Metrics", icon: BarChart3 },
-  { id: "ai-prompts" as const, label: "AI Prompts", icon: Sparkles },
+  { id: "ai-prompts" as const, label: "Artificial Intelligence", icon: Sparkles },
   { id: "settings" as const, label: "Settings", icon: Settings },
 ];
 
 const aiPromptSubItems = [
-  { id: "ai-email-label" as const, label: "Email Label" },
-  { id: "ai-draft-reply" as const, label: "Draft Reply" },
+  { id: "ai-byoai" as const, label: "BYOAI" },
+  { id: "ai-prompt-library" as const, label: "Prompts" },
 ];
 
 const settingsSubItems = [
@@ -700,8 +767,8 @@ function AuthenticatedLayout({
           {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} privacyMode={privacyMode} />}
           {activePage === "metrics" && <MetricsPage />}
           {activePage === "ai-prompts" && <AiPromptsPage onNavigate={onNavigate} />}
-          {activePage === "ai-email-label" && <AiPromptEditorPage promptKey="email-label" />}
-          {activePage === "ai-draft-reply" && <AiPromptEditorPage promptKey="draft-reply" privacyMode={privacyMode} />}
+          {activePage === "ai-byoai" && <ByoAiPage />}
+          {activePage === "ai-prompt-library" && <AiPromptLibraryPage privacyMode={privacyMode} />}
           {activePage === "settings" && <SettingsPage onNavigate={onNavigate} />}
           {activePage === "confidence-threshold" && <ConfidenceThresholdPage />}
           {activePage === "email-accounts" && <EmailAccountsPage privacyMode={privacyMode} />}
@@ -1610,8 +1677,13 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
 
 function MetricsPage() {
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
+  const [logs, setLogs] = useState<SystemLog[]>([]);
+  const [activeTab, setActiveTab] = useState<"metrics" | "logs">("metrics");
+  const [logCategory, setLogCategory] = useState("all");
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [logsError, setLogsError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadMetrics() {
@@ -1638,39 +1710,130 @@ function MetricsPage() {
     void loadMetrics();
   }, []);
 
+  useEffect(() => {
+    if (activeTab === "logs") {
+      void loadLogs();
+    }
+  }, [activeTab, logCategory]);
+
+  async function loadLogs() {
+    setIsLoadingLogs(true);
+    setLogsError(null);
+
+    try {
+      const response = await fetch(`/api/system-logs?category=${encodeURIComponent(logCategory)}&limit=100`, { credentials: "include" });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setLogsError(data.error ?? "Could not load logs.");
+        return;
+      }
+
+      setLogs(data.logs ?? []);
+    } catch {
+      setLogsError("Could not load logs.");
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <Card>
-        <CardHeader>
-          <CardTitle>Metrics</CardTitle>
-          <CardDescription>Track rule volume, review status, labeled emails, and draft creation.</CardDescription>
+        <CardHeader className="gap-4 sm:flex-row sm:items-center sm:justify-between sm:space-y-0">
+          <div>
+            <CardTitle>{activeTab === "metrics" ? "Metrics" : "Logs"}</CardTitle>
+            <CardDescription>
+              {activeTab === "metrics"
+                ? "Track rule volume, review status, labeled emails, and draft creation."
+                : "Review simplified system activity across AI, endpoints, webhooks, and MCP server usage."}
+            </CardDescription>
+          </div>
+          {activeTab === "logs" ? (
+            <select
+              className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+              onChange={(event) => setLogCategory(event.target.value)}
+              value={logCategory}
+            >
+              <option value="all">All</option>
+              <option value="ai">AI</option>
+              <option value="endpoints">Endpoints</option>
+              <option value="webhook">Webhook Events</option>
+              <option value="mcp-server">MCP Server</option>
+            </select>
+          ) : null}
         </CardHeader>
+        <CardContent>
+          <div className="inline-flex rounded-md border border-zinc-200 bg-white p-1">
+            <button
+              className={cn("rounded px-3 py-1.5 text-sm font-medium", activeTab === "metrics" ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-zinc-50")}
+              onClick={() => setActiveTab("metrics")}
+              type="button"
+            >
+              Metrics
+            </button>
+            <button
+              className={cn("rounded px-3 py-1.5 text-sm font-medium", activeTab === "logs" ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-zinc-50")}
+              onClick={() => setActiveTab("logs")}
+              type="button"
+            >
+              Logs
+            </button>
+          </div>
+        </CardContent>
       </Card>
 
-      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+      {activeTab === "metrics" ? (
+        <>
+          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
-      <div className="grid gap-5 2xl:grid-cols-2">
-        <TimelineChartCard
-          data={metrics?.rulesCreated ?? []}
-          isLoading={isLoading}
-          title="Rules Created"
-        />
-        <RuleStatusDonut
-          isLoading={isLoading}
-          pending={metrics?.ruleStatus.pending ?? 0}
-          nonPending={metrics?.ruleStatus.nonPending ?? 0}
-        />
-        <TimelineChartCard
-          data={metrics?.emailsLabeled ?? []}
-          isLoading={isLoading}
-          title="Emails Labeled"
-        />
-        <TimelineChartCard
-          data={metrics?.draftsCreated ?? []}
-          isLoading={isLoading}
-          title="Drafts Created"
-        />
-      </div>
+          <div className="grid gap-5 2xl:grid-cols-2">
+            <TimelineChartCard data={metrics?.rulesCreated ?? []} isLoading={isLoading} title="Rules Created" />
+            <RuleStatusDonut
+              isLoading={isLoading}
+              pending={metrics?.ruleStatus.pending ?? 0}
+              nonPending={metrics?.ruleStatus.nonPending ?? 0}
+            />
+            <TimelineChartCard data={metrics?.emailsLabeled ?? []} isLoading={isLoading} title="Emails Labeled" />
+            <TimelineChartCard data={metrics?.draftsCreated ?? []} isLoading={isLoading} title="Drafts Created" />
+          </div>
+        </>
+      ) : (
+        <Card>
+          <CardContent className="space-y-3 pt-6">
+            {logsError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{logsError}</p> : null}
+            {isLoadingLogs ? (
+              <p className="rounded-md border border-dashed border-zinc-200 px-4 py-8 text-center text-sm text-zinc-500">Loading logs...</p>
+            ) : logs.length === 0 ? (
+              <p className="rounded-md border border-dashed border-zinc-200 px-4 py-8 text-center text-sm text-zinc-500">No logs yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {logs.map((log) => (
+                  <div className="rounded-md border border-zinc-200 bg-white/70 p-4" key={log.id}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className={logStatusClass(log.status)}>{log.status}</Badge>
+                          <Badge className="bg-zinc-100 text-zinc-600">{logCategoryLabel(log.category)}</Badge>
+                          <p className="text-sm font-medium text-zinc-950">{log.eventName}</p>
+                        </div>
+                        <p className="mt-2 text-sm text-zinc-600">{log.message}</p>
+                      </div>
+                      <span className="text-xs text-zinc-500">{formatDate(log.createdAt)}</span>
+                    </div>
+                    <details className="mt-3">
+                      <summary className="cursor-pointer text-xs font-medium text-zinc-500">Payload</summary>
+                      <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-zinc-950 p-3 text-xs text-white">
+                        {JSON.stringify(log.payload, null, 2)}
+                      </pre>
+                    </details>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -2543,38 +2706,627 @@ function AiPromptsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>AI Prompts</CardTitle>
-          <CardDescription>Select a prompt template to edit.</CardDescription>
+          <CardTitle>Artificial Intelligence</CardTitle>
+          <CardDescription>Configure Emailable's AI providers and prompt templates.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="divide-y divide-zinc-200 rounded-md border border-zinc-200">
             <button
               className="flex w-full cursor-pointer items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
-              onClick={() => onNavigate("ai-email-label")}
+              onClick={() => onNavigate("ai-byoai")}
               type="button"
             >
               <div>
-                <p className="text-sm font-medium text-zinc-950">Email Label</p>
+                <p className="text-sm font-medium text-zinc-950">BYOAI</p>
                 <p className="mt-1 text-sm text-zinc-500">
-                  Build the system prompt used to analyze emails and choose labels.
+                  Add AI platforms and enable Emailable-managed labeling and reply drafting.
                 </p>
               </div>
               <ChevronRight className="h-4 w-4 text-zinc-400" />
             </button>
             <button
               className="flex w-full cursor-pointer items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
-              onClick={() => onNavigate("ai-draft-reply")}
+              onClick={() => onNavigate("ai-prompt-library")}
               type="button"
             >
               <div>
-                <p className="text-sm font-medium text-zinc-950">Draft Reply</p>
+                <p className="text-sm font-medium text-zinc-950">Prompts</p>
                 <p className="mt-1 text-sm text-zinc-500">
-                  Build the system prompt used to draft replies in the tone and style you want.
+                  Build the Email Label and Draft Reply prompts used by AI endpoints.
                 </p>
               </div>
               <ChevronRight className="h-4 w-4 text-zinc-400" />
             </button>
           </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function AiPromptLibraryPage({ privacyMode }: { privacyMode: boolean }) {
+  return (
+    <div className="space-y-6">
+      <AiPromptEditorPage promptKey="email-label" />
+      <AiPromptEditorPage promptKey="draft-reply" privacyMode={privacyMode} />
+    </div>
+  );
+}
+
+function ByoAiPage() {
+  const [providers, setProviders] = useState<Record<string, AiProviderDefinition>>({});
+  const [platforms, setPlatforms] = useState<AiPlatformDraft[]>([]);
+  const [mcpClient, setMcpClient] = useState<AiMcpClientConfig>({
+    serverUrl: "",
+    enabled: false,
+    status: "untested",
+    lastError: "",
+    tools: [],
+    selectedTools: [],
+    hasBearerToken: false,
+  });
+  const [mcpForm, setMcpForm] = useState({ serverUrl: "", bearerToken: "" });
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [canEnableAi, setCanEnableAi] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [isTogglingAi, setIsTogglingAi] = useState(false);
+  const [isSavingMcp, setIsSavingMcp] = useState(false);
+  const [isTogglingMcp, setIsTogglingMcp] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [messages, setMessages] = useState<Record<string, string>>({});
+  const [pageError, setPageError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ tone: "success" | "warning"; message: string } | null>(null);
+  const hasConnectedPlatform = platforms.some((platform) => platform.status === "connected");
+  const mcpSectionDisabled = !hasConnectedPlatform;
+  const canEnableMcp = aiEnabled && hasConnectedPlatform && mcpClient.status === "connected";
+
+  useEffect(() => {
+    void loadByoAiConfig();
+  }, []);
+
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setToast(null), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
+  async function loadByoAiConfig() {
+    setIsLoading(true);
+    setPageError(null);
+
+    try {
+      const response = await fetch("/api/byoai/config", { credentials: "include" });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setPageError(data.error ?? "Could not load AI configuration.");
+        return;
+      }
+
+      applyByoAiConfig(data);
+    } catch {
+      setPageError("Could not load AI configuration.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  function applyByoAiConfig(config: ByoAiConfig) {
+    setProviders(config.providers ?? {});
+    setPlatforms((config.platforms ?? []).map(toEditableAiPlatform));
+    setAiEnabled(Boolean(config.aiEnabled));
+    setCanEnableAi(Boolean(config.canEnableAi));
+    setMcpClient(config.mcpClient ?? {
+      serverUrl: "",
+      enabled: false,
+      status: "untested",
+      lastError: "",
+      tools: [],
+      selectedTools: [],
+      hasBearerToken: false,
+    });
+    setMcpForm({
+      serverUrl: config.mcpClient?.serverUrl ?? "",
+      bearerToken: "",
+    });
+  }
+
+  function addPlatform() {
+    const firstProvider = Object.keys(providers)[0] ?? "openai";
+    const definition = providers[firstProvider];
+    const draft: AiPlatformDraft = {
+      id: `draft-${Date.now()}`,
+      provider: firstProvider,
+      providerLabel: definition?.label ?? "ChatGPT",
+      model: definition?.defaultModel ?? "",
+      baseUrl: firstProvider === "ollama" ? "http://localhost:11434" : "",
+      sortOrder: platforms.length,
+      status: "untested",
+      lastError: "",
+      apiKey: "",
+      bearerToken: "",
+      isDraft: true,
+    };
+    setPlatforms((current) => [...current, draft]);
+  }
+
+  function updatePlatform(id: string, updates: Partial<AiPlatformDraft>) {
+    setErrors((current) => ({ ...current, [id]: "" }));
+    setMessages((current) => ({ ...current, [id]: "" }));
+    setPlatforms((current) =>
+      current.map((platform) => {
+        if (platform.id !== id) {
+          return platform;
+        }
+
+        const provider = updates.provider ?? platform.provider;
+        const definition = providers[provider];
+        const providerChanged = updates.provider && updates.provider !== platform.provider;
+
+        return {
+          ...platform,
+          ...updates,
+          provider,
+          providerLabel: definition?.label ?? platform.providerLabel,
+          model: providerChanged ? definition?.defaultModel ?? "" : updates.model ?? platform.model,
+          baseUrl: providerChanged && provider === "ollama" ? "http://localhost:11434" : updates.baseUrl ?? platform.baseUrl,
+        };
+      }),
+    );
+  }
+
+  async function savePlatform(platform: AiPlatformDraft) {
+    setSavingId(platform.id);
+    setErrors((current) => ({ ...current, [platform.id]: "" }));
+    setMessages((current) => ({ ...current, [platform.id]: "" }));
+
+    try {
+      const encryptedSecrets = await encryptByoAiSecrets({
+        apiKey: platform.apiKey,
+        bearerToken: platform.bearerToken,
+      });
+      const response = await fetch(platform.isDraft ? "/api/byoai/platforms" : `/api/byoai/platforms/${platform.id}`, {
+        method: platform.isDraft ? "POST" : "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: platform.provider,
+          model: platform.model,
+          encryptedApiKey: encryptedSecrets.apiKey,
+          baseUrl: platform.baseUrl,
+          encryptedBearerToken: encryptedSecrets.bearerToken,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setErrors((current) => ({ ...current, [platform.id]: data.error ?? "AI platform connection failed." }));
+        return;
+      }
+
+      const savedId = data.platform?.id ?? platform.id;
+      await loadByoAiConfig();
+      setMessages((current) => ({ ...current, [savedId]: data.message ?? "AI platform saved." }));
+    } catch {
+      setErrors((current) => ({ ...current, [platform.id]: "Could not test this AI platform." }));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function deletePlatform(platform: AiPlatformDraft) {
+    if (platform.isDraft) {
+      setPlatforms((current) => current.filter((entry) => entry.id !== platform.id));
+      return;
+    }
+
+    setSavingId(platform.id);
+    setErrors((current) => ({ ...current, [platform.id]: "" }));
+
+    try {
+      const response = await fetch(`/api/byoai/platforms/${platform.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setErrors((current) => ({ ...current, [platform.id]: data.error ?? "Could not delete this AI platform." }));
+        return;
+      }
+
+      setPlatforms((data.platforms ?? []).map(toEditableAiPlatform));
+      setAiEnabled(Boolean(data.aiEnabled));
+      setCanEnableAi((data.platforms ?? []).some((entry: AiPlatform) => entry.status === "connected"));
+    } catch {
+      setErrors((current) => ({ ...current, [platform.id]: "Could not delete this AI platform." }));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function movePlatform(index: number, direction: -1 | 1) {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= platforms.length) {
+      return;
+    }
+
+    const reordered = [...platforms];
+    [reordered[index], reordered[nextIndex]] = [reordered[nextIndex], reordered[index]];
+    setPlatforms(reordered);
+
+    if (reordered.some((platform) => platform.isDraft)) {
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/byoai/platforms/order", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: reordered.map((platform) => platform.id) }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        setPlatforms((data.platforms ?? []).map(toEditableAiPlatform));
+      }
+    } catch {
+      setPageError("Could not update AI platform order.");
+    }
+  }
+
+  async function toggleAiEnabled(enabled: boolean) {
+    setIsTogglingAi(true);
+    setPageError(null);
+
+    try {
+      const response = await fetch("/api/byoai/settings", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aiEnabled: enabled }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setPageError(data.error ?? "Could not update AI setting.");
+        return;
+      }
+
+      setAiEnabled(Boolean(data.aiEnabled));
+      setToast({
+        tone: data.aiEnabled ? "success" : "warning",
+        message: data.aiEnabled ? "AI is active." : "AI was turned off.",
+      });
+    } catch {
+      setPageError("Could not update AI setting.");
+    } finally {
+      setIsTogglingAi(false);
+    }
+  }
+
+  async function saveMcpClient() {
+    setIsSavingMcp(true);
+    setPageError(null);
+
+    try {
+      const encryptedSecrets = await encryptByoAiSecrets({ bearerToken: mcpForm.bearerToken });
+      const response = await fetch("/api/byoai/mcp-client", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serverUrl: mcpForm.serverUrl,
+          encryptedBearerToken: encryptedSecrets.bearerToken,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setPageError(data.error ?? "Could not connect to the MCP server.");
+        return;
+      }
+
+      setMcpClient(data.mcpClient);
+      setMcpForm((current) => ({ ...current, bearerToken: "" }));
+      setToast({ tone: "success", message: "MCP server tools loaded." });
+    } catch {
+      setPageError("Could not connect to the MCP server.");
+    } finally {
+      setIsSavingMcp(false);
+    }
+  }
+
+  async function updateMcpClientSettings(next: Partial<Pick<AiMcpClientConfig, "enabled" | "selectedTools">>) {
+    setIsTogglingMcp(true);
+    setPageError(null);
+
+    try {
+      const response = await fetch("/api/byoai/mcp-client/settings", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: next.enabled ?? mcpClient.enabled,
+          selectedTools: next.selectedTools ?? mcpClient.selectedTools,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setPageError(data.error ?? "Could not update MCP client settings.");
+        return;
+      }
+
+      setMcpClient(data.mcpClient);
+    } catch {
+      setPageError("Could not update MCP client settings.");
+    } finally {
+      setIsTogglingMcp(false);
+    }
+  }
+
+  function toggleMcpTool(name: string) {
+    const selectedTools = mcpClient.selectedTools.includes(name)
+      ? mcpClient.selectedTools.filter((toolName) => toolName !== name)
+      : [...mcpClient.selectedTools, name];
+    void updateMcpClientSettings({ selectedTools });
+  }
+
+  return (
+    <div className="space-y-6">
+      {toast ? (
+        <div
+          className={cn(
+            "fixed right-5 top-5 z-50 rounded-md border px-4 py-3 text-sm shadow-lg",
+            toast.tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800",
+          )}
+        >
+          {toast.message}
+        </div>
+      ) : null}
+      <Card className={cn(aiEnabled && "animate-pulse border-emerald-300 shadow-[0_0_28px_rgba(16,185,129,0.28)] ring-1 ring-emerald-200")}>
+        <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle>Bring your own artificial intelligence (BYOAI)</CardTitle>
+            <CardDescription>
+              Add your own API keys to let Emailable handle the AI logic for choosing labels and drafting replies.
+            </CardDescription>
+          </div>
+          <AiEnableSwitch
+            canEnable={canEnableAi}
+            disabled={isLoading || isTogglingAi}
+            enabled={aiEnabled}
+            onChange={(value) => void toggleAiEnabled(value)}
+          />
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {pageError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{pageError}</p> : null}
+
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-zinc-600">{platforms.length}/3 platforms configured</p>
+            <Button disabled={isLoading || platforms.length >= 3} onClick={addPlatform} type="button">
+              <Plus className="h-4 w-4" />
+              Add AI Platform
+            </Button>
+          </div>
+
+          {isLoading ? (
+            <p className="rounded-md border border-dashed border-zinc-200 px-4 py-8 text-center text-sm text-zinc-500">
+              Loading AI platforms...
+            </p>
+          ) : platforms.length === 0 ? (
+            <p className="rounded-md border border-dashed border-zinc-200 px-4 py-8 text-center text-sm text-zinc-500">
+              No AI platforms yet.
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {platforms.map((platform, index) => {
+                const definition = providers[platform.provider];
+                const isOllama = platform.provider === "ollama";
+                return (
+                  <Card key={platform.id}>
+                    <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <CardTitle className="text-base">{platform.providerLabel}</CardTitle>
+                          <Badge className={index === 0 ? "bg-emerald-50 text-emerald-700" : "bg-zinc-100 text-zinc-600"}>
+                            {index === 0 ? "Default" : "Fallback"}
+                          </Badge>
+                          {platform.status === "connected" ? (
+                            <Badge className="bg-emerald-50 text-emerald-700">Connected</Badge>
+                          ) : (
+                            <Badge className="bg-zinc-100 text-zinc-600">Not saved</Badge>
+                          )}
+                        </div>
+                        <CardDescription>
+                          Save tests the connection before this platform can be used by AI endpoints.
+                        </CardDescription>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <GripVertical className="h-4 w-4 text-zinc-400" />
+                        <Button disabled={index === 0 || Boolean(savingId)} onClick={() => void movePlatform(index, -1)} size="icon" type="button" variant="outline">
+                          <ArrowUp className="h-4 w-4" />
+                        </Button>
+                        <Button disabled={index === platforms.length - 1 || Boolean(savingId)} onClick={() => void movePlatform(index, 1)} size="icon" type="button" variant="outline">
+                          <ArrowDown className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {errors[platform.id] ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{errors[platform.id]}</p> : null}
+                      {messages[platform.id] ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{messages[platform.id]}</p> : null}
+
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <label className="block">
+                          <span className="mb-1 block text-sm font-medium text-zinc-700">Platform</span>
+                          <select
+                            className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                            disabled={savingId === platform.id}
+                            onChange={(event) => updatePlatform(platform.id, { provider: event.target.value })}
+                            value={platform.provider}
+                          >
+                            {Object.entries(providers).map(([id, provider]) => (
+                              <option key={id} value={id}>
+                                {provider.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        {isOllama ? (
+                          <InputField
+                            label="Model"
+                            onChange={(value) => updatePlatform(platform.id, { model: value })}
+                            placeholder="llama3.1"
+                            value={platform.model}
+                          />
+                        ) : (
+                          <label className="block">
+                            <span className="mb-1 block text-sm font-medium text-zinc-700">Model</span>
+                            <select
+                              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                              disabled={savingId === platform.id}
+                              onChange={(event) => updatePlatform(platform.id, { model: event.target.value })}
+                              value={platform.model}
+                            >
+                              {(definition?.models ?? []).map((model) => (
+                                <option key={model} value={model}>
+                                  {model}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                      </div>
+
+                      {isOllama ? (
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <InputField
+                            label="Ollama URL"
+                            onChange={(value) => updatePlatform(platform.id, { baseUrl: value })}
+                            placeholder="http://localhost:11434"
+                            value={platform.baseUrl}
+                          />
+                          <InputField
+                            label="Optional bearer token"
+                            onChange={(value) => updatePlatform(platform.id, { bearerToken: value })}
+                            placeholder={platform.hasBearerToken ? "Saved token. Re-enter to change." : "Bearer token"}
+                            type="password"
+                            value={platform.bearerToken}
+                          />
+                        </div>
+                      ) : (
+                        <InputField
+                          label="API Key"
+                          onChange={(value) => updatePlatform(platform.id, { apiKey: value })}
+                          placeholder={platform.hasApiKey ? "Saved key. Re-enter to test or change." : "Paste API key"}
+                          type="password"
+                          value={platform.apiKey}
+                        />
+                      )}
+
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button disabled={savingId === platform.id} onClick={() => void deletePlatform(platform)} type="button" variant="outline">
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </Button>
+                        <Button disabled={savingId === platform.id} onClick={() => void savePlatform(platform)} type="button">
+                          {savingId === platform.id ? <Loader /> : <Save className="h-4 w-4" />}
+                          Save
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className={cn(mcpSectionDisabled && "opacity-60")}>
+        <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle>MCP Client</CardTitle>
+            <CardDescription>
+              Connect this account to an external MCP server. Selected tools are exposed as references to the AI prompts used by Emailable.
+            </CardDescription>
+          </div>
+          <Tooltip text={canEnableMcp ? "Enable MCP tool references for AI endpoints." : "Save a connected AI platform, enable AI, and save valid MCP server details first."}>
+            <span>
+              <AiEnableSwitch
+                canEnable={canEnableMcp}
+                disabled={!canEnableMcp || isTogglingMcp || isSavingMcp}
+                enabled={mcpClient.enabled}
+                label="Enable"
+                onChange={(enabled) => void updateMcpClientSettings({ enabled })}
+              />
+            </span>
+          </Tooltip>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {mcpSectionDisabled ? (
+            <p className="rounded-md bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+              Add and save at least one working AI platform before configuring MCP client tools.
+            </p>
+          ) : null}
+          <div className="grid gap-4 md:grid-cols-2">
+            <InputField
+              disabled={mcpSectionDisabled || isSavingMcp}
+              label="MCP server URL"
+              onChange={(value) => setMcpForm((current) => ({ ...current, serverUrl: value }))}
+              placeholder="https://example.com/mcp"
+              type="url"
+              value={mcpForm.serverUrl}
+            />
+            <InputField
+              disabled={mcpSectionDisabled || isSavingMcp}
+              label="Optional bearer token"
+              onChange={(value) => setMcpForm((current) => ({ ...current, bearerToken: value }))}
+              placeholder={mcpClient.hasBearerToken ? "Saved token. Re-enter to change." : "Bearer token"}
+              type="password"
+              value={mcpForm.bearerToken}
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button disabled={mcpSectionDisabled || isSavingMcp || !mcpForm.serverUrl.trim()} onClick={() => void saveMcpClient()} type="button">
+              {isSavingMcp ? <Loader /> : <Save className="h-4 w-4" />}
+              Save MCP Server
+            </Button>
+          </div>
+          {mcpClient.status === "connected" ? (
+            <div className="space-y-3 rounded-md border border-zinc-200 p-4">
+              <div>
+                <p className="text-sm font-medium text-zinc-950">Available tools</p>
+                <p className="text-sm text-zinc-500">Select the MCP tools Emailable should reference when calling AI endpoints.</p>
+              </div>
+              {mcpClient.tools.length === 0 ? (
+                <p className="text-sm text-zinc-500">No tools were returned by this MCP server.</p>
+              ) : (
+                <div className="grid gap-2 md:grid-cols-2">
+                  {mcpClient.tools.map((tool) => (
+                    <label className="flex cursor-pointer items-start gap-3 rounded-md border border-zinc-200 p-3 text-sm hover:bg-zinc-50" key={tool.name}>
+                      <input
+                        checked={mcpClient.selectedTools.includes(tool.name)}
+                        disabled={!mcpClient.enabled || isTogglingMcp}
+                        onChange={() => toggleMcpTool(tool.name)}
+                        type="checkbox"
+                      />
+                      <span>
+                        <span className="block font-medium text-zinc-950">{tool.name}</span>
+                        <span className="block text-zinc-500">{tool.description || "No description provided."}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </div>
@@ -3636,12 +4388,14 @@ function getImapConnectionErrorMessage(data: unknown, status: number) {
 }
 
 function InputField({
+  disabled = false,
   label,
   onChange,
   placeholder,
   type = "text",
   value,
 }: {
+  disabled?: boolean;
   label: string;
   onChange: (value: string) => void;
   placeholder?: string;
@@ -3653,6 +4407,7 @@ function InputField({
       <span className="mb-1 block text-sm font-medium text-zinc-700">{label}</span>
       <input
         className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
         type={type}
@@ -3662,16 +4417,69 @@ function InputField({
   );
 }
 
+function AiEnableSwitch({
+  canEnable,
+  disabled = false,
+  enabled,
+  label = "Enable AI",
+  onChange,
+}: {
+  canEnable: boolean;
+  disabled?: boolean;
+  enabled: boolean;
+  label?: string;
+  onChange: (enabled: boolean) => void;
+}) {
+  const switchControl = (
+    <label className={cn("inline-flex items-center gap-3 text-sm", !canEnable || disabled ? "cursor-not-allowed opacity-70" : "cursor-pointer")}>
+      <span className="font-medium text-zinc-700">{label}</span>
+      <input
+        checked={enabled}
+        className="sr-only"
+        disabled={!canEnable || disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        type="checkbox"
+      />
+      <span
+        className={cn(
+          "relative inline-flex h-6 w-11 rounded-full border transition-colors",
+          enabled ? "border-emerald-500 bg-emerald-500" : "border-zinc-300 bg-zinc-200",
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
+            enabled ? "translate-x-5" : "translate-x-0.5",
+          )}
+        />
+      </span>
+    </label>
+  );
+
+  if (!canEnable) {
+    return (
+      <Tooltip text="Add and save a working AI platform before enabling AI.">
+        <span>{switchControl}</span>
+      </Tooltip>
+    );
+  }
+
+  return switchControl;
+}
+
 function EndpointsPage() {
   const [apiKeys, setApiKeys] = useState<IntegrationApiKey[]>([]);
+  const [aiConfig, setAiConfig] = useState<ByoAiConfig | null>(null);
   const [newToken, setNewToken] = useState<string | null>(null);
   const [keyName, setKeyName] = useState("n8n");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isTogglingAi, setIsTogglingAi] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadApiKeys();
+    void loadEndpointAiConfig();
   }, []);
 
   async function loadApiKeys() {
@@ -3692,6 +4500,45 @@ function EndpointsPage() {
       setError("Could not load API keys.");
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function loadEndpointAiConfig() {
+    try {
+      const response = await fetch("/api/byoai/config", { credentials: "include" });
+      const data = await response.json();
+
+      if (response.ok) {
+        setAiConfig(data);
+      }
+    } catch {
+      // The API docs remain visible even if this status check fails.
+    }
+  }
+
+  async function toggleEndpointAiEnabled(enabled: boolean) {
+    setIsTogglingAi(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/byoai/settings", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aiEnabled: enabled }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not update AI setting.");
+        return;
+      }
+
+      setAiConfig((current) => (current ? { ...current, aiEnabled: Boolean(data.aiEnabled) } : current));
+    } catch {
+      setError("Could not update AI setting.");
+    } finally {
+      setIsTogglingAi(false);
     }
   }
 
@@ -3947,6 +4794,71 @@ function EndpointsPage() {
               threadId: "188c1f2d7e1a1234",
             }}
           />
+          <div className="border-t border-zinc-200 pt-4">
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-zinc-950">Emailable AI endpoints</p>
+                <p className="text-sm text-zinc-500">These endpoints use your saved AI platforms and prompt templates.</p>
+              </div>
+              <AiEnableSwitch
+                canEnable={Boolean(aiConfig?.canEnableAi)}
+                disabled={isTogglingAi || !aiConfig}
+                enabled={Boolean(aiConfig?.aiEnabled)}
+                onChange={(value) => void toggleEndpointAiEnabled(value)}
+              />
+            </div>
+            <div className="space-y-3">
+              <EndpointDoc
+                method="POST"
+                path="/api/integrations/ai/reply"
+                statusBadge={<AiEndpointStatusBadge enabled={Boolean(aiConfig?.aiEnabled)} />}
+                title="AI Reply"
+                notes={[
+                  "Requires Enable AI to be on.",
+                  "accountEmail is optional. When present, Emailable uses it to find the email faster.",
+                  "Uses the Draft Reply prompt as the system prompt and creates a provider draft reply from the AI response.",
+                ]}
+                payload={{
+                  emailId: "188c1f2d7e1a1234",
+                  accountEmail: "user@example.com",
+                }}
+                response={{
+                  action: "draft_created",
+                  accountEmail: "user@example.com",
+                  emailId: "188c1f2d7e1a1234",
+                  draftId: "draft-provider-id",
+                  payload: {
+                    to: "sender@example.com",
+                    subject: "Re: Example subject",
+                    bodyText: "Thanks for the note. I will review this and follow up shortly.",
+                  },
+                }}
+              />
+              <EndpointDoc
+                method="POST"
+                path="/api/integrations/ai/label"
+                statusBadge={<AiEndpointStatusBadge enabled={Boolean(aiConfig?.aiEnabled)} />}
+                title="AI Label"
+                notes={[
+                  "Requires Enable AI to be on.",
+                  "Uses the Email Label prompt as the system prompt.",
+                  "The AI returns label candidates and Emailable applies the highest-confidence label or creates a pending rule for review.",
+                ]}
+                payload={{
+                  emailId: "188c1f2d7e1a1234",
+                  accountEmail: "user@example.com",
+                }}
+                response={{
+                  action: "labels_added",
+                  threshold: 0.9,
+                  confidence: 0.94,
+                  accountEmail: "user@example.com",
+                  emailId: "188c1f2d7e1a1234",
+                  added: [{ name: "Invoice", providerLabelId: "Label_123" }],
+                }}
+              />
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>
@@ -4175,6 +5087,7 @@ function McpServerPage() {
 function EndpointDoc({
   method,
   path,
+  statusBadge,
   title,
   payload,
   response,
@@ -4182,6 +5095,7 @@ function EndpointDoc({
 }: {
   method: string;
   path: string;
+  statusBadge?: ReactNode;
   title: string;
   payload?: Record<string, unknown>;
   response: Record<string, unknown> | Array<Record<string, unknown>>;
@@ -4191,6 +5105,7 @@ function EndpointDoc({
     <details className="glass-panel rounded-md border">
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-zinc-950">
         {title}
+        {statusBadge ? <span className="ml-2">{statusBadge}</span> : null}
         <span className="ml-2 rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-600">
           {method} {path}
         </span>
@@ -4220,6 +5135,20 @@ function EndpointDoc({
       </div>
     </details>
   );
+}
+
+function AiEndpointStatusBadge({ enabled }: { enabled: boolean }) {
+  const badge = enabled ? (
+    <Badge className="bg-emerald-50 text-emerald-700">Enabled</Badge>
+  ) : (
+    <Badge className="bg-red-50 text-red-700">Disabled</Badge>
+  );
+
+  if (enabled) {
+    return badge;
+  }
+
+  return <Tooltip text="Enable this by turning on Enable AI after saving a working AI platform.">{badge}</Tooltip>;
 }
 
 function ConfidenceThresholdPage() {
@@ -5046,7 +5975,7 @@ function escapeHtml(value: string) {
 }
 
 function isAiPromptsPage(page: Page) {
-  return page === "ai-prompts" || page === "ai-email-label" || page === "ai-draft-reply";
+  return page === "ai-prompts" || page === "ai-byoai" || page === "ai-prompt-library";
 }
 
 function isSettingsPage(page: Page) {
@@ -5054,6 +5983,18 @@ function isSettingsPage(page: Page) {
 }
 
 function getPageTitle(page: Page) {
+  if (page === "ai-prompts") {
+    return "Artificial Intelligence";
+  }
+
+  if (page === "ai-byoai") {
+    return "BYOAI";
+  }
+
+  if (page === "ai-prompt-library") {
+    return "Prompts";
+  }
+
   if (page === "ai-email-label") {
     return "Email Label Prompt";
   }
@@ -5099,4 +6040,90 @@ function providerLabel(provider: string) {
   }
 
   return provider;
+}
+
+function logCategoryLabel(category: string) {
+  if (category === "ai") {
+    return "AI";
+  }
+  if (category === "endpoints") {
+    return "Endpoints";
+  }
+  if (category === "webhook") {
+    return "Webhook Events";
+  }
+  if (category === "mcp-server") {
+    return "MCP Server";
+  }
+  return category;
+}
+
+function logStatusClass(status: string) {
+  if (status === "success") {
+    return "bg-emerald-50 text-emerald-700";
+  }
+  if (status === "error") {
+    return "bg-red-50 text-red-700";
+  }
+  if (status === "warning") {
+    return "bg-amber-50 text-amber-700";
+  }
+  return "bg-zinc-100 text-zinc-600";
+}
+
+function toEditableAiPlatform(platform: AiPlatform): AiPlatformDraft {
+  return {
+    ...platform,
+    apiKey: "",
+    bearerToken: "",
+    isDraft: false,
+  };
+}
+
+async function encryptByoAiSecrets(secrets: Record<string, string>) {
+  const encrypted: Record<string, string> = {};
+  const entries = Object.entries(secrets).filter(([, value]) => value.trim());
+  if (entries.length === 0) {
+    return encrypted;
+  }
+
+  const response = await fetch("/api/byoai/client-encryption-key", { credentials: "include" });
+  const data = await response.json();
+  if (!response.ok || typeof data.publicKey !== "string") {
+    throw new Error(data.error ?? "Could not load encryption key.");
+  }
+
+  const key = await window.crypto.subtle.importKey(
+    "spki",
+    pemToArrayBuffer(data.publicKey),
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    false,
+    ["encrypt"],
+  );
+
+  for (const [name, value] of entries) {
+    const encryptedBytes = await window.crypto.subtle.encrypt({ name: "RSA-OAEP" }, key, new TextEncoder().encode(value));
+    encrypted[name] = arrayBufferToBase64(encryptedBytes);
+  }
+
+  return encrypted;
+}
+
+function pemToArrayBuffer(pem: string) {
+  const base64 = pem.replace(/-----BEGIN PUBLIC KEY-----|-----END PUBLIC KEY-----|\s/g, "");
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return window.btoa(binary);
 }
