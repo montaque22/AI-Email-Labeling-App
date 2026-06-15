@@ -12,7 +12,7 @@ import {
 import { modifyGmailMessageLabels } from "./integrations.js";
 import { emitWebhookEvent } from "./webhooks.js";
 
-const INBOX_PAGE_SIZE = 20;
+const INBOX_PAGE_SIZE = 30;
 
 export function registerInboxRoutes(app) {
   app.get("/api/inbox/messages", requireSession, async (req, res) => {
@@ -24,6 +24,26 @@ export function registerInboxRoutes(app) {
       }
 
       const result = await listInboxMessages(req.user.id, input.query);
+      res.json(result);
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.get("/api/inbox/drafts", requireSession, async (req, res) => {
+    try {
+      const input = parseMailboxListQuery(req.query);
+      const result = await listInboxDrafts(req.user.id, input.query);
+      res.json(result);
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.get("/api/inbox/sent", requireSession, async (req, res) => {
+    try {
+      const input = parseMailboxListQuery(req.query);
+      const result = await listInboxSentMessages(req.user.id, input.query);
       res.json(result);
     } catch (error) {
       handleProviderError(res, error);
@@ -100,6 +120,21 @@ export function registerInboxRoutes(app) {
     }
   });
 
+  app.post("/api/inbox/messages/set-label", requireSession, async (req, res) => {
+    try {
+      const input = parseSetMessageLabelInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      const result = await setInboxMessagesLabel(req.user.id, input.action);
+      res.json(result);
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
   app.post("/api/inbox/messages/delete", requireSession, async (req, res) => {
     try {
       const input = parseBulkMessageInput(req.body);
@@ -114,6 +149,77 @@ export function registerInboxRoutes(app) {
       handleProviderError(res, error);
     }
   });
+}
+
+async function listInboxDrafts(userId, query) {
+  return listSpecialMailboxMessages(userId, query, {
+    gmailLabelId: "DRAFT",
+    imapMetadataKey: "draftsMailbox",
+    fallbackMailbox: "Drafts",
+    labelName: "Draft",
+    unsupportedReason: "Provider drafts are not implemented yet",
+  });
+}
+
+async function listInboxSentMessages(userId, query) {
+  return listSpecialMailboxMessages(userId, query, {
+    gmailLabelId: "SENT",
+    imapMetadataKey: "sentMailbox",
+    fallbackMailbox: "Sent",
+    labelName: "Sent",
+    unsupportedReason: "Provider sent mail is not implemented yet",
+  });
+}
+
+async function listSpecialMailboxMessages(userId, query, options) {
+  const accounts = await getInboxAccounts(userId, query.accountIds);
+  const pageToken = decodePageToken(query.pageToken);
+  const nextPageState = {};
+  const providerResults = [];
+  const skippedAccounts = [];
+
+  for (const account of accounts) {
+    if (!["gmail", "imap"].includes(account.provider)) {
+      skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: options.unsupportedReason });
+      continue;
+    }
+
+    try {
+      if (account.provider === "gmail") {
+        const accessToken = await getValidEmailAccountAccessToken(account);
+        const result = await listGmailSystemLabelMessages({
+          accessToken,
+          account,
+          labelId: options.gmailLabelId,
+          labelName: options.labelName,
+          pageToken: pageToken[account.id] ?? "",
+        });
+        nextPageState[account.id] = result.nextPageToken;
+        providerResults.push(...result.messages);
+      } else {
+        const mailbox = account.metadata?.[options.imapMetadataKey] || options.fallbackMailbox;
+        const result = await searchImapInboxMessages(account, {
+          folder: mailbox,
+          limit: INBOX_PAGE_SIZE,
+          pageToken: pageToken[account.id] ?? "",
+          query: "",
+        });
+        nextPageState[account.id] = result.nextPageToken;
+        providerResults.push(...result.messages.map((message) => ({ ...message, labels: [options.labelName] })));
+      }
+    } catch (error) {
+      skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: error.message });
+    }
+  }
+
+  const messages = sortInboxMessages(providerResults, query.sort);
+  const hasMore = Object.values(nextPageState).some(Boolean);
+
+  return {
+    messages,
+    nextPageToken: hasMore ? encodePageToken(nextPageState) : null,
+    skippedAccounts,
+  };
 }
 
 async function listInboxMessages(userId, query) {
@@ -159,6 +265,9 @@ async function listInboxMessages(userId, query) {
         nextPageState[account.id] = result.nextPageToken;
         providerResults.push(...result.messages);
       } else {
+        if (isSpecialImapMailbox(account, sync.providerLabelId)) {
+          continue;
+        }
         const result = await searchImapInboxMessages(account, {
           folder: sync.providerLabelId,
           limit: INBOX_PAGE_SIZE,
@@ -440,6 +549,95 @@ async function relabelInboxMessages(userId, action) {
   };
 }
 
+async function setInboxMessagesLabel(userId, action) {
+  const [accounts, labels] = await Promise.all([getInboxAccounts(userId, []), getInboxLabels(userId)]);
+  const accountsById = new Map(accounts.map((account) => [account.id, account]));
+  const targetLabel = action.labelId ? labels.find((label) => label.id === action.labelId) : null;
+  const targetSyncsByAccountId = new Map((targetLabel?.syncs ?? []).map((sync) => [sync.emailAccountId, sync]));
+  const allSyncsByAccountId = new Map();
+  const results = [];
+
+  if (action.labelId && !targetLabel) {
+    const error = new Error("Target label not found");
+    error.status = 404;
+    throw error;
+  }
+
+  for (const label of labels) {
+    for (const sync of label.syncs) {
+      if (!sync.providerLabelId || sync.syncStatus !== "synced") {
+        continue;
+      }
+      const list = allSyncsByAccountId.get(sync.emailAccountId) ?? [];
+      list.push({ label, sync });
+      allSyncsByAccountId.set(sync.emailAccountId, list);
+    }
+  }
+
+  for (const message of action.messages) {
+    const account = accountsById.get(message.accountId);
+    if (!account) {
+      results.push({ ...message, ok: false, error: "Account not found" });
+      continue;
+    }
+
+    try {
+      const allAccountSyncs = allSyncsByAccountId.get(account.id) ?? [];
+      const targetSync = targetLabel ? targetSyncsByAccountId.get(account.id) : null;
+      if (targetLabel && (!targetSync?.providerLabelId || targetSync.syncStatus !== "synced")) {
+        throw new Error("Target label is not synced to this account");
+      }
+
+      const removedLabelNames = allAccountSyncs
+        .filter(({ label }) => !targetLabel || label.id !== targetLabel.id)
+        .map(({ label }) => label.name);
+
+      if (account.provider === "gmail") {
+        const accessToken = await getValidEmailAccountAccessToken(account);
+        await modifyGmailMessageLabels({
+          accessToken,
+          emailId: message.emailId,
+          addLabelIds: targetSync?.providerLabelId ? [targetSync.providerLabelId] : [],
+          removeLabelIds: allAccountSyncs
+            .filter(({ sync }) => sync.providerLabelId !== targetSync?.providerLabelId)
+            .map(({ sync }) => sync.providerLabelId),
+        });
+      } else if (account.provider === "imap") {
+        await moveImapInboxMessageToFolder({
+          account,
+          emailId: message.emailId,
+          sourceMailbox: message.mailbox,
+          targetFolder: targetSync?.providerLabelId || account.metadata?.defaultMailbox || "INBOX",
+        });
+      } else {
+        throw new Error(`${account.provider} label updates are not implemented yet`);
+      }
+
+      await emitWebhookEvent(userId, "email.labels_updated", {
+        emailId: message.emailId,
+        accountEmail: account.email,
+        added: targetLabel ? [targetLabel.name] : [],
+        removed: removedLabelNames,
+        source: "inbox",
+      });
+      results.push({
+        ...message,
+        ok: true,
+        label: targetLabel ? { id: targetLabel.id, name: targetLabel.name } : null,
+      });
+    } catch (error) {
+      results.push({ ...message, ok: false, error: error.message });
+    }
+  }
+
+  return {
+    updated: results.filter((result) => result.ok).length,
+    failed: results.filter((result) => !result.ok),
+    results,
+    label: targetLabel ? { id: targetLabel.id, name: targetLabel.name } : null,
+  };
+}
+
 async function deleteInboxMessages(userId, messages) {
   const accounts = await getInboxAccounts(userId, []);
   const accountsById = new Map(accounts.map((account) => [account.id, account]));
@@ -525,6 +723,13 @@ async function getInboxLabel(userId, labelId) {
   return labels.find((label) => label.id === labelId) ?? null;
 }
 
+function isSpecialImapMailbox(account, mailbox) {
+  const normalizedMailbox = String(mailbox || "").trim().toLowerCase();
+  const sentMailbox = String(account.metadata?.sentMailbox || "Sent").trim().toLowerCase();
+  const draftsMailbox = String(account.metadata?.draftsMailbox || "Drafts").trim().toLowerCase();
+  return Boolean(normalizedMailbox && (normalizedMailbox === sentMailbox || normalizedMailbox === draftsMailbox));
+}
+
 async function listGmailInboxMessages({ accessToken, account, label, providerLabelId, pageToken, query }) {
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
   url.searchParams.append("labelIds", providerLabelId);
@@ -532,9 +737,7 @@ async function listGmailInboxMessages({ accessToken, account, label, providerLab
   if (pageToken) {
     url.searchParams.set("pageToken", pageToken);
   }
-  if (query) {
-    url.searchParams.set("q", query);
-  }
+  url.searchParams.set("q", ["-in:sent", "-in:drafts", query].filter(Boolean).join(" "));
 
   const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
   const data = await response.json();
@@ -602,6 +805,30 @@ async function createGmailComposeDraft(accessToken, account, compose) {
   });
 
   return response.json();
+}
+
+async function listGmailSystemLabelMessages({ accessToken, account, labelId, labelName, pageToken }) {
+  const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+  url.searchParams.append("labelIds", labelId);
+  url.searchParams.set("maxResults", String(INBOX_PAGE_SIZE));
+  if (pageToken) {
+    url.searchParams.set("pageToken", pageToken);
+  }
+
+  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+  const data = await response.json();
+  const messages = [];
+
+  for (const item of data.messages ?? []) {
+    const messageId = item.id;
+    if (!messageId) {
+      continue;
+    }
+    const message = await fetchGmailMessageMetadata(accessToken, messageId);
+    messages.push(gmailMessageToInboxListItem(message, account, { name: labelName }));
+  }
+
+  return { messages, nextPageToken: data.nextPageToken ?? null };
 }
 
 async function sendGmailComposeMessage(accessToken, account, compose) {
@@ -682,6 +909,17 @@ function parseInboxListQuery(query) {
   };
 }
 
+function parseMailboxListQuery(query) {
+  return {
+    ok: true,
+    query: {
+      accountIds: parseCsv(query.accounts),
+      pageToken: typeof query.pageToken === "string" ? query.pageToken : "",
+      sort: ["newest", "oldest", "sender", "subject"].includes(query.sort) ? query.sort : "newest",
+    },
+  };
+}
+
 function parseInboxDetailQuery(query) {
   const accountId = typeof query.accountId === "string" ? query.accountId : "";
   const emailId = typeof query.emailId === "string" ? query.emailId : "";
@@ -748,6 +986,16 @@ function parseBulkRelabelInput(body) {
   }
 
   return { ok: true, action: { labelId, sourceLabelId, messages: messagesInput.messages } };
+}
+
+function parseSetMessageLabelInput(body) {
+  const messagesInput = parseBulkMessageInput(body);
+  if (!messagesInput.ok) {
+    return messagesInput;
+  }
+
+  const labelId = typeof body?.labelId === "string" ? body.labelId : "";
+  return { ok: true, action: { labelId, messages: messagesInput.messages } };
 }
 
 function parseBulkMessageInput(body) {

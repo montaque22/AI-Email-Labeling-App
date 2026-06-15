@@ -262,6 +262,7 @@ type AiMcpClientConfig = {
 };
 
 type InboxSort = "newest" | "oldest" | "sender" | "subject";
+type InboxMode = "inbox" | "drafts" | "sent";
 
 type InboxRuleStatus = {
   emailId: string;
@@ -322,6 +323,7 @@ type InboxComposeDraft = {
     from: string;
     snippet: string;
     bodyText: string;
+    bodyHtml?: string;
   } | null;
 };
 
@@ -1103,6 +1105,7 @@ function OverviewPage({
 function InboxPage({ privacyMode }: { privacyMode: boolean }) {
   const [labels, setLabels] = useState<Label[]>([]);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
+  const [inboxMode, setInboxMode] = useState<InboxMode>("inbox");
   const [selectedLabelId, setSelectedLabelId] = useState("");
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   const [labelCounts, setLabelCounts] = useState<Record<string, number | null>>({});
@@ -1121,6 +1124,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
   const [selectedMessageKeys, setSelectedMessageKeys] = useState<string[]>([]);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isBulkActionRunning, setIsBulkActionRunning] = useState(false);
+  const [isLabelActionRunning, setIsLabelActionRunning] = useState(false);
   const [ruleEditorMessage, setRuleEditorMessage] = useState<InboxMessage | null>(null);
   const [isCountsLoading, setIsCountsLoading] = useState(false);
   const [toast, setToast] = useState<InboxToast | null>(null);
@@ -1164,14 +1168,14 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
   }, []);
 
   useEffect(() => {
-    if (!selectedLabelId || selectedAccountIds.length === 0) {
+    if (selectedAccountIds.length === 0 || (inboxMode === "inbox" && !selectedLabelId)) {
       setMessages([]);
       setNextPageToken(null);
       return;
     }
 
     void loadMessages({ reset: true });
-  }, [selectedLabelId, selectedAccountIds.join(","), sort]);
+  }, [inboxMode, selectedLabelId, selectedAccountIds.join(","), sort]);
 
   useEffect(() => {
     if (!isAccountMenuOpen) {
@@ -1190,7 +1194,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
   }, [isAccountMenuOpen]);
 
   useEffect(() => {
-    if (selectedAccountIds.length === 0 || labels.length === 0) {
+    if (inboxMode !== "inbox" || selectedAccountIds.length === 0 || labels.length === 0) {
       setLabelCounts({});
       setIsCountsLoading(false);
       return;
@@ -1214,7 +1218,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
     }
 
     void loadCounts();
-  }, [labels.length, selectedAccountIds.join(",")]);
+  }, [inboxMode, labels.length, selectedAccountIds.join(",")]);
 
   useEffect(() => {
     if (!toast) {
@@ -1228,7 +1232,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
   const filteredMessages = messages;
 
   async function loadMessages({ reset }: { reset: boolean }) {
-    if (!selectedLabelId || selectedAccountIds.length === 0) {
+    if (selectedAccountIds.length === 0 || (inboxMode === "inbox" && !selectedLabelId)) {
       return;
     }
 
@@ -1237,19 +1241,22 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
 
     try {
       const params = new URLSearchParams({
-        labelId: selectedLabelId,
         accounts: selectedAccountIds.join(","),
         sort,
       });
+      if (inboxMode === "inbox") {
+        params.set("labelId", selectedLabelId);
+      }
       if (!reset && nextPageToken) {
         params.set("pageToken", nextPageToken);
       }
 
-      const response = await fetch(`/api/inbox/messages?${params.toString()}`, { credentials: "include" });
+      const endpoint = inboxMode === "drafts" ? "/api/inbox/drafts" : inboxMode === "sent" ? "/api/inbox/sent" : "/api/inbox/messages";
+      const response = await fetch(`${endpoint}?${params.toString()}`, { credentials: "include" });
       const data = await response.json();
 
       if (!response.ok) {
-        setError(data.error ?? "Could not load inbox messages.");
+        setError(data.error ?? `Could not load ${inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "inbox messages"}.`);
         return;
       }
 
@@ -1259,7 +1266,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
         setSelectedMessageKeys([]);
       }
     } catch {
-      setError("Could not load inbox messages.");
+      setError(`Could not load ${inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "inbox messages"}.`);
     } finally {
       reset ? setIsLoading(false) : setIsLoadingMore(false);
     }
@@ -1303,6 +1310,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
 
   const selectedMessages = messages.filter((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
   const allVisibleSelected = filteredMessages.length > 0 && filteredMessages.every((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
+  const selectedMessagesLabelValue = getCommonMessageLabelId(selectedMessages, labels);
 
   function toggleMessage(message: InboxMessage) {
     const key = getInboxMessageKey(message);
@@ -1322,6 +1330,16 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
 
   function showInboxToast(message: string, type: InboxToast["type"] = "success") {
     setToast({ id: Date.now(), message, type });
+  }
+
+  function handleInboxModeChange(mode: InboxMode) {
+    setInboxMode(mode);
+    setMessages([]);
+    setNextPageToken(null);
+    setSelectedMessageKeys([]);
+    setSelectedMessage(null);
+    setMessageDetail(null);
+    setRuleEditorMessage(null);
   }
 
   function adjustLabelCountsByName(changesByName: Record<string, number>) {
@@ -1369,6 +1387,85 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
     }
 
     adjustLabelCountsByName(changes);
+  }
+
+  function updateCountsForDirectLabelChange(messagesToUpdate: InboxMessage[], nextLabelName: string) {
+    const changes: Record<string, number> = {};
+    for (const message of messagesToUpdate) {
+      for (const labelName of message.labels) {
+        if (labelName && labelName !== nextLabelName) {
+          changes[labelName] = (changes[labelName] ?? 0) - 1;
+        }
+      }
+      if (nextLabelName && !message.labels.some((labelName) => labelName.toLowerCase() === nextLabelName.toLowerCase())) {
+        changes[nextLabelName] = (changes[nextLabelName] ?? 0) + 1;
+      }
+    }
+    adjustLabelCountsByName(changes);
+  }
+
+  async function setMessagesLabel(messagesToUpdate: InboxMessage[], labelId: string) {
+    if (messagesToUpdate.length === 0) {
+      return;
+    }
+
+    setIsLabelActionRunning(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/inbox/messages/set-label", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ labelId, messages: messagesToUpdate.map(messageToBulkPayload) }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error ?? "Could not update labels.");
+        showInboxToast(data.error ?? "Could not update labels.", "error");
+        return;
+      }
+
+      const successfulUpdates = Array.isArray(data.results)
+        ? messagesToUpdate.filter((message) =>
+            data.results.some((result: { accountId: string; emailId: string; mailbox?: string; ok: boolean }) =>
+              result.ok &&
+              result.accountId === message.accountId &&
+              result.emailId === message.id &&
+              (result.mailbox ?? "") === (message.mailbox ?? ""),
+            ),
+          )
+        : messagesToUpdate;
+      const updatedKeys = new Set(successfulUpdates.map(getInboxMessageKey));
+      const nextLabelName = typeof data.label?.name === "string" ? data.label.name : "";
+      const currentLabelName = labels.find((label) => label.id === selectedLabelId)?.name ?? "";
+      const shouldRemoveFromCurrentInboxView = inboxMode === "inbox" && currentLabelName && currentLabelName !== nextLabelName;
+
+      updateCountsForDirectLabelChange(successfulUpdates, nextLabelName);
+      setMessages((current) =>
+        shouldRemoveFromCurrentInboxView
+          ? current.filter((message) => !updatedKeys.has(getInboxMessageKey(message)))
+          : current.map((message) => updatedKeys.has(getInboxMessageKey(message)) ? { ...message, labels: nextLabelName ? [nextLabelName] : [] } : message),
+      );
+      setSelectedMessage((current) =>
+        current && updatedKeys.has(getInboxMessageKey(current))
+          ? { ...current, labels: nextLabelName ? [nextLabelName] : [] }
+          : current,
+      );
+      setSelectedMessageKeys((current) => current.filter((key) => !updatedKeys.has(key)));
+
+      if (successfulUpdates.length > 0) {
+        showInboxToast(nextLabelName ? `Updated ${successfulUpdates.length} message${successfulUpdates.length === 1 ? "" : "s"} to ${nextLabelName}.` : `Removed labels from ${successfulUpdates.length} message${successfulUpdates.length === 1 ? "" : "s"}.`);
+      }
+      if (data.failed?.length) {
+        setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be updated.`);
+        showInboxToast(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be updated.`, "error");
+      }
+    } catch {
+      setError("Could not update labels.");
+      showInboxToast("Could not update labels.", "error");
+    } finally {
+      setIsLabelActionRunning(false);
+    }
   }
 
   async function deleteSelectedMessages(messagesToDelete = selectedMessages) {
@@ -1434,6 +1531,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
         from: detail?.from || summary.from,
         snippet: summary.snippet,
         bodyText: detail?.bodyText || summary.snippet,
+        bodyHtml: detail?.bodyHtml || "",
       },
     });
     setIsComposeOpen(true);
@@ -1444,7 +1542,8 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
       {toast ? <InboxToastMessage toast={toast} /> : null}
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[260px_minmax(0,1fr)] xl:gap-5">
+      <div className={cn("grid min-w-0 gap-4 xl:gap-5", inboxMode === "inbox" ? "xl:grid-cols-[260px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
+        {inboxMode === "inbox" ? (
         <div className="hidden xl:block">
           <Card>
             <CardHeader>
@@ -1475,11 +1574,14 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
             </CardContent>
           </Card>
         </div>
+        ) : null}
 
         <div className="min-w-0 space-y-4">
           <Card className="min-w-0 max-w-full">
             <CardContent className="flex flex-row flex-wrap items-start justify-between gap-3 p-3 sm:p-4">
               <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center">
+                <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
+                {inboxMode === "inbox" ? (
                 <label className="block xl:hidden">
                   <span className="sr-only">Label filter</span>
                   <select
@@ -1499,6 +1601,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
                     )}
                   </select>
                 </label>
+                ) : null}
                 <div className="relative z-10" data-inbox-account-menu>
                   <Button className="w-full sm:w-auto" onClick={() => setIsAccountMenuOpen((current) => !current)} type="button" variant="outline">
                     Accounts {selectedAccountIds.length}/{accounts.length}
@@ -1528,10 +1631,19 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
               </div>
               <div className="ml-auto flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
                 {selectedMessages.length > 0 ? (
-                  <Button disabled={isBulkActionRunning} onClick={() => void deleteSelectedMessages()} type="button" variant="outline">
-                    <Trash2 className="h-4 w-4" />
-                    Delete
-                  </Button>
+                  <>
+                    <LabelActionSelect
+                      disabled={isBulkActionRunning || isLabelActionRunning}
+                      isLoading={isLabelActionRunning}
+                      labels={labels}
+                      onChange={(labelId) => void setMessagesLabel(selectedMessages, labelId)}
+                      value={selectedMessagesLabelValue}
+                    />
+                    <Button disabled={isBulkActionRunning || isLabelActionRunning} onClick={() => void deleteSelectedMessages()} type="button" variant="outline">
+                      <Trash2 className="h-4 w-4" />
+                      Delete
+                    </Button>
+                  </>
                 ) : null}
                 <Button
                   onClick={() => {
@@ -1551,7 +1663,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
             <CardHeader className="flex-row flex-wrap items-start justify-between gap-3 space-y-0">
               <div className="min-w-0">
                 <CardTitle>Email</CardTitle>
-                <CardDescription>{filteredMessages.length} loaded messages</CardDescription>
+                <CardDescription>{filteredMessages.length} loaded {inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "messages"}</CardDescription>
               </div>
               <label className="flex shrink-0 items-center gap-2 text-sm text-zinc-500">
                 <span>Sort</span>
@@ -1582,9 +1694,13 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
                 )}
               </div>
               {isLoading ? (
-                <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">Loading messages...</p>
+                <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
+                  Loading {inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "messages"}...
+                </p>
               ) : filteredMessages.length === 0 ? (
-                <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">No messages found for this label.</p>
+                <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
+                  {inboxMode === "drafts" ? "No drafts found." : inboxMode === "sent" ? "No sent messages found." : "No messages found for this label."}
+                </p>
               ) : (
                 filteredMessages.map((message) => (
                   <div
@@ -1637,12 +1753,15 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
           detail={messageDetail}
           error={detailError}
           isLoading={isDetailLoading}
+          isLabelActionRunning={isLabelActionRunning}
+          labels={labels}
           onClose={() => {
             setSelectedMessage(null);
             setMessageDetail(null);
           }}
           onDelete={(message) => void deleteSelectedMessages([message])}
           onEditRule={(message) => setRuleEditorMessage(message)}
+          onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
           onReply={(detail, summary) => openReplyComposer(detail, summary)}
           privacyMode={privacyMode}
           summary={selectedMessage}
@@ -1697,6 +1816,40 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
   );
 }
 
+function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode: InboxMode) => void }) {
+  const options: Array<{ id: InboxMode; label: string }> = [
+    { id: "inbox", label: "Inbox" },
+    { id: "drafts", label: "Drafts" },
+    { id: "sent", label: "Sent" },
+  ];
+  const selectedIndex = options.findIndex((option) => option.id === mode);
+
+  return (
+    <div className="relative inline-grid h-10 w-full grid-cols-3 rounded-md border border-zinc-200 bg-[#f7f7f7] p-1 shadow-sm backdrop-blur-xl sm:w-72">
+      <span
+        className={cn(
+          "absolute bottom-1 left-1 top-1 w-[calc((100%-0.5rem)/3)] rounded-md bg-white shadow-sm transition-transform duration-300 ease-out",
+          selectedIndex === 1 && "translate-x-full",
+          selectedIndex === 2 && "translate-x-[200%]",
+        )}
+      />
+      {options.map((option) => (
+        <button
+          className={cn(
+            "relative z-10 cursor-pointer rounded-md px-4 text-sm font-medium transition-colors duration-200",
+            mode === option.id ? "text-zinc-950" : "text-zinc-500 hover:text-zinc-800",
+          )}
+          key={option.id}
+          onClick={() => onChange(option.id)}
+          type="button"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function InboxToastMessage({ toast }: { toast: InboxToast }) {
   return (
     <div className="fixed right-5 top-20 z-50">
@@ -1714,13 +1867,57 @@ function InboxToastMessage({ toast }: { toast: InboxToast }) {
   );
 }
 
+function LabelActionSelect({
+  disabled,
+  isLoading,
+  labels,
+  onChange,
+  value,
+}: {
+  disabled: boolean;
+  isLoading: boolean;
+  labels: Label[];
+  onChange: (labelId: string) => void;
+  value: string;
+}) {
+  return (
+    <div className="relative">
+      <select
+        className="h-10 min-w-40 rounded-md border border-zinc-200 bg-white/80 px-3 pr-9 text-sm text-zinc-700 outline-none transition-colors focus:border-zinc-400 disabled:cursor-not-allowed disabled:opacity-60"
+        disabled={disabled}
+        onChange={(event) => {
+          if (event.target.value === "__mixed__") {
+            return;
+          }
+          onChange(event.target.value === "__none__" ? "" : event.target.value);
+        }}
+        value={value || "__mixed__"}
+      >
+        <option disabled value="__mixed__">Choose label...</option>
+        <option value="__none__">No label</option>
+        {labels.map((label) => (
+          <option key={label.id} value={label.id}>{label.name}</option>
+        ))}
+      </select>
+      {isLoading ? (
+        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500">
+          <Loader />
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function InboxMessageModal({
   detail,
   error,
   isLoading,
+  isLabelActionRunning,
+  labels,
   onClose,
   onDelete,
   onEditRule,
+  onSetLabel,
   onReply,
   privacyMode,
   summary,
@@ -1728,13 +1925,19 @@ function InboxMessageModal({
   detail: InboxMessageDetail | null;
   error: string | null;
   isLoading: boolean;
+  isLabelActionRunning: boolean;
+  labels: Label[];
   onClose: () => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
+  onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
   privacyMode: boolean;
   summary: InboxMessage;
 }) {
+  const rule = detail?.rule ?? summary.rule ?? null;
+  const currentLabelId = getCommonMessageLabelId([summary], labels);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
       <div className="max-h-[92vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
@@ -1743,13 +1946,20 @@ function InboxMessageModal({
             <div className="min-w-0">
               <h3 className="mt-1 truncate text-lg font-semibold text-zinc-950">{detail?.subject || summary.subject || "(no subject)"}</h3>
               <div className="mt-2">
-                <InboxRuleBadge rule={detail?.rule ?? summary.rule ?? null} />
+                <InboxRuleBadge rule={rule} />
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              <LabelActionSelect
+                disabled={isLabelActionRunning}
+                isLoading={isLabelActionRunning}
+                labels={labels}
+                onChange={(labelId) => onSetLabel(summary, labelId)}
+                value={currentLabelId}
+              />
               <Button onClick={() => onEditRule(summary)} type="button" variant="outline">
                 <Pencil className="h-4 w-4" />
-                Edit Label
+                {rule ? "Edit Rule" : "Create Rule"}
               </Button>
               <Button onClick={() => onDelete(summary)} type="button" variant="outline">
                 <Trash2 className="h-4 w-4" />
@@ -1809,19 +2019,33 @@ function InboxMessageModal({
 }
 
 function InboxRuleBadge({ compact = false, rule }: { compact?: boolean; rule?: InboxRuleStatus | null }) {
-  if (!rule) {
-    return <Badge className={cn("border-zinc-200 bg-zinc-50 text-zinc-600", compact && "px-1.5 py-0 text-[10px]")}>No rule</Badge>;
-  }
+  const status = !rule
+    ? {
+        className: "bg-zinc-400 ring-zinc-200",
+        text: "No associated rule",
+      }
+    : rule.isPending
+      ? {
+          className: "bg-amber-400 ring-amber-100",
+          text: "Rule created. Needs review",
+        }
+      : {
+          className: "bg-emerald-500 ring-emerald-100",
+          text: "Sorted via rule",
+        };
 
   return (
-    <Badge
-      className={cn(
-        rule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700",
-        compact && "px-1.5 py-0 text-[10px]",
-      )}
-    >
-      {rule.isPending ? "Pending" : "Reviewed"}
-    </Badge>
+    <Tooltip text={status.text}>
+      <span
+        aria-label={status.text}
+        className={cn(
+          "inline-block rounded-full ring-4",
+          status.className,
+          compact ? "h-2.5 w-2.5" : "h-3 w-3",
+        )}
+        role="img"
+      />
+    </Tooltip>
   );
 }
 
@@ -2059,6 +2283,7 @@ function InboxComposeModal({
   const [bodyText, setBodyText] = useState(initial?.bodyText ?? "");
   const [attachments, setAttachments] = useState<InboxAttachment[]>([]);
   const [isAiComposerOpen, setIsAiComposerOpen] = useState(false);
+  const [isOriginalMessageExpanded, setIsOriginalMessageExpanded] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
   const [aiSuggestion, setAiSuggestion] = useState("");
   const [isGeneratingAiSuggestion, setIsGeneratingAiSuggestion] = useState(false);
@@ -2144,6 +2369,46 @@ function InboxComposeModal({
           <div className="flex justify-end border-b border-zinc-200 pb-3">
             <AiEnableSwitch canEnable enabled={isAiComposerOpen} label="AI Composer" onChange={setIsAiComposerOpen} />
           </div>
+          {replyContext ? (
+            <div className="rounded-xl border border-zinc-200 bg-white/60 p-4 shadow-sm">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-zinc-200 pb-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium uppercase text-zinc-500">Original email</p>
+                  <p className="mt-1 truncate text-sm font-semibold text-zinc-950">{replyContext.subject || "(no subject)"}</p>
+                </div>
+                <div className="flex max-w-full items-center gap-2 sm:max-w-96">
+                  <p className="truncate text-xs text-zinc-500">
+                    From: {formatEmailForPrivacy(replyContext.from || "Unknown sender", privacyMode)}
+                  </p>
+                  <Button
+                    aria-label={isOriginalMessageExpanded ? "Hide full original email" : "Reveal full original email"}
+                    onClick={() => setIsOriginalMessageExpanded((current) => !current)}
+                    size="icon"
+                    title={isOriginalMessageExpanded ? "Hide full message" : "Reveal full message"}
+                    type="button"
+                    variant="ghost"
+                  >
+                    <ChevronRight className={cn("h-4 w-4 transition-transform", isOriginalMessageExpanded && "rotate-90")} />
+                  </Button>
+                </div>
+              </div>
+              {isOriginalMessageExpanded ? (
+                <div className="max-h-[46vh] min-h-64 overflow-y-auto rounded-lg border border-white/70 bg-white/80 p-3">
+                  {replyContext.bodyHtml ? (
+                    <iframe className="h-[520px] w-full rounded bg-white" sandbox="" srcDoc={replyContext.bodyHtml} title="Original email body" />
+                  ) : (
+                    <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-zinc-700">
+                      {replyContext.bodyText || replyContext.snippet || "No message preview available."}
+                    </pre>
+                  )}
+                </div>
+              ) : (
+                <p className="line-clamp-3 text-sm leading-6 text-zinc-600">
+                  {replyContext.snippet || replyContext.bodyText || "No message preview available."}
+                </p>
+              )}
+            </div>
+          ) : null}
           {isAiComposerOpen ? (
             <div className="rounded-md border border-emerald-100 bg-emerald-50/50 p-4">
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
@@ -7712,6 +7977,21 @@ function formatFileSize(size: number) {
 
 function getInboxMessageKey(message: InboxMessage) {
   return `${message.accountId}:${message.mailbox ?? ""}:${message.id}`;
+}
+
+function getCommonMessageLabelId(messages: InboxMessage[], labels: Label[]) {
+  if (messages.length === 0) {
+    return "";
+  }
+
+  const labelsByName = new Map(labels.map((label) => [label.name.toLowerCase(), label.id]));
+  const labelIds = messages.map((message) => {
+    const firstLabel = message.labels[0];
+    return firstLabel ? labelsByName.get(firstLabel.toLowerCase()) ?? "" : "__none__";
+  });
+  const [firstLabelId] = labelIds;
+
+  return labelIds.every((labelId) => labelId === firstLabelId) ? firstLabelId : "";
 }
 
 function messageToBulkPayload(message: InboxMessage) {

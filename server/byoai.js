@@ -425,15 +425,18 @@ async function generateComposeSuggestion(userId, request) {
   await assertAiEnabled(userId);
   const bundle = await getRenderedAiPromptBundle(userId);
   const toolReference = await getSelectedMcpToolReference(userId);
+  const originalBody = simplifyBody(request.message?.bodyText || htmlToText(request.message?.bodyHtml) || request.message?.snippet || "");
   const context = request.message
-    ? `Original email context:\nSubject: ${request.message.subject || "(no subject)"}\nFrom: ${request.message.from || "Unknown"}\nBody:\n${simplifyBody(request.message.bodyText || request.message.snippet || "")}`
+    ? `You are drafting a reply AS THE APP USER, not as the sender of the original email. The original email below is the message you must respond to. Do not write from the perspective of the original sender. Do not sign as the original sender. Write the reply as the recipient/client responding back to the original sender.\n\nOriginal email to respond to:\nSubject: ${request.message.subject || "(no subject)"}\nFrom original sender: ${request.message.from || "Unknown"}\nOriginal email body:\n${originalBody}`
     : "This is a brand new email, not a reply. There is no original email context.";
+  const draftLabel = request.message ? "Current reply draft written by the app user" : "Current email draft written by the app user";
+  const instructionLabel = request.message ? "User instruction for how the app user's reply should be written" : "User instruction for how the app user's email should be written";
   const aiResponse = await callBestAvailableAi(userId, {
     systemPrompt: appendToolReference(
-      `${bundle["draft-reply"].markdown}\n\nReturn only the drafted email body text. Do not include explanations, markdown fences, subject lines, or metadata.`,
+      `${bundle["draft-reply"].markdown}\n\nReturn only the drafted email body text. Do not include explanations, markdown fences, subject lines, or metadata. For replies, always write as the app user replying to the original sender, never as the original sender.`,
       toolReference,
     ),
-    userPrompt: `${context}\n\nCurrent draft text:\n${request.currentBody || "(empty)"}\n\nUser instruction:\n${request.prompt}`,
+    userPrompt: `${context}\n\n${draftLabel}:\n${request.currentBody || "(empty)"}\n\n${instructionLabel}:\n${request.prompt}`,
     responseShape: "text",
   });
 
@@ -678,6 +681,7 @@ function parseComposeSuggestionInput(body) {
         from: typeof body.message.from === "string" ? body.message.from : "",
         snippet: typeof body.message.snippet === "string" ? body.message.snippet : "",
         bodyText: typeof body.message.bodyText === "string" ? body.message.bodyText : "",
+        bodyHtml: typeof body.message.bodyHtml === "string" ? body.message.bodyHtml : "",
       }
     : null;
 
@@ -1119,6 +1123,21 @@ function decryptClientSecret(value) {
 
 function simplifyBody(value) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 8000);
+}
+
+function htmlToText(value) {
+  return String(value ?? "")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|tr|h[1-6])>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/g, "'");
 }
 
 async function requireSession(req, res, next) {
