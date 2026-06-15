@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
-import { testImapConnection } from "./imap-provider.js";
+import { testImapConnection, withImapClient } from "./imap-provider.js";
 
 export const EMAIL_ACCOUNT_PROVIDERS = {
   gmail: {
@@ -32,6 +32,7 @@ export const EMAIL_ACCOUNT_PROVIDERS = {
 
 const TOKEN_SECRET = process.env.EMAIL_ACCOUNT_TOKEN_SECRET || process.env.BETTER_AUTH_SECRET || "local-email-token-secret";
 const TEMPLATE_CALLBACK_PATH = "/api/email-accounts/callback";
+const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
 
 export async function ensureEmailAccountsTable() {
   if (!dbPool) {
@@ -80,6 +81,15 @@ export function registerEmailAccountRoutes(app) {
         manual: Boolean(provider.manual),
       })),
     });
+  });
+
+  app.post("/api/email-accounts/token-status", requireSession, async (req, res) => {
+    try {
+      const accounts = await checkEmailAccountStatuses(req.user.id);
+      res.json({ accounts });
+    } catch (error) {
+      handleDbError(res, error);
+    }
   });
 
   app.get("/api/email-accounts/connect/:provider", requireSession, (req, res) => {
@@ -231,6 +241,76 @@ async function listEmailAccounts(user) {
   return accounts;
 }
 
+async function checkEmailAccountStatuses(userId) {
+  const result = await dbPool.query(
+    `
+      select id, provider, email, source, scopes, access_token, refresh_token, token_expires_at as "tokenExpiresAt", metadata
+      from email_accounts
+      where user_id = $1
+      order by case when source = 'sso' then 0 else 1 end, created_at desc
+    `,
+    [userId],
+  );
+
+  const statuses = [];
+
+  for (const account of result.rows) {
+    try {
+      if (account.provider === "imap") {
+        await withImapClient(account, async () => true);
+      } else {
+        assertEmailAccountHasRequiredScopes(account);
+        await getValidEmailAccountAccessToken(account);
+      }
+
+      statuses.push({ id: account.id, status: "connected", statusMessage: "Connected" });
+    } catch (error) {
+      statuses.push({
+        id: account.id,
+        status: "needs_refresh",
+        statusMessage: getEmailAccountStatusMessage(error, account),
+      });
+    }
+  }
+
+  return statuses;
+}
+
+function getEmailAccountStatusMessage(error, account = {}) {
+  const message = error.message || "";
+
+  if (message === "missing_gmail_modify_scope") {
+    return "Reconnect and approve Gmail access";
+  }
+
+  if (account.source === "sso") {
+    return "Reconnect Gmail access";
+  }
+
+  if (message.toLowerCase().includes("token refresh failed")) {
+    return "Reconnect account";
+  }
+
+  if (message.toLowerCase().includes("missing an access token")) {
+    return "Reconnect account";
+  }
+
+  return message || "Needs attention";
+}
+
+function assertEmailAccountHasRequiredScopes(account) {
+  if (account.provider !== "gmail") {
+    return;
+  }
+
+  const scopes = Array.isArray(account.scopes) ? account.scopes : [];
+  if (!scopes.includes(GMAIL_MODIFY_SCOPE)) {
+    const error = new Error("missing_gmail_modify_scope");
+    error.status = 403;
+    throw error;
+  }
+}
+
 function parseImapAccountInput(body) {
   const account = {
     email: typeof body?.email === "string" ? body.email.trim().toLowerCase() : "",
@@ -313,10 +393,13 @@ export async function ensureSsoEmailAccount(userId) {
       set email = excluded.email,
           display_name = excluded.display_name,
           source = 'sso',
-          access_token = excluded.access_token,
-          refresh_token = coalesce(excluded.refresh_token, email_accounts.refresh_token),
-          scopes = excluded.scopes,
-          token_expires_at = excluded.token_expires_at,
+          access_token = coalesce(email_accounts.access_token, excluded.access_token),
+          refresh_token = coalesce(email_accounts.refresh_token, excluded.refresh_token),
+          scopes = case
+            when email_accounts.refresh_token is not null then email_accounts.scopes
+            else excluded.scopes
+          end,
+          token_expires_at = coalesce(email_accounts.token_expires_at, excluded.token_expires_at),
           metadata = excluded.metadata,
           updated_at = now()
       returning id
@@ -540,7 +623,7 @@ export async function getConnectedEmailAccounts(userId) {
 
   const result = await dbPool.query(
     `
-      select id, provider, email, access_token, refresh_token, token_expires_at as "tokenExpiresAt"
+      select id, provider, email, scopes, access_token, refresh_token, token_expires_at as "tokenExpiresAt"
              , metadata
       from email_accounts
       where user_id = $1

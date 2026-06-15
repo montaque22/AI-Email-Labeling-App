@@ -16,6 +16,7 @@ import {
   ArrowUp,
   CheckCircle2,
   ChevronRight,
+  Copy,
   Download,
   GaugeCircle,
   FileCheck2,
@@ -34,6 +35,7 @@ import {
   Sparkles,
   Tag,
   Trash2,
+  RefreshCw,
   Upload,
   X,
 } from "lucide-react";
@@ -41,11 +43,12 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { authClient } from "./lib/auth-client";
-import { getAbsoluteRuntimeUrl, getRuntimeUrl } from "./lib/runtime-base";
+import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
 
 type Page =
   | "overview"
+  | "inbox"
   | "labels"
   | "rules"
   | "metrics"
@@ -99,6 +102,8 @@ type EmailAccount = {
   email: string;
   displayName?: string | null;
   source: "sso" | "connected";
+  status?: "unchecked" | "checking" | "connected" | "needs_refresh";
+  statusMessage?: string;
   canRemove: boolean;
   scopes: string[];
   createdAt?: string | null;
@@ -256,6 +261,76 @@ type AiMcpClientConfig = {
   hasBearerToken?: boolean;
 };
 
+type InboxSort = "newest" | "oldest" | "sender" | "subject";
+
+type InboxRuleStatus = {
+  emailId: string;
+  isPending: boolean;
+};
+
+type InboxMessage = {
+  id: string;
+  threadId: string;
+  accountId: string;
+  accountEmail: string;
+  provider: string;
+  mailbox?: string;
+  from: string;
+  sender: string;
+  subject: string;
+  snippet: string;
+  date: string;
+  labels: string[];
+  hasAttachments: boolean;
+  rule?: InboxRuleStatus | null;
+};
+
+type InboxMessageDetail = {
+  id: string;
+  threadId: string;
+  accountId: string;
+  accountEmail: string;
+  provider: string;
+  mailbox?: string;
+  from: string;
+  to: string;
+  cc?: string;
+  subject: string;
+  date: string;
+  bodyText: string;
+  bodyHtml: string;
+  attachments: InboxAttachment[];
+  rule?: InboxRuleStatus | null;
+};
+
+type InboxAttachment = {
+  filename: string;
+  type: string;
+  size?: number | null;
+  downloadSupported?: boolean;
+};
+
+type InboxComposeDraft = {
+  accountId: string;
+  to: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  bodyText: string;
+  replyContext?: {
+    subject: string;
+    from: string;
+    snippet: string;
+    bodyText: string;
+  } | null;
+};
+
+type InboxToast = {
+  id: number;
+  message: string;
+  type: "success" | "error";
+};
+
 const LABEL_NAME_MAX_LENGTH = 25;
 const LABEL_DESCRIPTION_MAX_LENGTH = 200;
 const LABEL_NAME_PATTERN = /^[A-Za-z0-9 _-]+$/;
@@ -263,6 +338,7 @@ const CONFIDENCE_THRESHOLD_TEMPLATE = "{confidenceThreshold}";
 
 const navItems = [
   { id: "overview" as const, label: "Overview", icon: Gauge },
+  { id: "inbox" as const, label: "Inbox", icon: Inbox },
   { id: "labels" as const, label: "Labels", icon: Tag },
   { id: "rules" as const, label: "Rule Review", icon: FileCheck2 },
   { id: "metrics" as const, label: "Metrics", icon: BarChart3 },
@@ -285,10 +361,21 @@ const settingsSubItems = [
 
 export function App() {
   const session = authClient.useSession();
-  const [activePage, setActivePage] = useState<Page>("overview");
+  const [activePage, setActivePage] = useState<Page>(() => pageFromPath(window.location.pathname));
   const [ruleToOpen, setRuleToOpen] = useState<string | null>(null);
   const [ruleInitialFilter, setRuleInitialFilter] = useState<RulePendingFilter | null>(null);
   const user = session.data?.user ? mapAuthUser(session.data.user) : null;
+
+  useEffect(() => {
+    function handlePopState() {
+      setActivePage(pageFromPath(window.location.pathname));
+      setRuleToOpen(null);
+      setRuleInitialFilter(null);
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   function navigate(page: Page) {
     setActivePage(page);
@@ -296,18 +383,28 @@ export function App() {
     if (page !== "rules") {
       setRuleToOpen(null);
     }
+    const path = pathForPage(page);
+    if (window.location.pathname !== path) {
+      window.history.pushState({}, "", path);
+    }
   }
 
   function openRuleReview(emailId: string) {
     setRuleToOpen(emailId);
     setRuleInitialFilter(null);
     setActivePage("rules");
+    if (window.location.pathname !== pathForPage("rules")) {
+      window.history.pushState({}, "", pathForPage("rules"));
+    }
   }
 
   function openPendingRuleReview() {
     setRuleToOpen(null);
     setRuleInitialFilter("pending");
     setActivePage("rules");
+    if (window.location.pathname !== pathForPage("rules")) {
+      window.history.pushState({}, "", pathForPage("rules"));
+    }
   }
 
   if (session.isPending) {
@@ -589,6 +686,7 @@ function AuthenticatedLayout({
   const title = useMemo(() => getPageTitle(activePage), [activePage]);
   const [privacyMode, setPrivacyMode] = useState(() => localStorage.getItem("emailable-privacy-mode") === "true");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("emailable-sidebar-collapsed") === "true");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("emailable-privacy-mode", String(privacyMode));
@@ -597,6 +695,11 @@ function AuthenticatedLayout({
   useEffect(() => {
     localStorage.setItem("emailable-sidebar-collapsed", String(sidebarCollapsed));
   }, [sidebarCollapsed]);
+
+  function navigateFromMobileMenu(page: Page) {
+    onNavigate(page);
+    setMobileMenuOpen(false);
+  }
 
   return (
     <div className="min-h-screen bg-transparent text-zinc-950">
@@ -718,10 +821,15 @@ function AuthenticatedLayout({
       </aside>
 
       <div className={cn("min-w-0 transition-all", sidebarCollapsed ? "md:pl-20" : "md:pl-64")}>
-        <header className="sticky top-0 z-10 flex min-h-16 flex-col gap-3 border-b border-white/60 bg-white/55 px-5 py-3 shadow-sm backdrop-blur-xl md:h-16 md:flex-row md:items-center md:justify-between md:py-0">
-          <div className="min-w-0">
-            <p className="text-xs font-medium uppercase text-zinc-500">Dashboard</p>
-            <h2 className="truncate text-xl font-semibold">{title}</h2>
+        <header className="sticky top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-white/60 bg-white/55 px-4 shadow-sm backdrop-blur-xl sm:px-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <Button aria-label="Open menu" className="shrink-0 md:hidden" onClick={() => setMobileMenuOpen(true)} size="icon" type="button" variant="ghost">
+              <Menu className="h-5 w-5" />
+            </Button>
+            <div className="min-w-0">
+              <p className="text-xs font-medium uppercase text-zinc-500">Dashboard</p>
+              <h2 className="truncate text-xl font-semibold">{title}</h2>
+            </div>
           </div>
           <div className="hidden min-w-0 items-center gap-3 md:flex">
             <UserAvatar className="h-8 w-8" user={user} />
@@ -730,30 +838,116 @@ function AuthenticatedLayout({
               <p className="truncate text-xs text-zinc-500">{formatEmailForPrivacy(user.email, privacyMode)}</p>
             </div>
           </div>
-          <div className="flex gap-2 overflow-x-auto md:hidden">
-            {[
-              ...navItems,
-              ...(isAiPromptsPage(activePage) ? aiPromptSubItems : []),
-              ...(isSettingsPage(activePage) ? settingsSubItems : []),
-            ].map((item) => (
-              <Button
-                className={cn(
-                  activePage === item.id ||
-                    (item.id === "settings" && isSettingsPage(activePage)) ||
-                    (item.id === "ai-prompts" && isAiPromptsPage(activePage))
-                    ? "border-white/70 bg-white/70 text-zinc-950 shadow-sm hover:bg-white/80"
-                    : undefined,
-                )}
-                key={item.id}
-                onClick={() => onNavigate(item.id)}
-                size="sm"
-                variant="outline"
-              >
-                {item.label}
-              </Button>
-            ))}
-          </div>
         </header>
+
+        {mobileMenuOpen ? (
+          <div className="fixed inset-0 z-[45] md:hidden">
+            <button
+              aria-label="Close menu"
+              className="absolute inset-0 cursor-default bg-black/30 backdrop-blur-sm"
+              onClick={() => setMobileMenuOpen(false)}
+              type="button"
+            />
+            <div className="relative flex h-full w-[min(82vw,320px)] flex-col border-r border-white/70 bg-white/90 shadow-2xl backdrop-blur-2xl">
+              <div className="flex h-16 items-center justify-between border-b border-zinc-200 px-4">
+                <div className="flex min-w-0 items-center gap-3">
+                  <EmailableLogo className="h-9 w-9 shrink-0" />
+                  <p className="truncate bg-gradient-to-r from-cyan-500 via-blue-600 to-violet-600 bg-clip-text text-xl font-bold text-transparent">
+                    Emailable
+                  </p>
+                </div>
+                <Button aria-label="Close menu" onClick={() => setMobileMenuOpen(false)} size="icon" type="button" variant="ghost">
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
+                {navItems.map((item) => {
+                  const Icon = item.icon;
+                  const isActive =
+                    activePage === item.id ||
+                    (item.id === "settings" && isSettingsPage(activePage)) ||
+                    (item.id === "ai-prompts" && isAiPromptsPage(activePage));
+
+                  return (
+                    <div key={item.id}>
+                      <button
+                        className={cn(
+                          "flex h-10 w-full items-center gap-3 rounded-md px-3 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-white/55 hover:text-zinc-950",
+                          isActive &&
+                            "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl hover:bg-white/80 hover:text-zinc-950",
+                        )}
+                        onClick={() => navigateFromMobileMenu(item.id)}
+                        type="button"
+                      >
+                        <Icon className="h-4 w-4 shrink-0" />
+                        {item.label}
+                      </button>
+                      {item.id === "settings" && isSettingsPage(activePage) ? (
+                        <div className="mt-1 space-y-1 pl-7">
+                          {settingsSubItems.map((subItem) => (
+                            <button
+                              className={cn(
+                                "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-white/55 hover:text-zinc-950",
+                                activePage === subItem.id &&
+                                  "border border-white/70 bg-white/65 text-zinc-950 shadow-sm backdrop-blur-xl",
+                              )}
+                              key={subItem.id}
+                              onClick={() => navigateFromMobileMenu(subItem.id)}
+                              type="button"
+                            >
+                              {subItem.label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                      {item.id === "ai-prompts" && isAiPromptsPage(activePage) ? (
+                        <div className="mt-1 space-y-1 pl-7">
+                          {aiPromptSubItems.map((subItem) => (
+                            <button
+                              className={cn(
+                                "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-white/55 hover:text-zinc-950",
+                                activePage === subItem.id &&
+                                  "border border-white/70 bg-white/65 text-zinc-950 shadow-sm backdrop-blur-xl",
+                              )}
+                              key={subItem.id}
+                              onClick={() => navigateFromMobileMenu(subItem.id)}
+                              type="button"
+                            >
+                              {subItem.label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </nav>
+              <div className="space-y-2 border-t border-zinc-200 p-3">
+                <label className="flex min-h-10 cursor-pointer items-center justify-between gap-3 rounded-md px-3 text-sm font-medium text-zinc-600 hover:bg-zinc-50">
+                  <span className="flex items-center gap-2">
+                    <ShieldCheck className={cn("h-4 w-4", privacyMode && "text-emerald-600")} />
+                    Privacy
+                  </span>
+                  <input
+                    aria-label="Privacy mode"
+                    checked={privacyMode}
+                    className="peer sr-only"
+                    onChange={(event) => setPrivacyMode(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span className="relative h-5 w-9 rounded-full bg-zinc-200 transition-colors peer-checked:bg-zinc-950 peer-checked:[&>span]:translate-x-4">
+                    <span className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform" />
+                  </span>
+                </label>
+                <Button className="w-full justify-start" variant="ghost" onClick={onSignOut}>
+                  <LogOut className="h-4 w-4" />
+                  Sign out
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <main className="min-h-[calc(100vh-4rem)] min-w-0 overflow-x-hidden p-4 sm:p-5 lg:p-8">
           {activePage === "overview" && (
             <OverviewPage
@@ -763,6 +957,7 @@ function AuthenticatedLayout({
               privacyMode={privacyMode}
             />
           )}
+          {activePage === "inbox" && <InboxPage privacyMode={privacyMode} />}
           {activePage === "labels" && <LabelsPage privacyMode={privacyMode} />}
           {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} privacyMode={privacyMode} />}
           {activePage === "metrics" && <MetricsPage />}
@@ -901,6 +1096,1186 @@ function OverviewPage({
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function InboxPage({ privacyMode }: { privacyMode: boolean }) {
+  const [labels, setLabels] = useState<Label[]>([]);
+  const [accounts, setAccounts] = useState<EmailAccount[]>([]);
+  const [selectedLabelId, setSelectedLabelId] = useState("");
+  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
+  const [labelCounts, setLabelCounts] = useState<Record<string, number | null>>({});
+  const [messages, setMessages] = useState<InboxMessage[]>([]);
+  const [nextPageToken, setNextPageToken] = useState<string | null>(null);
+  const [sort, setSort] = useState<InboxSort>("newest");
+  const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedMessage, setSelectedMessage] = useState<InboxMessage | null>(null);
+  const [messageDetail, setMessageDetail] = useState<InboxMessageDetail | null>(null);
+  const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [isComposeOpen, setIsComposeOpen] = useState(false);
+  const [composeInitial, setComposeInitial] = useState<Partial<InboxComposeDraft> | null>(null);
+  const [selectedMessageKeys, setSelectedMessageKeys] = useState<string[]>([]);
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+  const [isBulkActionRunning, setIsBulkActionRunning] = useState(false);
+  const [ruleEditorMessage, setRuleEditorMessage] = useState<InboxMessage | null>(null);
+  const [isCountsLoading, setIsCountsLoading] = useState(false);
+  const [toast, setToast] = useState<InboxToast | null>(null);
+
+  useEffect(() => {
+    async function loadBootstrap() {
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const [labelsResponse, accountsResponse] = await Promise.all([
+          fetch("/api/labels", { credentials: "include" }),
+          fetch("/api/email-accounts", { credentials: "include" }),
+        ]);
+        const labelsData = await labelsResponse.json();
+        const accountsData = await accountsResponse.json();
+
+        if (!labelsResponse.ok) {
+          setError(labelsData.error ?? "Could not load labels.");
+          return;
+        }
+        if (!accountsResponse.ok) {
+          setError(accountsData.error ?? "Could not load accounts.");
+          return;
+        }
+
+        const loadedLabels = labelsData.labels ?? [];
+        const loadedAccounts = accountsData.accounts ?? [];
+        setLabels(loadedLabels);
+        setAccounts(loadedAccounts);
+        setSelectedAccountIds(loadedAccounts.map((account: EmailAccount) => account.id));
+        setSelectedLabelId((current) => current || loadedLabels[0]?.id || "");
+      } catch {
+        setError("Could not load Inbox setup.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    void loadBootstrap();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedLabelId || selectedAccountIds.length === 0) {
+      setMessages([]);
+      setNextPageToken(null);
+      return;
+    }
+
+    void loadMessages({ reset: true });
+  }, [selectedLabelId, selectedAccountIds.join(","), sort]);
+
+  useEffect(() => {
+    if (!isAccountMenuOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest("[data-inbox-account-menu]")) {
+        setIsAccountMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [isAccountMenuOpen]);
+
+  useEffect(() => {
+    if (selectedAccountIds.length === 0 || labels.length === 0) {
+      setLabelCounts({});
+      setIsCountsLoading(false);
+      return;
+    }
+
+    async function loadCounts() {
+      setIsCountsLoading(true);
+      try {
+        const response = await fetch(`/api/inbox/label-counts?accounts=${encodeURIComponent(selectedAccountIds.join(","))}`, {
+          credentials: "include",
+        });
+        const data = await response.json();
+        if (response.ok) {
+          setLabelCounts(data.counts ?? {});
+        }
+      } catch {
+        setLabelCounts({});
+      } finally {
+        setIsCountsLoading(false);
+      }
+    }
+
+    void loadCounts();
+  }, [labels.length, selectedAccountIds.join(",")]);
+
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setToast(null), 3200);
+    return () => window.clearTimeout(timeoutId);
+  }, [toast]);
+
+  const filteredMessages = messages;
+
+  async function loadMessages({ reset }: { reset: boolean }) {
+    if (!selectedLabelId || selectedAccountIds.length === 0) {
+      return;
+    }
+
+    reset ? setIsLoading(true) : setIsLoadingMore(true);
+    setError(null);
+
+    try {
+      const params = new URLSearchParams({
+        labelId: selectedLabelId,
+        accounts: selectedAccountIds.join(","),
+        sort,
+      });
+      if (!reset && nextPageToken) {
+        params.set("pageToken", nextPageToken);
+      }
+
+      const response = await fetch(`/api/inbox/messages?${params.toString()}`, { credentials: "include" });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not load inbox messages.");
+        return;
+      }
+
+      setMessages((current) => (reset ? data.messages ?? [] : [...current, ...(data.messages ?? [])]));
+      setNextPageToken(data.nextPageToken ?? null);
+      if (reset) {
+        setSelectedMessageKeys([]);
+      }
+    } catch {
+      setError("Could not load inbox messages.");
+    } finally {
+      reset ? setIsLoading(false) : setIsLoadingMore(false);
+    }
+  }
+
+  async function openMessage(message: InboxMessage) {
+    setSelectedMessage(message);
+    setMessageDetail(null);
+    setDetailError(null);
+    setIsDetailLoading(true);
+
+    try {
+      const params = new URLSearchParams({
+        accountId: message.accountId,
+        emailId: message.id,
+      });
+      if (message.mailbox) {
+        params.set("mailbox", message.mailbox);
+      }
+
+      const response = await fetch(`/api/inbox/message?${params.toString()}`, { credentials: "include" });
+      const data = await response.json();
+      if (!response.ok) {
+        setDetailError(data.error ?? "Could not load email.");
+        return;
+      }
+
+      setMessageDetail(data.message);
+    } catch {
+      setDetailError("Could not load email.");
+    } finally {
+      setIsDetailLoading(false);
+    }
+  }
+
+  function toggleAccount(accountId: string) {
+    setSelectedAccountIds((current) =>
+      current.includes(accountId) ? current.filter((id) => id !== accountId) : [...current, accountId],
+    );
+  }
+
+  const selectedMessages = messages.filter((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
+  const allVisibleSelected = filteredMessages.length > 0 && filteredMessages.every((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
+
+  function toggleMessage(message: InboxMessage) {
+    const key = getInboxMessageKey(message);
+    setSelectedMessageKeys((current) => (current.includes(key) ? current.filter((item) => item !== key) : [...current, key]));
+  }
+
+  function toggleAllVisibleMessages() {
+    const visibleKeys = filteredMessages.map(getInboxMessageKey);
+    setSelectedMessageKeys((current) => {
+      if (allVisibleSelected) {
+        return current.filter((key) => !visibleKeys.includes(key));
+      }
+
+      return [...new Set([...current, ...visibleKeys])];
+    });
+  }
+
+  function showInboxToast(message: string, type: InboxToast["type"] = "success") {
+    setToast({ id: Date.now(), message, type });
+  }
+
+  function adjustLabelCountsByName(changesByName: Record<string, number>) {
+    const labelIdsByName = new Map(labels.map((label) => [label.name.toLowerCase(), label.id]));
+    setLabelCounts((current) => {
+      const next = { ...current };
+
+      for (const [labelName, change] of Object.entries(changesByName)) {
+        const labelId = labelIdsByName.get(labelName.toLowerCase());
+        if (!labelId || typeof next[labelId] !== "number") {
+          continue;
+        }
+
+        next[labelId] = Math.max(0, Number(next[labelId]) + change);
+      }
+
+      return next;
+    });
+  }
+
+  function decrementCountsForMessages(messagesToCount: InboxMessage[]) {
+    const changes: Record<string, number> = {};
+    for (const message of messagesToCount) {
+      const labelsToCount = message.labels.length > 0 ? message.labels : [labels.find((label) => label.id === selectedLabelId)?.name ?? ""];
+      for (const labelName of labelsToCount) {
+        if (!labelName) {
+          continue;
+        }
+        changes[labelName] = (changes[labelName] ?? 0) - 1;
+      }
+    }
+    adjustLabelCountsByName(changes);
+  }
+
+  function updateCountsForRuleMove(message: InboxMessage, nextLabels: string[]) {
+    const currentLabelName = labels.find((label) => label.id === selectedLabelId)?.name;
+    const nextLabelName = nextLabels[0];
+    const changes: Record<string, number> = {};
+
+    if (currentLabelName && currentLabelName !== nextLabelName) {
+      changes[currentLabelName] = (changes[currentLabelName] ?? 0) - 1;
+    }
+    if (nextLabelName && currentLabelName !== nextLabelName) {
+      changes[nextLabelName] = (changes[nextLabelName] ?? 0) + 1;
+    }
+
+    adjustLabelCountsByName(changes);
+  }
+
+  async function deleteSelectedMessages(messagesToDelete = selectedMessages) {
+    if (messagesToDelete.length === 0) {
+      return;
+    }
+
+    setIsBulkActionRunning(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/inbox/messages/delete", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: messagesToDelete.map(messageToBulkPayload) }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error ?? "Could not delete messages.");
+        return;
+      }
+
+      const successfulDeletes = Array.isArray(data.results)
+        ? messagesToDelete.filter((message) =>
+            data.results.some((result: { accountId: string; emailId: string; mailbox?: string; ok: boolean }) =>
+              result.ok &&
+              result.accountId === message.accountId &&
+              result.emailId === message.id &&
+              (result.mailbox ?? "") === (message.mailbox ?? ""),
+            ),
+          )
+        : messagesToDelete;
+      const deletedKeys = new Set(successfulDeletes.map(getInboxMessageKey));
+      decrementCountsForMessages(successfulDeletes);
+      setMessages((current) => current.filter((message) => !deletedKeys.has(getInboxMessageKey(message))));
+      setSelectedMessageKeys((current) => current.filter((key) => !deletedKeys.has(key)));
+      if (selectedMessage && deletedKeys.has(getInboxMessageKey(selectedMessage))) {
+        setSelectedMessage(null);
+        setMessageDetail(null);
+      }
+      if (successfulDeletes.length > 0) {
+        showInboxToast(`${successfulDeletes.length} message${successfulDeletes.length === 1 ? "" : "s"} deleted.`);
+      }
+      if (data.failed?.length) {
+        setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be deleted.`);
+        showInboxToast(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be deleted.`, "error");
+      }
+    } catch {
+      setError("Could not delete messages.");
+    } finally {
+      setIsBulkActionRunning(false);
+    }
+  }
+
+  function openReplyComposer(detail: InboxMessageDetail | null, summary: InboxMessage) {
+    setComposeInitial({
+      accountId: summary.accountId,
+      to: detail?.from || summary.from,
+      subject: normalizeReplySubject(detail?.subject || summary.subject),
+      bodyText: "",
+      replyContext: {
+        subject: detail?.subject || summary.subject,
+        from: detail?.from || summary.from,
+        snippet: summary.snippet,
+        bodyText: detail?.bodyText || summary.snippet,
+      },
+    });
+    setIsComposeOpen(true);
+  }
+
+  return (
+    <div className="space-y-6">
+      {toast ? <InboxToastMessage toast={toast} /> : null}
+      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[260px_minmax(0,1fr)] xl:gap-5">
+        <div className="hidden xl:block">
+          <Card>
+            <CardHeader>
+              <CardTitle>Labels</CardTitle>
+              <CardDescription>Choose a label or folder.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {labels.length === 0 ? (
+                <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">No labels yet.</p>
+              ) : (
+                labels.map((label) => (
+                  <button
+                    className={cn(
+                      "flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-white/60 hover:text-zinc-950",
+                      selectedLabelId === label.id && "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl",
+                    )}
+                    key={label.id}
+                    onClick={() => setSelectedLabelId(label.id)}
+                    type="button"
+                  >
+                    <span className="truncate">{label.name}</span>
+                    <span className="flex min-w-5 justify-end text-xs text-zinc-500">
+                      {isCountsLoading ? <Loader /> : labelCounts[label.id] ?? "-"}
+                    </span>
+                  </button>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="min-w-0 space-y-4">
+          <Card className="min-w-0 max-w-full">
+            <CardContent className="flex flex-row flex-wrap items-start justify-between gap-3 p-3 sm:p-4">
+              <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center">
+                <label className="block xl:hidden">
+                  <span className="sr-only">Label filter</span>
+                  <select
+                    className="h-10 w-full min-w-0 rounded-md border border-zinc-200 bg-white/70 px-3 text-sm sm:w-56"
+                    onChange={(event) => setSelectedLabelId(event.target.value)}
+                    value={selectedLabelId}
+                  >
+                    {labels.length === 0 ? (
+                      <option value="">No labels</option>
+                    ) : (
+                      labels.map((label) => (
+                        <option key={label.id} value={label.id}>
+                          {label.name}
+                          {typeof labelCounts[label.id] === "number" ? ` (${labelCounts[label.id]})` : ""}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+                <div className="relative z-10" data-inbox-account-menu>
+                  <Button className="w-full sm:w-auto" onClick={() => setIsAccountMenuOpen((current) => !current)} type="button" variant="outline">
+                    Accounts {selectedAccountIds.length}/{accounts.length}
+                  </Button>
+                  {isAccountMenuOpen ? (
+                    <div className="absolute left-0 top-11 z-20 w-[calc(100vw-2rem)] max-w-80 rounded-md border border-zinc-200 bg-white p-2 shadow-xl">
+                      <div className="mb-2 flex gap-2">
+                        <Button onClick={() => setSelectedAccountIds(accounts.map((account) => account.id))} size="sm" type="button" variant="outline">
+                          All
+                        </Button>
+                        <Button onClick={() => setSelectedAccountIds([])} size="sm" type="button" variant="outline">
+                          None
+                        </Button>
+                      </div>
+                      <div className="max-h-72 space-y-1 overflow-y-auto">
+                        {accounts.map((account) => (
+                          <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm text-zinc-700 hover:bg-zinc-50" key={account.id}>
+                            <input checked={selectedAccountIds.includes(account.id)} onChange={() => toggleAccount(account.id)} type="checkbox" />
+                            <span className="min-w-0 flex-1 truncate">{formatEmailForPrivacy(account.email, privacyMode)}</span>
+                            <Badge className="capitalize">{providerLabel(account.provider)}</Badge>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="ml-auto flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
+                {selectedMessages.length > 0 ? (
+                  <Button disabled={isBulkActionRunning} onClick={() => void deleteSelectedMessages()} type="button" variant="outline">
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </Button>
+                ) : null}
+                <Button
+                  onClick={() => {
+                    setComposeInitial(null);
+                    setIsComposeOpen(true);
+                  }}
+                  type="button"
+                >
+                  <Plus className="h-4 w-4" />
+                  Compose
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="min-w-0 max-w-full overflow-hidden">
+            <CardHeader className="flex-row flex-wrap items-start justify-between gap-3 space-y-0">
+              <div className="min-w-0">
+                <CardTitle>Email</CardTitle>
+                <CardDescription>{filteredMessages.length} loaded messages</CardDescription>
+              </div>
+              <label className="flex shrink-0 items-center gap-2 text-sm text-zinc-500">
+                <span>Sort</span>
+                <select
+                  className="h-9 rounded-md border border-zinc-200 bg-white/70 px-3 text-sm text-zinc-700"
+                  onChange={(event) => setSort(event.target.value as InboxSort)}
+                  value={sort}
+                >
+                  <option value="newest">Newest</option>
+                  <option value="oldest">Oldest</option>
+                  <option value="sender">Sender</option>
+                  <option value="subject">Subject</option>
+                </select>
+              </label>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex justify-start">
+                {filteredMessages.length > 0 ? (
+                  <button
+                    className="w-fit cursor-pointer text-sm font-medium text-blue-600 underline-offset-4 hover:text-blue-700 hover:underline"
+                    onClick={toggleAllVisibleMessages}
+                    type="button"
+                  >
+                    {allVisibleSelected ? "Clear selection" : "Select all"}
+                  </button>
+                ) : (
+                  <span />
+                )}
+              </div>
+              {isLoading ? (
+                <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">Loading messages...</p>
+              ) : filteredMessages.length === 0 ? (
+                <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">No messages found for this label.</p>
+              ) : (
+                filteredMessages.map((message) => (
+                  <div
+                    className="grid w-full grid-cols-[auto_auto_minmax(110px,180px)_minmax(0,1fr)_auto] items-center gap-3 border-b border-zinc-200 bg-white/45 px-3 py-2 transition-colors last:border-b-0 hover:bg-white/80"
+                    key={`${message.accountId}-${message.id}-${message.mailbox ?? ""}`}
+                  >
+                    <input
+                      checked={selectedMessageKeys.includes(getInboxMessageKey(message))}
+                      className="h-4 w-4 shrink-0"
+                      onChange={() => toggleMessage(message)}
+                      type="checkbox"
+                    />
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-600">
+                      {getSenderInitial(message.sender || message.from)}
+                    </span>
+                    <button className="min-w-0 cursor-pointer truncate text-left text-sm font-medium text-zinc-800" onClick={() => void openMessage(message)} type="button">
+                      {message.sender || message.from || "Unknown sender"}
+                    </button>
+                    <button className="flex min-w-0 cursor-pointer items-center gap-2 text-left" onClick={() => void openMessage(message)} type="button">
+                      {message.labels[0] ? <Badge className="shrink-0 bg-blue-50 text-blue-700">{message.labels[0]}</Badge> : null}
+                      <span className="min-w-0 truncate text-sm font-medium text-zinc-950">{message.subject || "(no subject)"}</span>
+                      <span className="min-w-0 truncate text-xs text-zinc-400">{message.snippet || "No preview available."}</span>
+                    </button>
+                    <div className="flex shrink-0 items-center justify-end gap-2 text-xs text-zinc-500">
+                      <InboxRuleBadge rule={message.rule ?? null} compact />
+                      {message.hasAttachments ? (
+                        <span aria-label="Has attachment" title="Has attachment">
+                          <Download className="h-3.5 w-3.5" />
+                        </span>
+                      ) : null}
+                      <div className="w-24 text-right">
+                        <p className="truncate">{formatInboxListDate(message.date)}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+              {nextPageToken ? (
+                <Button disabled={isLoadingMore} onClick={() => void loadMessages({ reset: false })} type="button" variant="outline">
+                  {isLoadingMore ? "Loading..." : "Load more"}
+                </Button>
+              ) : null}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+
+      {selectedMessage && !ruleEditorMessage ? (
+        <InboxMessageModal
+          detail={messageDetail}
+          error={detailError}
+          isLoading={isDetailLoading}
+          onClose={() => {
+            setSelectedMessage(null);
+            setMessageDetail(null);
+          }}
+          onDelete={(message) => void deleteSelectedMessages([message])}
+          onEditRule={(message) => setRuleEditorMessage(message)}
+          onReply={(detail, summary) => openReplyComposer(detail, summary)}
+          privacyMode={privacyMode}
+          summary={selectedMessage}
+        />
+      ) : null}
+
+      {ruleEditorMessage ? (
+        <InboxRuleModal
+          labels={labels}
+          messageDetail={messageDetail}
+          onClose={() => setRuleEditorMessage(null)}
+          onSaved={(rule) => {
+            const nextRule = { emailId: rule.emailId, isPending: rule.isPending };
+            const currentLabelName = labels.find((label) => label.id === selectedLabelId)?.name;
+            const movedOutOfCurrentLabel = Boolean(currentLabelName && rule.labelsApplied[0] && currentLabelName !== rule.labelsApplied[0]);
+            updateCountsForRuleMove(ruleEditorMessage, rule.labelsApplied);
+            setMessages((current) =>
+              movedOutOfCurrentLabel
+                ? current.filter((message) => getInboxMessageKey(message) !== getInboxMessageKey(ruleEditorMessage))
+                : current.map((message) =>
+                    getInboxMessageKey(message) === getInboxMessageKey(ruleEditorMessage)
+                      ? { ...message, labels: rule.labelsApplied, rule: nextRule }
+                      : message,
+                  ),
+            );
+            setSelectedMessage((current) =>
+              current && getInboxMessageKey(current) === getInboxMessageKey(ruleEditorMessage)
+                ? { ...current, labels: rule.labelsApplied, rule: nextRule }
+                : current,
+            );
+            setMessageDetail((current) => (current && current.id === rule.emailId ? { ...current, rule: nextRule } : current));
+            setRuleEditorMessage(null);
+            showInboxToast("Email label updated.");
+          }}
+          privacyMode={privacyMode}
+          summary={ruleEditorMessage}
+        />
+      ) : null}
+
+      {isComposeOpen ? (
+        <InboxComposeModal
+          accounts={accounts}
+          initial={composeInitial}
+          onClose={() => {
+            setIsComposeOpen(false);
+            setComposeInitial(null);
+          }}
+          privacyMode={privacyMode}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function InboxToastMessage({ toast }: { toast: InboxToast }) {
+  return (
+    <div className="fixed right-5 top-20 z-50">
+      <div
+        className={cn(
+          "rounded-md border px-4 py-3 text-sm shadow-lg backdrop-blur-xl",
+          toast.type === "success"
+            ? "border-emerald-200 bg-emerald-50/95 text-emerald-800"
+            : "border-red-200 bg-red-50/95 text-red-700",
+        )}
+      >
+        {toast.message}
+      </div>
+    </div>
+  );
+}
+
+function InboxMessageModal({
+  detail,
+  error,
+  isLoading,
+  onClose,
+  onDelete,
+  onEditRule,
+  onReply,
+  privacyMode,
+  summary,
+}: {
+  detail: InboxMessageDetail | null;
+  error: string | null;
+  isLoading: boolean;
+  onClose: () => void;
+  onDelete: (message: InboxMessage) => void;
+  onEditRule: (message: InboxMessage) => void;
+  onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
+  privacyMode: boolean;
+  summary: InboxMessage;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+      <div className="max-h-[92vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+        <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/72 shadow-inner ring-1 ring-white/60">
+          <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
+            <div className="min-w-0">
+              <h3 className="mt-1 truncate text-lg font-semibold text-zinc-950">{detail?.subject || summary.subject || "(no subject)"}</h3>
+              <div className="mt-2">
+                <InboxRuleBadge rule={detail?.rule ?? summary.rule ?? null} />
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button onClick={() => onEditRule(summary)} type="button" variant="outline">
+                <Pencil className="h-4 w-4" />
+                Edit Label
+              </Button>
+              <Button onClick={() => onDelete(summary)} type="button" variant="outline">
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
+              <Button onClick={() => onReply(detail, summary)} type="button" variant="outline">
+                Reply
+              </Button>
+              <Button aria-label="Close email" onClick={onClose} size="icon" type="button" variant="ghost">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          <div className="max-h-[calc(92vh-112px)] overflow-y-auto p-5">
+          {isLoading ? <p className="text-sm text-zinc-500">Loading email...</p> : null}
+          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          {detail ? (
+            <div className="space-y-5">
+              <div className="grid gap-2 text-sm text-zinc-600">
+                <p><span className="font-medium text-zinc-950">From:</span> {formatEmailTextForPrivacy(detail.from, privacyMode)}</p>
+                <p><span className="font-medium text-zinc-950">To:</span> {formatEmailTextForPrivacy(detail.to, privacyMode)}</p>
+                {detail.cc ? <p><span className="font-medium text-zinc-950">CC:</span> {formatEmailTextForPrivacy(detail.cc, privacyMode)}</p> : null}
+                <p><span className="font-medium text-zinc-950">Date:</span> {formatDateTime(detail.date)}</p>
+              </div>
+              <div className="rounded-xl border border-white/70 bg-white/80 p-4 shadow-sm">
+                {detail.bodyHtml ? (
+                  <iframe className="h-[460px] w-full rounded bg-white" sandbox="" srcDoc={detail.bodyHtml} title="Email body" />
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-zinc-700">{detail.bodyText || "No body content."}</pre>
+                )}
+              </div>
+              <div>
+                <p className="text-sm font-medium text-zinc-950">Attachments</p>
+                {detail.attachments.length === 0 ? (
+                  <p className="mt-2 text-sm text-zinc-500">No attachments.</p>
+                ) : (
+                  <div className="mt-2 space-y-2">
+                    {detail.attachments.map((attachment, index) => (
+                      <div className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-white/70 px-3 py-2 text-sm" key={`${attachment.filename}-${index}`}>
+                        <div>
+                          <p className="font-medium text-zinc-950">{attachment.filename}</p>
+                          <p className="text-xs text-zinc-500">{attachment.type} {attachment.size ? ` / ${formatFileSize(attachment.size)}` : ""}</p>
+                        </div>
+                        <Button disabled type="button" variant="outline">Open</Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InboxRuleBadge({ compact = false, rule }: { compact?: boolean; rule?: InboxRuleStatus | null }) {
+  if (!rule) {
+    return <Badge className={cn("border-zinc-200 bg-zinc-50 text-zinc-600", compact && "px-1.5 py-0 text-[10px]")}>No rule</Badge>;
+  }
+
+  return (
+    <Badge
+      className={cn(
+        rule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700",
+        compact && "px-1.5 py-0 text-[10px]",
+      )}
+    >
+      {rule.isPending ? "Pending" : "Reviewed"}
+    </Badge>
+  );
+}
+
+function InboxRuleModal({
+  labels,
+  messageDetail,
+  onClose,
+  onSaved,
+  privacyMode,
+  summary,
+}: {
+  labels: Label[];
+  messageDetail: InboxMessageDetail | null;
+  onClose: () => void;
+  onSaved: (rule: EmailRule) => void;
+  privacyMode: boolean;
+  summary: InboxMessage;
+}) {
+  const [existingRule, setExistingRule] = useState<EmailRule | null>(null);
+  const [selectedLabel, setSelectedLabel] = useState("");
+  const [labelReason, setLabelReason] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const isExistingRule = Boolean(existingRule);
+  const originalSelectedLabel = existingRule?.labelsApplied[0] ?? "";
+  const originalReason = originalSelectedLabel ? existingRule?.labelReasons?.[originalSelectedLabel] ?? "" : "";
+  const hasChanges = selectedLabel !== originalSelectedLabel || labelReason.trim() !== originalReason.trim();
+  const canReview = Boolean(selectedLabel && (!isExistingRule || existingRule?.isPending || hasChanges));
+  const reviewedButtonClass = labelReason.trim()
+    ? "bg-emerald-600 text-white hover:bg-emerald-700"
+    : "bg-amber-500 text-white hover:bg-amber-600";
+
+  useEffect(() => {
+    async function loadRule() {
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const response = await fetch(`/api/email-rules/${encodeURIComponent(summary.id)}`, { credentials: "include" });
+        const data = await response.json();
+
+        if (response.status === 404) {
+          setExistingRule(null);
+          setSelectedLabel("");
+          setLabelReason("");
+          return;
+        }
+
+        if (!response.ok) {
+          setError(data.error ?? "Could not load email rule.");
+          return;
+        }
+
+        const rule = data.rule as EmailRule;
+        const firstLabel = rule.labelsApplied[0] ?? "";
+        setExistingRule(rule);
+        setSelectedLabel(firstLabel);
+        setLabelReason(firstLabel ? rule.labelReasons?.[firstLabel] ?? "" : "");
+      } catch {
+        setError("Could not load email rule.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    void loadRule();
+  }, [summary.id]);
+
+  async function saveRule() {
+    if (!canReview) {
+      return;
+    }
+
+    setIsSaving(true);
+    setError(null);
+
+    const from = messageDetail?.from || summary.from || summary.sender || "";
+    const fromEmail = extractEmailAddressFromText(from) || from || "unknown@example.com";
+    const fromName = extractDisplayNameFromText(from) || summary.sender || fromEmail;
+    const payload = {
+      emailId: summary.id,
+      threadId: summary.threadId || summary.id,
+      fromEmail,
+      fromName,
+      subject: messageDetail?.subject || summary.subject || "(no subject)",
+      snippet: summary.snippet || messageDetail?.bodyText?.slice(0, 200) || "",
+      labelsApplied: [selectedLabel],
+      labelReasons: pickLabelReasons([selectedLabel], { [selectedLabel]: labelReason }),
+    };
+
+    try {
+      const response = await fetch(
+        isExistingRule ? `/api/email-rules/${encodeURIComponent(summary.id)}/review` : "/api/email-rules/review",
+        {
+          method: isExistingRule ? "PUT" : "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not save rule.");
+        return;
+      }
+
+      onSaved(data.rule);
+    } catch {
+      setError("Could not save rule.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+      <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+        <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/72 shadow-inner ring-1 ring-white/60">
+          <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
+            <div className="min-w-0">
+              <h3 className="truncate text-lg font-semibold text-zinc-950">Edit Label</h3>
+              <p className="mt-1 truncate text-sm text-zinc-500">{messageDetail?.subject || summary.subject || "(no subject)"}</p>
+            </div>
+            <Button aria-label="Close rule editor" onClick={onClose} size="icon" type="button" variant="ghost">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="max-h-[calc(92vh-112px)] overflow-y-auto overflow-x-hidden p-5">
+          {isLoading ? <p className="text-sm text-zinc-500">Loading rule...</p> : null}
+          {error ? <p className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          {!isLoading ? (
+            <div className="space-y-5">
+              <div className="rounded-md border border-zinc-200 bg-white/45 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-zinc-950">{extractDisplayNameFromText(messageDetail?.from || summary.from) || summary.sender || "Unknown sender"}</p>
+                    <p className="truncate text-sm text-zinc-500">{formatEmailTextForPrivacy(messageDetail?.from || summary.from || "", privacyMode)}</p>
+                    <p className="mt-2 line-clamp-2 text-sm leading-6 text-zinc-600">{summary.snippet || "No preview available."}</p>
+                  </div>
+                  <InboxRuleBadge rule={existingRule ? { emailId: existingRule.emailId, isPending: existingRule.isPending } : null} />
+                </div>
+              </div>
+
+              <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+                <div className="min-w-0">
+                  <p className="mb-2 text-xs font-medium uppercase text-zinc-500">Available labels</p>
+                  <div className="max-h-72 space-y-2 overflow-auto rounded-md border border-zinc-200 p-2">
+                    {labels.map((label) => (
+                      <button
+                        className={cn(
+                          "w-full glass-panel rounded-md border px-3 py-2 text-left text-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50",
+                          selectedLabel === label.name && "border-emerald-200 bg-emerald-50 text-emerald-900 hover:border-emerald-200 hover:bg-emerald-50",
+                        )}
+                        key={label.id}
+                        onClick={() => {
+                          setSelectedLabel(label.name);
+                          setLabelReason(existingRule?.labelReasons?.[label.name] ?? "");
+                        }}
+                        type="button"
+                      >
+                        <span className="block font-medium text-zinc-950">{label.name}</span>
+                        <span className="mt-1 block text-xs leading-5 text-zinc-500">{renderLabelDescription(label.description, "0.90")}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="min-w-0">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium uppercase text-zinc-500">Selected label</p>
+                    <span className="text-xs text-zinc-500">{selectedLabel ? "Ready" : "Choose one"}</span>
+                  </div>
+                  <div className="min-h-72 rounded-md border border-dashed border-zinc-300 p-3">
+                    {selectedLabel ? (
+                      <div className="rounded-md bg-zinc-100 p-3 text-sm">
+                        <p className="font-medium text-zinc-950">{selectedLabel}</p>
+                        <label className="mt-3 block">
+                          <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">When to use this label</span>
+                          <textarea
+                            className="min-h-28 w-full glass-panel rounded-md border px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
+                            maxLength={200}
+                            onChange={(event) => setLabelReason(event.target.value)}
+                            placeholder="Explain when the AI should choose this label."
+                            value={labelReason}
+                          />
+                          <span className="mt-1 block text-right text-xs text-zinc-500">{labelReason.length}/200</span>
+                        </label>
+                      </div>
+                    ) : (
+                      <p className="p-3 text-sm text-zinc-500">Choose the single best label for this email.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button disabled={isSaving} onClick={onClose} type="button" variant="outline">
+                  Cancel
+                </Button>
+                <Tooltip text={labelReason.trim() ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
+                  <span>
+                    <Button className={cn(canReview && reviewedButtonClass)} disabled={isSaving || !canReview} onClick={() => void saveRule()} type="button">
+                      <Save className="h-4 w-4" />
+                      Reviewed
+                    </Button>
+                  </span>
+                </Tooltip>
+              </div>
+            </div>
+          ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InboxComposeModal({
+  accounts,
+  initial,
+  onClose,
+  privacyMode,
+}: {
+  accounts: EmailAccount[];
+  initial: Partial<InboxComposeDraft> | null;
+  onClose: () => void;
+  privacyMode: boolean;
+}) {
+  const [accountId, setAccountId] = useState(initial?.accountId || accounts[0]?.id || "");
+  const [to, setTo] = useState(initial?.to ?? "");
+  const [cc, setCc] = useState(initial?.cc ?? "");
+  const [bcc, setBcc] = useState(initial?.bcc ?? "");
+  const [subject, setSubject] = useState(initial?.subject ?? "");
+  const [bodyText, setBodyText] = useState(initial?.bodyText ?? "");
+  const [attachments, setAttachments] = useState<InboxAttachment[]>([]);
+  const [isAiComposerOpen, setIsAiComposerOpen] = useState(false);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiSuggestion, setAiSuggestion] = useState("");
+  const [isGeneratingAiSuggestion, setIsGeneratingAiSuggestion] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const replyContext = initial?.replyContext ?? null;
+
+  async function sendEmail(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSaving(true);
+    setError(null);
+    setSaved(false);
+
+    try {
+      const response = await fetch("/api/inbox/send", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId, to, cc, bcc, subject, bodyText, attachments }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error ?? "Could not send email.");
+        return;
+      }
+      setSaved(true);
+      onClose();
+    } catch {
+      setError("Could not send email.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function generateAiSuggestion() {
+    setIsGeneratingAiSuggestion(true);
+    setAiError(null);
+    setAiSuggestion("");
+
+    try {
+      const response = await fetch("/api/byoai/compose-suggestion", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: aiInstruction,
+          currentBody: bodyText,
+          message: replyContext,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setAiError(data.error ?? "Could not draft with AI.");
+        return;
+      }
+
+      setAiSuggestion(data.bodyText ?? "");
+    } catch {
+      setAiError("Could not draft with AI.");
+    } finally {
+      setIsGeneratingAiSuggestion(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+      <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+        <div className="max-h-[calc(92vh-2rem)] overflow-y-auto rounded-xl bg-white/72 p-5 shadow-inner ring-1 ring-white/60">
+          <div className="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-zinc-950">New email</h3>
+            </div>
+            <Button aria-label="Close compose" onClick={onClose} size="icon" type="button" variant="ghost">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        <form className="space-y-4" onSubmit={sendEmail}>
+          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          {saved ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">Email sent.</p> : null}
+          <div className="flex justify-end border-b border-zinc-200 pb-3">
+            <AiEnableSwitch canEnable enabled={isAiComposerOpen} label="AI Composer" onChange={setIsAiComposerOpen} />
+          </div>
+          {isAiComposerOpen ? (
+            <div className="rounded-md border border-emerald-100 bg-emerald-50/50 p-4">
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-sm font-medium text-zinc-950">AI Composer</p>
+                    <p className="text-sm text-zinc-600">
+                      Tell the AI how to draft the email. It uses your Draft Reply prompt behind the scenes.
+                    </p>
+                  </div>
+                  <textarea
+                    className="min-h-28 w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
+                    maxLength={1000}
+                    onChange={(event) => setAiInstruction(event.target.value)}
+                    placeholder={replyContext ? "Example: Write a warm, concise reply confirming I will follow up tomorrow." : "Example: Write a concise outreach email asking for a meeting next week."}
+                    value={aiInstruction}
+                  />
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs text-zinc-500">{aiInstruction.length}/1000</span>
+                    <Button disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} type="button">
+                      {isGeneratingAiSuggestion ? <Loader /> : <Sparkles className="h-4 w-4" />}
+                      Draft with AI
+                    </Button>
+                  </div>
+                  {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
+                </div>
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-zinc-950">Suggestion preview</p>
+                  {aiSuggestion ? (
+                    <div className="space-y-3">
+                      <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-md border border-zinc-200 bg-white p-3 font-sans text-sm leading-6 text-zinc-700">
+                        {aiSuggestion}
+                      </pre>
+                      <div className="flex justify-end gap-2">
+                        <Button onClick={() => setAiSuggestion("")} type="button" variant="outline">
+                          Decline
+                        </Button>
+                        <Button
+                          onClick={() => {
+                            setBodyText(aiSuggestion);
+                            setAiSuggestion("");
+                          }}
+                          type="button"
+                        >
+                          Accept
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="flex min-h-32 items-center justify-center rounded-md border border-dashed border-zinc-200 bg-white/70 px-4 py-8 text-center text-sm text-zinc-500">
+                      AI suggestions will appear here.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          <div className="space-y-2 rounded-xl bg-white/55 p-3 ring-1 ring-white/60">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="block w-full shrink-0 sm:w-36">
+                <span className="sr-only">From</span>
+                <select className="h-9 w-full rounded-full border border-zinc-200 bg-white/80 px-3 text-xs text-zinc-600" onChange={(event) => setAccountId(event.target.value)} required value={accountId}>
+                  {accounts.map((account) => (
+                    <option key={account.id} value={account.id}>{formatEmailForPrivacy(account.email, privacyMode)}</option>
+                  ))}
+                </select>
+              </label>
+              <input
+                className="h-9 min-w-48 flex-1 rounded-full border border-zinc-200 bg-white/80 px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                onChange={(event) => setTo(event.target.value)}
+                placeholder="To"
+                required
+                value={to}
+              />
+              <input
+                className="h-9 w-14 rounded-full border border-zinc-200 bg-white/80 px-3 text-xs outline-none transition-all duration-200 ease-out focus:w-56 focus:border-zinc-400 sm:focus:w-64"
+                onChange={(event) => setCc(event.target.value)}
+                placeholder="Cc"
+                value={cc}
+              />
+              <input
+                className="h-9 w-14 rounded-full border border-zinc-200 bg-white/80 px-3 text-xs outline-none transition-all duration-200 ease-out focus:w-56 focus:border-zinc-400 sm:focus:w-64"
+                onChange={(event) => setBcc(event.target.value)}
+                placeholder="Bcc"
+                value={bcc}
+              />
+            </div>
+          </div>
+          <input
+            className="w-full border-0 bg-transparent px-0 py-2 text-xl font-semibold text-zinc-950 outline-none placeholder:text-zinc-400"
+            onChange={(event) => setSubject(event.target.value)}
+            placeholder="Subject"
+            value={subject}
+          />
+          <label className="block">
+            <span className="sr-only">Body</span>
+            <textarea className="min-h-56 w-full resize-y border-0 bg-transparent px-0 py-2 text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-400" onChange={(event) => setBodyText(event.target.value)} placeholder="Write your message..." required value={bodyText} />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-zinc-700">Attachments</span>
+            <input
+              className="block w-full text-sm text-zinc-600"
+              multiple
+              onChange={(event) =>
+                setAttachments(
+                  Array.from(event.target.files ?? []).map((file) => ({
+                    filename: file.name,
+                    type: file.type || "application/octet-stream",
+                    size: file.size,
+                  })),
+                )
+              }
+              type="file"
+            />
+            <p className="mt-1 text-xs text-zinc-500">Files are listed for now; binary upload and previews are out of scope for this first pass.</p>
+            {attachments.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {attachments.map((attachment) => (
+                  <Badge key={`${attachment.filename}-${attachment.size}`}>{attachment.filename}</Badge>
+                ))}
+              </div>
+            ) : null}
+          </label>
+          <div className="flex justify-end gap-2 border-t border-zinc-200 pt-4">
+            <Button onClick={onClose} type="button" variant="outline">Cancel</Button>
+            <Button disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} type="submit">
+              {isSaving ? "Sending..." : "Send email"}
+            </Button>
+          </div>
+        </form>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1345,39 +2720,41 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
         </div>
       ) : null}
       {deleteConfirmationIds.length > 0 ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
-          <div className="w-[min(460px,100%)] glass-panel rounded-md border p-5 shadow-xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-base font-semibold text-zinc-950">Delete label?</h2>
-                <p className="mt-1 text-sm text-zinc-500">
-                  This will delete {deleteConfirmationIds.length === 1 ? "this label" : `${deleteConfirmationIds.length} labels`}.
-                </p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+          <div className="w-[min(460px,100%)] rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+            <div className="rounded-xl bg-white/72 p-5 shadow-inner ring-1 ring-white/60">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-semibold text-zinc-950">Delete label?</h2>
+                  <p className="mt-1 text-sm text-zinc-500">
+                    This will delete {deleteConfirmationIds.length === 1 ? "this label" : `${deleteConfirmationIds.length} labels`}.
+                  </p>
+                </div>
+                <Button
+                  aria-label="Close delete confirmation"
+                  disabled={isSaving}
+                  onClick={() => setDeleteConfirmationIds([])}
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
               </div>
-              <Button
-                aria-label="Close delete confirmation"
-                disabled={isSaving}
-                onClick={() => setDeleteConfirmationIds([])}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <ul className="mt-4 list-disc space-y-2 pl-5 text-sm text-zinc-700">
-              <li>Deleting the label cannot be undone.</li>
-              <li>Any email rule that uses this label will be updated to remove it.</li>
-              <li>Any emails that use this label will have the label removed.</li>
-            </ul>
-            <div className="mt-5 flex flex-wrap justify-end gap-2">
-              <Button disabled={isSaving} onClick={() => setDeleteConfirmationIds([])} type="button" variant="outline">
-                Cancel
-              </Button>
-              <Button disabled={isSaving} onClick={() => void deleteLabels(deleteConfirmationIds)} type="button">
-                {labelAction === "delete" ? <Loader /> : <Trash2 className="h-4 w-4" />}
-                {labelAction === "delete" ? "Deleting..." : "Delete"}
-              </Button>
+              <ul className="mt-4 list-disc space-y-2 pl-5 text-sm text-zinc-700">
+                <li>Deleting the label cannot be undone.</li>
+                <li>Any email rule that uses this label will be updated to remove it.</li>
+                <li>Any emails that use this label will have the label removed.</li>
+              </ul>
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                <Button disabled={isSaving} onClick={() => setDeleteConfirmationIds([])} type="button" variant="outline">
+                  Cancel
+                </Button>
+                <Button disabled={isSaving} onClick={() => void deleteLabels(deleteConfirmationIds)} type="button">
+                  {labelAction === "delete" ? <Loader /> : <Trash2 className="h-4 w-4" />}
+                  {labelAction === "delete" ? "Deleting..." : "Delete"}
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -1678,12 +3055,21 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
 function MetricsPage() {
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
   const [logs, setLogs] = useState<SystemLog[]>([]);
-  const [activeTab, setActiveTab] = useState<"metrics" | "logs">("metrics");
+  const [activeTab, setActiveTab] = useState<"metrics" | "logs">(() => metricsTabFromPath(window.location.pathname));
   const [logCategory, setLogCategory] = useState("all");
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function handlePopState() {
+      setActiveTab(metricsTabFromPath(window.location.pathname));
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   useEffect(() => {
     async function loadMetrics() {
@@ -1737,6 +3123,14 @@ function MetricsPage() {
     }
   }
 
+  function selectTab(tab: "metrics" | "logs") {
+    setActiveTab(tab);
+    const nextPath = tab === "logs" ? "/metrics/logs" : "/metrics";
+    if (stripRuntimeBasePath(window.location.pathname) !== nextPath) {
+      window.history.pushState({}, "", getRuntimeUrl(nextPath));
+    }
+  }
+
   return (
     <div className="space-y-6">
       <Card>
@@ -1767,14 +3161,14 @@ function MetricsPage() {
           <div className="inline-flex rounded-md border border-zinc-200 bg-white p-1">
             <button
               className={cn("rounded px-3 py-1.5 text-sm font-medium", activeTab === "metrics" ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-zinc-50")}
-              onClick={() => setActiveTab("metrics")}
+              onClick={() => selectTab("metrics")}
               type="button"
             >
               Metrics
             </button>
             <button
               className={cn("rounded px-3 py-1.5 text-sm font-medium", activeTab === "logs" ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-zinc-50")}
-              onClick={() => setActiveTab("logs")}
+              onClick={() => selectTab("logs")}
               type="button"
             >
               Logs
@@ -1866,6 +3260,7 @@ function RuleReviewPage({
   const [isLabelDropActive, setIsLabelDropActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [ruleAction, setRuleAction] = useState<"review" | "delete" | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [addRuleStep, setAddRuleStep] = useState<"search" | "review" | null>(null);
   const [addRuleSearchQuery, setAddRuleSearchQuery] = useState("");
@@ -2104,6 +3499,7 @@ function RuleReviewPage({
     }
 
     setIsSaving(true);
+    setRuleAction("review");
     setError(null);
 
     try {
@@ -2146,6 +3542,7 @@ function RuleReviewPage({
       setError("Could not save rule.");
     } finally {
       setIsSaving(false);
+      setRuleAction(null);
     }
   }
 
@@ -2155,6 +3552,7 @@ function RuleReviewPage({
     }
 
     setIsSaving(true);
+    setRuleAction("delete");
     setError(null);
 
     try {
@@ -2176,6 +3574,7 @@ function RuleReviewPage({
       setError("Could not delete rule.");
     } finally {
       setIsSaving(false);
+      setRuleAction(null);
     }
   }
 
@@ -2455,18 +3854,19 @@ function RuleReviewPage({
         </Card>
 
         {addRuleStep === "search" ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
-          <Card className="min-h-[720px] max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden">
-            <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
-              <div className="min-w-0">
-                <CardTitle>Add Rule</CardTitle>
-                <CardDescription>Search connected email accounts and choose an email to review.</CardDescription>
-              </div>
-              <Button aria-label="Close add rule" onClick={closeAddRuleModal} size="icon" type="button" variant="outline">
-                <X className="h-4 w-4" />
-              </Button>
-            </CardHeader>
-            <CardContent className="max-h-[calc(92vh-96px)] overflow-y-auto overflow-x-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+          <Card className="min-h-[720px] max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+            <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/72 shadow-inner ring-1 ring-white/60">
+              <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+                <div className="min-w-0">
+                  <CardTitle>Add Rule</CardTitle>
+                  <CardDescription>Search connected email accounts and choose an email to review.</CardDescription>
+                </div>
+                <Button aria-label="Close add rule" onClick={closeAddRuleModal} size="icon" type="button" variant="outline">
+                  <X className="h-4 w-4" />
+                </Button>
+              </CardHeader>
+            <CardContent className="max-h-[calc(92vh-128px)] overflow-y-auto overflow-x-hidden p-5">
               <StepProgress currentStep={1} steps={["Search", "Review"]} />
               <form className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px_auto]" onSubmit={searchEmailsForRule}>
                 <label className="block">
@@ -2527,24 +3927,26 @@ function RuleReviewPage({
                   ))
                 )}
               </div>
-            </CardContent>
+              </CardContent>
+            </div>
           </Card>
         </div>
         ) : null}
 
         {selectedRule ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
-        <Card className="max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden">
-          <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
-            <div className="min-w-0">
-              <CardTitle>Rule Details</CardTitle>
-              <CardDescription>Choose the single best label for this email.</CardDescription>
-            </div>
-            <Button aria-label="Close rule details" onClick={() => (addRuleStep === "review" ? closeAddRuleModal() : selectRule(null))} size="icon" type="button" variant="outline">
-              <X className="h-4 w-4" />
-            </Button>
-          </CardHeader>
-          <CardContent className="max-h-[calc(92vh-96px)] overflow-y-auto overflow-x-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+        <Card className="max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+          <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/72 shadow-inner ring-1 ring-white/60">
+            <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+              <div className="min-w-0">
+                <CardTitle>Rule Details</CardTitle>
+                <CardDescription>Choose the single best label for this email.</CardDescription>
+              </div>
+              <Button aria-label="Close rule details" onClick={() => (addRuleStep === "review" ? closeAddRuleModal() : selectRule(null))} size="icon" type="button" variant="outline">
+                <X className="h-4 w-4" />
+              </Button>
+            </CardHeader>
+          <CardContent className="max-h-[calc(92vh-128px)] overflow-y-auto overflow-x-hidden p-5">
               {addRuleStep === "review" ? <StepProgress currentStep={2} steps={["Search", "Review"]} /> : null}
               <div className="space-y-5">
                 <div>
@@ -2678,21 +4080,22 @@ function RuleReviewPage({
                   </Button>
                   {addRuleStep === "review" ? null : (
                   <Button disabled={isSaving} onClick={() => void deleteSelectedRule()} type="button" variant="outline">
-                    <Trash2 className="h-4 w-4" />
-                    Delete
+                    {ruleAction === "delete" ? <Loader /> : <Trash2 className="h-4 w-4" />}
+                    {ruleAction === "delete" ? "Deleting..." : "Delete"}
                   </Button>
                   )}
                   <Tooltip text={selectedReviewReason ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
                     <span>
                       <Button className={cn(canReviewRule && reviewedButtonClass)} disabled={isSaving || !canReviewRule} onClick={() => void saveRuleReview()} type="button">
-                        <Save className="h-4 w-4" />
-                        Reviewed
+                        {ruleAction === "review" ? <Loader /> : <Save className="h-4 w-4" />}
+                        {ruleAction === "review" ? "Reviewing..." : "Reviewed"}
                       </Button>
                     </span>
                   </Tooltip>
                 </div>
               </div>
-          </CardContent>
+            </CardContent>
+          </div>
         </Card>
         </div>
         ) : null}
@@ -2745,10 +4148,58 @@ function AiPromptsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
 }
 
 function AiPromptLibraryPage({ privacyMode }: { privacyMode: boolean }) {
+  const [activePromptTab, setActivePromptTab] = useState<"email-label" | "draft-reply">(() => promptTabFromPath(window.location.pathname));
+
+  useEffect(() => {
+    function handlePopState() {
+      setActivePromptTab(promptTabFromPath(window.location.pathname));
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  function selectPromptTab(tab: "email-label" | "draft-reply") {
+    setActivePromptTab(tab);
+    const nextPath = tab === "draft-reply" ? "/ai/prompts/draft-reply" : "/ai/prompts/email-label";
+    if (stripRuntimeBasePath(window.location.pathname) !== nextPath) {
+      window.history.pushState({}, "", getRuntimeUrl(nextPath));
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <AiPromptEditorPage promptKey="email-label" />
-      <AiPromptEditorPage promptKey="draft-reply" privacyMode={privacyMode} />
+      <Card>
+        <CardContent className="pt-6">
+          <div className="inline-flex rounded-lg border border-zinc-200 bg-white/70 p-1">
+            <button
+              className={cn(
+                "rounded-md px-4 py-2 text-sm font-medium transition-colors",
+                activePromptTab === "email-label" ? "bg-zinc-950 text-white shadow-sm" : "text-zinc-600 hover:bg-white",
+              )}
+              onClick={() => selectPromptTab("email-label")}
+              type="button"
+            >
+              Email Label
+            </button>
+            <button
+              className={cn(
+                "rounded-md px-4 py-2 text-sm font-medium transition-colors",
+                activePromptTab === "draft-reply" ? "bg-zinc-950 text-white shadow-sm" : "text-zinc-600 hover:bg-white",
+              )}
+              onClick={() => selectPromptTab("draft-reply")}
+              type="button"
+            >
+              Reply Draft
+            </button>
+          </div>
+        </CardContent>
+      </Card>
+      {activePromptTab === "email-label" ? (
+        <AiPromptEditorPage promptKey="email-label" />
+      ) : (
+        <AiPromptEditorPage promptKey="draft-reply" privacyMode={privacyMode} />
+      )}
     </div>
   );
 }
@@ -4072,6 +5523,7 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
+  const [isCheckingTokens, setIsCheckingTokens] = useState(false);
   const [isConnectingImap, setIsConnectingImap] = useState(false);
   const [showProviderChoices, setShowProviderChoices] = useState(false);
   const [showImapModal, setShowImapModal] = useState(false);
@@ -4081,6 +5533,12 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
   useEffect(() => {
     void loadEmailAccounts();
   }, []);
+
+  useEffect(() => {
+    if (!isLoading && accounts.length > 0) {
+      void checkTokenStatuses();
+    }
+  }, [isLoading]);
 
   async function loadEmailAccounts() {
     setIsLoading(true);
@@ -4108,6 +5566,40 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
     }
   }
 
+  async function checkTokenStatuses() {
+    setIsCheckingTokens(true);
+    setError(null);
+    setAccounts((current) => current.map((account) => ({ ...account, status: "checking", statusMessage: "Checking..." })));
+
+    try {
+      const response = await fetch("/api/email-accounts/token-status", {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not check email account statuses.");
+        return;
+      }
+
+      const statuses = new Map<string, Pick<EmailAccount, "id" | "status" | "statusMessage">>(
+        (data.accounts ?? []).map((account: Pick<EmailAccount, "id" | "status" | "statusMessage">) => [account.id, account]),
+      );
+      setAccounts((current) =>
+        current.map((account) => {
+          const status = statuses.get(account.id);
+          return status ? { ...account, status: status.status, statusMessage: status.statusMessage } : account;
+        }),
+      );
+    } catch {
+      setError("Could not check email account statuses.");
+      setAccounts((current) => current.map((account) => (account.status === "checking" ? { ...account, status: "unchecked", statusMessage: "Not checked" } : account)));
+    } finally {
+      setIsCheckingTokens(false);
+    }
+  }
+
   function connectProvider(providerId: string) {
     if (providerId === "imap") {
       setError(null);
@@ -4117,6 +5609,15 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
     }
 
     window.location.href = getRuntimeUrl(`/api/email-accounts/connect/${providerId}`);
+  }
+
+  function refreshAccount(account: EmailAccount) {
+    if (account.provider === "imap") {
+      setError("To refresh an IMAP account, remove it and reconnect it with a current app password.");
+      return;
+    }
+
+    connectProvider(account.provider);
   }
 
   function closeImapModal() {
@@ -4246,41 +5747,73 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
               No email accounts connected.
             </div>
           ) : (
-            <div className="overflow-hidden rounded-md border border-zinc-200">
-              <div className="grid grid-cols-[1fr_140px_140px_120px] gap-3 border-b border-zinc-200 glass-panel px-4 py-3 text-xs font-medium uppercase text-zinc-500">
-                <span>Account</span>
-                <span>Provider</span>
-                <span>Source</span>
-                <span className="text-right">Actions</span>
+            <div className="space-y-2">
+              <div className="flex justify-end">
+                <Tooltip text="Recheck token status for all connected accounts.">
+                  <Button disabled={isCheckingTokens} onClick={() => void checkTokenStatuses()} size="sm" type="button" variant="outline">
+                    <RefreshCw className={cn("h-4 w-4", isCheckingTokens && "animate-spin")} />
+                    Recheck
+                  </Button>
+                </Tooltip>
               </div>
-              <div className="divide-y divide-zinc-200">
-                {accounts.map((account) => (
-                  <div className="grid grid-cols-[1fr_140px_140px_120px] items-center gap-3 px-4 py-3" key={account.id}>
-                    <div>
-                      <p className="text-sm font-medium text-zinc-950">{formatEmailForPrivacy(account.email, privacyMode)}</p>
-                      <p className="text-sm text-zinc-500">{account.displayName || "No display name"}</p>
-                    </div>
-                    <Badge className="w-fit capitalize">{providerLabel(account.provider)}</Badge>
-                    <span className="text-sm text-zinc-600">
-                      {account.source === "sso" ? "Signed-in account" : "Connected account"}
-                    </span>
-                    <div className="flex justify-end">
-                      {account.canRemove ? (
-                        <Button
-                          disabled={isDeleting === account.id}
-                          onClick={() => void removeAccount(account.id)}
-                          size="sm"
-                          type="button"
-                          variant="outline"
+              <div className="overflow-hidden rounded-md border border-zinc-200">
+                <div className="grid grid-cols-[1fr_120px_150px_104px] gap-3 border-b border-zinc-200 glass-panel px-4 py-3 text-xs font-medium uppercase text-zinc-500">
+                  <span>Account</span>
+                  <span>Provider</span>
+                  <span>Status</span>
+                  <span className="text-right">Actions</span>
+                </div>
+                <div className="divide-y divide-zinc-200">
+                  {accounts.map((account) => (
+                    <div className="grid grid-cols-[1fr_120px_150px_104px] items-center gap-3 px-4 py-3" key={account.id}>
+                      <div>
+                        <p className="text-sm font-medium text-zinc-950">{formatEmailForPrivacy(account.email, privacyMode)}</p>
+                        <p className="text-sm text-zinc-500">{account.displayName || "No display name"}</p>
+                      </div>
+                      <Badge className="w-fit capitalize">{providerLabel(account.provider)}</Badge>
+                      <EmailAccountStatusBadge account={account} />
+                      <div className="flex justify-end gap-1">
+                        <Tooltip
+                          text={
+                            account.provider === "imap"
+                              ? "Reconnect this IMAP account with a current app password."
+                              : account.source === "sso"
+                                ? "Reconnect Gmail access for this signed-in account."
+                                : account.status === "needs_refresh"
+                                  ? "Reconnect this account to refresh access."
+                                  : "Reconnect this account and refresh its token."
+                          }
                         >
-                          Remove
-                        </Button>
-                      ) : (
-                        <span className="text-right text-xs text-zinc-500">Required</span>
-                      )}
+                          <Button
+                            aria-label={`Refresh ${account.email}`}
+                            onClick={() => refreshAccount(account)}
+                            size="icon"
+                            type="button"
+                            variant="outline"
+                          >
+                            <RefreshCw className={cn("h-4 w-4", account.status === "needs_refresh" && "text-amber-600")} />
+                          </Button>
+                        </Tooltip>
+                        {account.canRemove ? (
+                          <Tooltip text="Remove account">
+                            <Button
+                              aria-label={`Remove ${account.email}`}
+                              disabled={isDeleting === account.id}
+                              onClick={() => void removeAccount(account.id)}
+                              size="icon"
+                              type="button"
+                              variant="outline"
+                            >
+                              <Trash2 className="h-4 w-4 text-red-600" />
+                            </Button>
+                          </Tooltip>
+                        ) : (
+                          <span className="self-center text-right text-xs text-zinc-500">Required</span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -4288,20 +5821,21 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
       </Card>
 
       {showImapModal ? (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm">
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto glass-surface rounded-md shadow-xl">
-            <div className="flex items-start justify-between gap-4 border-b border-zinc-200 p-5">
-              <div>
-                <h3 className="text-lg font-semibold text-zinc-950">Connect IMAP Account</h3>
-                <p className="mt-1 text-sm text-zinc-500">
-                  Use an app password from your email provider. Do not use your main account password.
-                </p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+            <div className="max-h-[calc(90vh-2rem)] overflow-hidden rounded-xl bg-white/72 shadow-inner ring-1 ring-white/60">
+              <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
+                <div>
+                  <h3 className="text-lg font-semibold text-zinc-950">Connect IMAP Account</h3>
+                  <p className="mt-1 text-sm text-zinc-500">
+                    Use an app password from your email provider. Do not use your main account password.
+                  </p>
+                </div>
+                <Button aria-label="Close IMAP setup" disabled={isConnectingImap} onClick={closeImapModal} size="icon" type="button" variant="ghost">
+                  <X className="h-4 w-4" />
+                </Button>
               </div>
-              <Button aria-label="Close IMAP setup" disabled={isConnectingImap} onClick={closeImapModal} size="icon" type="button" variant="ghost">
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="space-y-5 p-5">
+              <div className="max-h-[calc(90vh-112px)] space-y-5 overflow-y-auto p-5">
               {imapError ? (
                 <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">
                   <p className="font-medium">IMAP connection failed</p>
@@ -4352,6 +5886,7 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
                 <Button disabled={isConnectingImap} onClick={() => void connectImapAccount()} type="button">
                   {isConnectingImap ? "Connecting..." : "Connect IMAP Account"}
                 </Button>
+              </div>
               </div>
             </div>
           </div>
@@ -5101,14 +6636,40 @@ function EndpointDoc({
   response: Record<string, unknown> | Array<Record<string, unknown>>;
   notes?: string[];
 }) {
+  const [copied, setCopied] = useState(false);
+  const copyValue = path.startsWith("/") ? getAbsoluteRuntimeUrl(path) : path;
+
+  async function copyEndpoint(event: React.MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    try {
+      await navigator.clipboard.writeText(copyValue);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
   return (
     <details className="glass-panel rounded-md border">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-zinc-950">
-        {title}
-        {statusBadge ? <span className="ml-2">{statusBadge}</span> : null}
-        <span className="ml-2 rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-600">
+      <summary className="flex cursor-pointer flex-wrap items-center gap-2 px-4 py-3 text-sm font-medium text-zinc-950">
+        <span>{title}</span>
+        {statusBadge ? <span>{statusBadge}</span> : null}
+        <span className="rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-600">
           {method} {path}
         </span>
+        <Tooltip text={path.startsWith("/") ? `Copy ${copyValue}` : "Copy tool name"}>
+          <button
+            aria-label={`Copy ${title} endpoint`}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 bg-white/70 text-zinc-600 transition-colors hover:border-zinc-300 hover:bg-white hover:text-zinc-950"
+            onClick={(event) => void copyEndpoint(event)}
+            type="button"
+          >
+            {copied ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        </Tooltip>
       </summary>
       <div className="space-y-3 border-t border-zinc-200 p-4">
         {notes?.length ? (
@@ -5604,6 +7165,17 @@ function formatEmailTextForPrivacy(value: string, privacyMode: boolean) {
   return value.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, (email) => formatEmailForPrivacy(email, true));
 }
 
+function extractEmailAddressFromText(value = "") {
+  const angleMatch = value.match(/<([^>]+)>/);
+  const emailMatch = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return (angleMatch?.[1] ?? emailMatch?.[0] ?? "").trim();
+}
+
+function extractDisplayNameFromText(value = "") {
+  const match = value.match(/^"?([^"<]+)"?\s*</);
+  return (match?.[1] ?? "").trim();
+}
+
 function mapAuthUser(user: { email?: string | null; name?: string | null; image?: string | null }): AuthUser {
   return {
     email: user.email ?? "Signed-in user",
@@ -5982,6 +7554,58 @@ function isSettingsPage(page: Page) {
   return page === "settings" || page === "confidence-threshold" || page === "email-accounts" || page === "endpoints" || page === "webhook" || page === "mcp-server";
 }
 
+const pagePaths: Record<Page, string> = {
+  overview: "/",
+  inbox: "/inbox",
+  labels: "/labels",
+  rules: "/rule-review",
+  metrics: "/metrics",
+  "ai-prompts": "/ai-prompts",
+  "ai-byoai": "/ai/byoai",
+  "ai-prompt-library": "/ai/prompts",
+  "ai-email-label": "/ai/prompts/email-label",
+  "ai-draft-reply": "/ai/prompts/draft-reply",
+  settings: "/settings",
+  "confidence-threshold": "/settings/confidence-threshold",
+  "email-accounts": "/settings/email-accounts",
+  endpoints: "/settings/endpoints",
+  webhook: "/settings/webhook",
+  "mcp-server": "/settings/mcp-server",
+};
+
+function pathForPage(page: Page) {
+  return pagePaths[page] ?? "/";
+}
+
+function pageFromPath(pathname: string): Page {
+  const normalizedPath = stripRuntimeBasePath(pathname);
+
+  if (normalizedPath === "/metrics/logs") {
+    return "metrics";
+  }
+
+  if (normalizedPath.startsWith("/ai/prompts")) {
+    return "ai-prompt-library";
+  }
+
+  const match = (Object.entries(pagePaths) as Array<[Page, string]>).find(([, path]) => path === normalizedPath);
+  return match?.[0] ?? "overview";
+}
+
+function stripRuntimeBasePath(pathname: string) {
+  const basePath = getRuntimeBasePath();
+  const withoutBase = basePath && pathname.startsWith(basePath) ? pathname.slice(basePath.length) : pathname;
+  return withoutBase.replace(/\/+$/, "") || "/";
+}
+
+function metricsTabFromPath(pathname: string): "metrics" | "logs" {
+  return stripRuntimeBasePath(pathname) === "/metrics/logs" ? "logs" : "metrics";
+}
+
+function promptTabFromPath(pathname: string): "email-label" | "draft-reply" {
+  return stripRuntimeBasePath(pathname) === "/ai/prompts/draft-reply" ? "draft-reply" : "email-label";
+}
+
 function getPageTitle(page: Page) {
   if (page === "ai-prompts") {
     return "Artificial Intelligence";
@@ -6026,6 +7650,82 @@ function getPageTitle(page: Page) {
   return navItems.find((item) => item.id === page)?.label ?? "Overview";
 }
 
+function formatDateTime(value: string) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function formatInboxListDate(value: string) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfTomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+
+  if (date >= startOfToday && date < startOfTomorrow) {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date);
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatFileSize(size: number) {
+  if (!Number.isFinite(size) || size <= 0) {
+    return "";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function getInboxMessageKey(message: InboxMessage) {
+  return `${message.accountId}:${message.mailbox ?? ""}:${message.id}`;
+}
+
+function messageToBulkPayload(message: InboxMessage) {
+  return {
+    accountId: message.accountId,
+    emailId: message.id,
+    mailbox: message.mailbox ?? "",
+  };
+}
+
+function normalizeReplySubject(subject: string) {
+  return /^re:/i.test(subject) ? subject : `Re: ${subject || "(no subject)"}`;
+}
+
 function providerLabel(provider: string) {
   if (provider === "gmail" || provider === "google") {
     return "Gmail";
@@ -6040,6 +7740,33 @@ function providerLabel(provider: string) {
   }
 
   return provider;
+}
+
+function EmailAccountStatusBadge({ account }: { account: EmailAccount }) {
+  if (account.status === "checking") {
+    return (
+      <Badge className="w-fit bg-zinc-100 text-zinc-600">
+        <RefreshCw className="h-3 w-3 animate-spin" />
+        Checking
+      </Badge>
+    );
+  }
+
+  if (account.status === "needs_refresh") {
+    return (
+      <Tooltip text={account.statusMessage || "Reconnect this account."}>
+        <span>
+          <Badge className="w-fit bg-amber-50 text-amber-700">Needs refresh</Badge>
+        </span>
+      </Tooltip>
+    );
+  }
+
+  if (account.status === "connected") {
+    return <Badge className="w-fit bg-emerald-50 text-emerald-700">Connected</Badge>;
+  }
+
+  return <Badge className="w-fit bg-zinc-100 text-zinc-600">Unchecked</Badge>;
 }
 
 function logCategoryLabel(category: string) {
@@ -6069,6 +7796,11 @@ function logStatusClass(status: string) {
     return "bg-amber-50 text-amber-700";
   }
   return "bg-zinc-100 text-zinc-600";
+}
+
+function getSenderInitial(value: string) {
+  const cleaned = String(value || "").replace(/<.*?>/g, "").trim();
+  return (cleaned[0] || "?").toUpperCase();
 }
 
 function toEditableAiPlatform(platform: AiPlatform): AiPlatformDraft {

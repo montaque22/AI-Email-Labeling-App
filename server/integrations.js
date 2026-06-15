@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { getRenderedAiPromptBundle } from "./ai-prompts.js";
+import { ensureUnemailableSystemLabel, UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
 import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
 import { ensureSsoEmailAccount, getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
@@ -16,6 +17,7 @@ import { emitWebhookEvent } from "./webhooks.js";
 import { listSystemLogs, logSystemEvent } from "./system-logs.js";
 
 const API_KEY_PREFIX = "n8n";
+const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
 const EMAIL_RULE_REQUIRED_FIELDS = [
   "emailId",
   "threadId",
@@ -553,6 +555,7 @@ export function registerIntegrationRoutes(app) {
     const input = await parseLabelClassificationInput(req.integrationUser.id, req.body);
 
     if (!input.ok) {
+      await tryApplyUnemailableFromPayload(req.integrationUser.id, req.body, input.error, "integration");
       res.status(400).json({ error: input.error, labels: input.labels });
       return;
     }
@@ -575,6 +578,7 @@ export function registerIntegrationRoutes(app) {
     const input = await parseLabelClassificationInput(req.integrationUser.id, req.body);
 
     if (!input.ok) {
+      await tryApplyUnemailableFromPayload(req.integrationUser.id, req.body, input.error, "integration");
       res.status(400).json({ error: input.error, labels: input.labels });
       return;
     }
@@ -737,8 +741,18 @@ export async function classifyEmailWithLabelCandidates(userId, rule, { source = 
         emailId: rule.emailId,
         subject: rule.subject,
         labelName: selectedCandidate.labelName,
+        removeLabelNames: [UNEMAILABLE_SYSTEM_LABEL_NAME],
         target,
         source,
+      }).catch(async (error) => {
+        await tryApplyUnemailableLabel(userId, {
+          emailId: rule.emailId,
+          subject: rule.subject,
+          target,
+          source,
+          reason: error.message,
+        });
+        throw error;
       })
     : { labels: [] };
 
@@ -754,6 +768,13 @@ export async function classifyEmailWithLabelCandidates(userId, rule, { source = 
   }
 
   const previousRule = await getEmailRuleByEmailId(userId, rule.emailId);
+  await tryApplyUnemailableLabel(userId, {
+    emailId: rule.emailId,
+    subject: rule.subject,
+    target,
+    source,
+    reason: shouldAutoLabel ? "Could not apply selected label." : "Confidence was below threshold or label candidates tied.",
+  });
   const pendingRule = await upsertEmailRule(userId, {
     emailId: rule.emailId,
     threadId: rule.threadId,
@@ -781,6 +802,36 @@ export async function classifyEmailWithLabelCandidates(userId, rule, { source = 
     emailId: rule.emailId,
     rule: pendingRule,
   };
+}
+
+export async function tryApplyUnemailableLabel(userId, { emailId, subject = "", target = null, source = "integration", reason = "" }) {
+  try {
+    await ensureUnemailableSystemLabel(userId);
+    return applySingleLabelToEmail(userId, {
+      emailId,
+      subject,
+      labelName: UNEMAILABLE_SYSTEM_LABEL_NAME,
+      target,
+      source: `${source}:unemailable`,
+    });
+  } catch (error) {
+    console.warn(`Could not apply ${UNEMAILABLE_SYSTEM_LABEL_NAME} label:`, reason || error.message);
+    return null;
+  }
+}
+
+async function tryApplyUnemailableFromPayload(userId, payload, reason, source) {
+  const emailId = typeof payload?.emailId === "string" ? payload.emailId.trim() : "";
+  if (!emailId) {
+    return null;
+  }
+
+  return tryApplyUnemailableLabel(userId, {
+    emailId,
+    subject: typeof payload?.subject === "string" ? payload.subject : "",
+    source,
+    reason,
+  });
 }
 
 export async function applySingleLabelToEmail(userId, { emailId, subject, labelName, removeLabelNames = [], target = null, source = "integration" }) {
@@ -934,6 +985,60 @@ async function fetchGmailMessageFull(accessToken, emailId) {
   return response.json();
 }
 
+async function fetchGmailMessageFullByAnyId(accessToken, emailId) {
+  try {
+    return await fetchGmailMessageFull(accessToken, emailId);
+  } catch (error) {
+    if (error.status !== 404) {
+      throw error;
+    }
+  }
+
+  const message = await searchGmailMessageByRfc822MessageId(accessToken, emailId);
+  if (!message) {
+    const error = new Error("Gmail message not found");
+    error.status = 404;
+    throw error;
+  }
+
+  return message;
+}
+
+async function searchGmailMessageByRfc822MessageId(accessToken, emailId) {
+  const normalizedMessageId = normalizeRfc822MessageId(emailId);
+  if (!normalizedMessageId) {
+    return null;
+  }
+
+  const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+  url.searchParams.set("q", `rfc822msgid:${normalizedMessageId}`);
+  url.searchParams.set("maxResults", "10");
+
+  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+  const data = await response.json();
+  const messages = data.messages ?? [];
+
+  for (const item of messages) {
+    try {
+      const message = await fetchGmailMessageFull(accessToken, item.id);
+      const headers = getGmailHeaders(message);
+      if (normalizeRfc822MessageId(headers["message-id"]) === normalizedMessageId) {
+        return message;
+      }
+    } catch (error) {
+      if (error.status !== 404) {
+        throw error;
+      }
+    }
+  }
+
+  return messages[0]?.id ? fetchGmailMessageFull(accessToken, messages[0].id) : null;
+}
+
+function normalizeRfc822MessageId(value = "") {
+  return String(value).trim().replace(/^<|>$/g, "");
+}
+
 function gmailMessageToRuleSearchResult(message, fallbackEmailId) {
   const headers = getGmailHeaders(message);
   const fromEmail = extractEmailAddress(headers.from || "");
@@ -960,6 +1065,7 @@ async function findConnectedMessageById(userId, emailId, subject) {
 
     try {
       if (account.provider === "gmail") {
+        assertGmailAccountHasRequiredScopes(account);
         const accessToken = await getValidEmailAccountAccessToken(account);
         const message = await fetchGmailMessageMetadata(accessToken, emailId);
         matches.push({ account, subject: getProviderMessageSubject(account.provider, message) });
@@ -994,6 +1100,7 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
     ? accounts.filter((account) => account.email.toLowerCase() === String(accountEmail).trim().toLowerCase())
     : accounts;
   const matches = [];
+  const lookupFailures = [];
 
   if (accountEmail && selectedAccounts.length === 0) {
     const error = new Error("Email account not found");
@@ -1008,8 +1115,9 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
 
     try {
       if (account.provider === "gmail") {
+        assertGmailAccountHasRequiredScopes(account);
         const accessToken = await getValidEmailAccountAccessToken(account);
-        const message = await fetchGmailMessageFull(accessToken, emailId);
+        const message = await fetchGmailMessageFullByAnyId(accessToken, emailId);
         const headers = getGmailHeaders(message);
         const bodyText = extractGmailTextBody(message.payload) || message.snippet || "";
         matches.push({
@@ -1034,6 +1142,12 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
         }
       }
     } catch (error) {
+      lookupFailures.push({
+        provider: account.provider,
+        email: account.email,
+        status: error.status ?? null,
+        error: summarizeProviderLookupError(error),
+      });
       if (error.status !== 404) {
         console.warn(`Integration full message lookup failed for ${account.provider} ${account.email}:`, error.message);
       }
@@ -1041,7 +1155,10 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
   }
 
   if (matches.length === 0) {
-    return null;
+    const error = new Error("Email was not found in connected email accounts.");
+    error.status = 404;
+    error.lookupFailures = lookupFailures;
+    throw error;
   }
 
   if (matches.length === 1 || !subject) {
@@ -1050,6 +1167,35 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
 
   const normalizedSubject = normalizeComparableSubject(subject);
   return matches.find((match) => normalizeComparableSubject(match.email.subject) === normalizedSubject) ?? matches[0];
+}
+
+function summarizeProviderLookupError(error) {
+  if (error.message === "missing_gmail_modify_scope") {
+    return "missing_gmail_modify_scope";
+  }
+
+  if (error.status === 404) {
+    return "not_found";
+  }
+
+  if (error.status === 401 || error.status === 403) {
+    return "account_auth_failed";
+  }
+
+  if (String(error.message || "").toLowerCase().includes("token refresh failed")) {
+    return "account_token_refresh_failed";
+  }
+
+  return error.message || "lookup_failed";
+}
+
+function assertGmailAccountHasRequiredScopes(account) {
+  const scopes = Array.isArray(account.scopes) ? account.scopes : [];
+  if (!scopes.includes(GMAIL_MODIFY_SCOPE)) {
+    const error = new Error("missing_gmail_modify_scope");
+    error.status = 403;
+    throw error;
+  }
 }
 
 async function requireSession(req, res, next) {
@@ -1701,6 +1847,7 @@ async function getSyncedLabelCount(userId) {
       from labels l
       cross join account_count ac
       where l.user_id = $1
+        and l.system_key is null
         and ac.total > 0
         and (
           select count(distinct las.email_account_id)::int
@@ -2306,7 +2453,9 @@ async function providerFetch(url, accessToken, options) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Provider request failed with ${response.status}: ${text.slice(0, 300)}`);
+    const error = new Error(`Provider request failed with ${response.status}: ${text.slice(0, 300)}`);
+    error.status = response.status;
+    throw error;
   }
 
   return response;

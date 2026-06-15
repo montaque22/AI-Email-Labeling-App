@@ -7,6 +7,7 @@ import { ensureAiPromptsTable, registerAiPromptRoutes } from "./ai-prompts.js";
 import { ensureByoAiTables, registerByoAiRoutes } from "./byoai.js";
 import { dbPool } from "./db.js";
 import { ensureEmailAccountsTable, registerEmailAccountRoutes } from "./email-accounts.js";
+import { registerInboxRoutes } from "./inbox.js";
 import { ensureIntegrationTables, registerIntegrationRoutes } from "./integrations.js";
 import { ensureLabelsTable, registerLabelRoutes } from "./labels.js";
 import { ensureMcpTables, registerMcpRoutes } from "./mcp-server.js";
@@ -67,12 +68,27 @@ app.get("/api/db/health", async (_req, res) => {
 registerLabelRoutes(app);
 registerSettingsRoutes(app);
 registerEmailAccountRoutes(app);
+registerInboxRoutes(app);
 registerIntegrationRoutes(app);
 registerAiPromptRoutes(app);
 registerByoAiRoutes(app);
 registerMcpRoutes(app);
 
 app.use(express.static(distDir));
+
+app.get(/.*\/assets\/(.*)/, (req, res, next) => {
+  const assetName = req.params[0];
+  if (!assetName) {
+    next();
+    return;
+  }
+
+  res.sendFile(path.join(distDir, "assets", assetName), (error) => {
+    if (error) {
+      next();
+    }
+  });
+});
 
 app.use((req, res, next) => {
   if (req.path.startsWith("/api/")) {

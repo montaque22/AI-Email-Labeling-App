@@ -171,6 +171,7 @@ The add-on:
 - Enables Home Assistant Ingress
 - Shows Emailable in the Home Assistant sidebar
 - Provides add-on configuration fields for the app environment variables
+- Pulls prebuilt images from GitHub Container Registry when available, so Home Assistant does not need to compile the app locally
 
 Basic install path:
 
@@ -182,6 +183,26 @@ Basic install path:
 6. Fill in the environment variable fields.
 7. Start the add-on.
 8. Open the app from the Home Assistant sidebar.
+
+### Faster Home Assistant Updates
+
+The add-on is configured to use prebuilt images:
+
+```text
+ghcr.io/montaque22/emailable-{arch}
+```
+
+When changes are pushed to `main`, the GitHub Actions workflow in `.github/workflows/home-assistant-addon-image.yml` builds and publishes images for `amd64`, `aarch64`, and `armv7`. After that workflow finishes, Home Assistant can update by pulling the matching image instead of rebuilding the Node app on the Home Assistant device.
+
+For this to work, the GHCR package must be public. If the image package is private, Home Assistant will not be able to pull it without registry credentials and may fall back to a slow local build or fail the update.
+
+When releasing an add-on update:
+
+1. Increment `home-assistant-addon/config.yaml` `version`.
+2. Push to `main`.
+3. Wait for the `Build Home Assistant Add-on Images` workflow to finish.
+4. In Home Assistant, reload the add-on repository or check for updates.
+5. Click Update.
 
 For OAuth redirects in Home Assistant, set:
 

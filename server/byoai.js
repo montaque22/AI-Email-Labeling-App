@@ -10,6 +10,7 @@ import {
   findConnectedEmailContextById,
   parseLabelClassificationInput,
   requireApiKey,
+  tryApplyUnemailableLabel,
 } from "./integrations.js";
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
@@ -43,6 +44,9 @@ const PROVIDER_DEFINITIONS = {
     local: true,
   },
 };
+const AI_LABEL_MAX_CANDIDATES = 3;
+const AI_LABEL_NAME_MAX_LENGTH = 25;
+const AI_LABEL_REASON_MAX_LENGTH = 200;
 
 export async function ensureByoAiTables() {
   if (!dbPool) {
@@ -252,6 +256,20 @@ export function registerByoAiRoutes(app) {
     }
   });
 
+  app.post("/api/byoai/compose-suggestion", requireSession, async (req, res) => {
+    try {
+      const input = parseComposeSuggestionInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      res.json({ bodyText: await generateComposeSuggestion(req.user.id, input.request) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   app.put("/api/byoai/mcp-client/settings", requireSession, async (req, res) => {
     try {
       const enabled = Boolean(req.body?.enabled);
@@ -293,7 +311,7 @@ export function registerByoAiRoutes(app) {
       await logEndpointCall(req.integrationUser.id, "POST /api/integrations/ai/reply", req.body, "success", result);
       res.status(201).json(result);
     } catch (error) {
-      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/ai/reply", req.body, "error", { error: error.message });
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/ai/reply", req.body, "error", getErrorPayload(error));
       handleError(res, error);
     }
   });
@@ -310,7 +328,7 @@ export function registerByoAiRoutes(app) {
       await logEndpointCall(req.integrationUser.id, "POST /api/integrations/ai/label", req.body, "success", result);
       res.json(result);
     } catch (error) {
-      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/ai/label", req.body, "error", { error: error.message });
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/ai/label", req.body, "error", getErrorPayload(error));
       handleError(res, error);
     }
   });
@@ -361,10 +379,20 @@ async function generateAiLabel(userId, request) {
   const toolReference = await getSelectedMcpToolReference(userId);
   const aiResponse = await callBestAvailableAi(userId, {
     systemPrompt: appendToolReference(bundle["email-label"].markdown, toolReference),
-    userPrompt: `Label this email. Return JSON with key labelsApplied as an array of up to 3 objects with labelName, confidence, and reason.\n\nSubject: ${target.email.subject}\nFrom: ${target.email.fromEmail}\nBody:\n${simplifyBody(target.email.bodyText)}`,
+    userPrompt: `Label this email. Return only valid JSON that matches this schema: {"labelsApplied":[{"labelName":"exact existing label name, ${AI_LABEL_NAME_MAX_LENGTH} characters or less","confidence":0.92,"reason":"required concise reason, ${AI_LABEL_REASON_MAX_LENGTH} characters or less"}]}. Include at most ${AI_LABEL_MAX_CANDIDATES} labelsApplied items. confidence must be a number from 0 to 1. Do not include additional properties.\n\nSubject: ${target.email.subject}\nFrom: ${target.email.fromEmail}\nBody:\n${simplifyBody(target.email.bodyText)}`,
     responseShape: "label",
+  }).catch(async (error) => {
+    await tryApplyUnemailableLabel(userId, {
+      emailId: target.email.emailId,
+      subject: target.email.subject,
+      target,
+      source: "ai-integration",
+      reason: error.message,
+    });
+    throw error;
   });
   const labelResult = parseJsonResponse(aiResponse, ["labelsApplied"]);
+  const labelsApplied = normalizeAiLabelCandidates(labelResult.labelsApplied);
   const payload = {
     emailId: target.email.emailId,
     threadId: target.email.threadId,
@@ -372,11 +400,18 @@ async function generateAiLabel(userId, request) {
     fromName: target.email.fromName || target.email.fromEmail,
     subject: target.email.subject || "(no subject)",
     snippet: target.email.snippet || simplifyBody(target.email.bodyText).slice(0, 300),
-    labelsApplied: Array.isArray(labelResult.labelsApplied) ? labelResult.labelsApplied : [],
+    labelsApplied,
     accountEmail: target.account.email,
   };
   const parsed = await parseLabelClassificationInput(userId, payload);
   if (!parsed.ok) {
+    await tryApplyUnemailableLabel(userId, {
+      emailId: target.email.emailId,
+      subject: target.email.subject,
+      target,
+      source: "ai-integration",
+      reason: parsed.error,
+    });
     const error = new Error(parsed.error);
     error.status = 400;
     error.labels = parsed.labels;
@@ -384,6 +419,25 @@ async function generateAiLabel(userId, request) {
   }
 
   return classifyEmailWithLabelCandidates(userId, parsed.rule, { source: "ai-integration" });
+}
+
+async function generateComposeSuggestion(userId, request) {
+  await assertAiEnabled(userId);
+  const bundle = await getRenderedAiPromptBundle(userId);
+  const toolReference = await getSelectedMcpToolReference(userId);
+  const context = request.message
+    ? `Original email context:\nSubject: ${request.message.subject || "(no subject)"}\nFrom: ${request.message.from || "Unknown"}\nBody:\n${simplifyBody(request.message.bodyText || request.message.snippet || "")}`
+    : "This is a brand new email, not a reply. There is no original email context.";
+  const aiResponse = await callBestAvailableAi(userId, {
+    systemPrompt: appendToolReference(
+      `${bundle["draft-reply"].markdown}\n\nReturn only the drafted email body text. Do not include explanations, markdown fences, subject lines, or metadata.`,
+      toolReference,
+    ),
+    userPrompt: `${context}\n\nCurrent draft text:\n${request.currentBody || "(empty)"}\n\nUser instruction:\n${request.prompt}`,
+    responseShape: "text",
+  });
+
+  return cleanAiTextResponse(aiResponse);
 }
 
 async function findEmailTarget(userId, request) {
@@ -439,23 +493,23 @@ async function testAiPlatform(platform) {
   });
 }
 
-async function callAiPlatform(platform, { systemPrompt, userPrompt }) {
+async function callAiPlatform(platform, { systemPrompt, userPrompt, responseShape }) {
   if (platform.provider === "openai") {
-    return callOpenAi(platform, systemPrompt, userPrompt);
+    return callOpenAi(platform, systemPrompt, userPrompt, responseShape);
   }
   if (platform.provider === "gemini") {
-    return callGemini(platform, systemPrompt, userPrompt);
+    return callGemini(platform, systemPrompt, userPrompt, responseShape);
   }
   if (platform.provider === "anthropic") {
     return callAnthropic(platform, systemPrompt, userPrompt);
   }
   if (platform.provider === "ollama") {
-    return callOllama(platform, systemPrompt, userPrompt);
+    return callOllama(platform, systemPrompt, userPrompt, responseShape);
   }
   throw new Error("Unsupported AI platform.");
 }
 
-async function callOpenAi(platform, systemPrompt, userPrompt) {
+async function callOpenAi(platform, systemPrompt, userPrompt, responseShape) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -469,14 +523,14 @@ async function callOpenAi(platform, systemPrompt, userPrompt) {
         { role: "user", content: userPrompt },
       ],
       temperature: 0.2,
-      response_format: { type: "json_object" },
+      ...(responseShape === "text" ? {} : { response_format: { type: "json_object" } }),
     }),
   });
   const data = await parseAiFetchResponse(response, "ChatGPT");
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-async function callGemini(platform, systemPrompt, userPrompt) {
+async function callGemini(platform, systemPrompt, userPrompt, responseShape) {
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(platform.model)}:generateContent?key=${encodeURIComponent(platform.apiKey)}`,
     {
@@ -485,7 +539,10 @@ async function callGemini(platform, systemPrompt, userPrompt) {
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-        generationConfig: { temperature: 0.2, responseMimeType: "application/json" },
+        generationConfig: {
+          temperature: 0.2,
+          ...(responseShape === "text" ? {} : { responseMimeType: "application/json" }),
+        },
       }),
     },
   );
@@ -513,7 +570,7 @@ async function callAnthropic(platform, systemPrompt, userPrompt) {
   return data.content?.map((part) => part.text).join("") ?? "";
 }
 
-async function callOllama(platform, systemPrompt, userPrompt) {
+async function callOllama(platform, systemPrompt, userPrompt, responseShape) {
   const url = new URL("/api/chat", platform.baseUrl);
   const response = await fetch(url.toString(), {
     method: "POST",
@@ -528,7 +585,7 @@ async function callOllama(platform, systemPrompt, userPrompt) {
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      format: "json",
+      ...(responseShape === "text" ? {} : { format: "json" }),
     }),
   });
   const data = await parseAiFetchResponse(response, "Ollama");
@@ -572,6 +629,30 @@ function parseJsonResponse(value, requiredKeys) {
   return parsed;
 }
 
+function normalizeAiLabelCandidates(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .slice(0, AI_LABEL_MAX_CANDIDATES)
+    .map((candidate) => {
+      const confidence = Number(candidate?.confidence);
+      const labelName = truncateText(candidate?.labelName, AI_LABEL_NAME_MAX_LENGTH);
+      const reason = truncateText(candidate?.reason, AI_LABEL_REASON_MAX_LENGTH) || "AI did not provide a reason.";
+      return {
+        labelName,
+        confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : 0,
+        reason,
+      };
+    })
+    .filter((candidate) => candidate.labelName);
+}
+
+function truncateText(value, maxLength) {
+  return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
 function badAiResponse(message) {
   const error = new Error(message);
   error.status = 502;
@@ -586,6 +667,31 @@ function parseAiEmailRequest(body) {
   }
 
   return { ok: true, request: { emailId, accountEmail } };
+}
+
+function parseComposeSuggestionInput(body) {
+  const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
+  const currentBody = typeof body?.currentBody === "string" ? body.currentBody : "";
+  const message = body?.message && typeof body.message === "object" && !Array.isArray(body.message)
+    ? {
+        subject: typeof body.message.subject === "string" ? body.message.subject : "",
+        from: typeof body.message.from === "string" ? body.message.from : "",
+        snippet: typeof body.message.snippet === "string" ? body.message.snippet : "",
+        bodyText: typeof body.message.bodyText === "string" ? body.message.bodyText : "",
+      }
+    : null;
+
+  if (!prompt) {
+    return { ok: false, error: "Tell the AI how to draft the email." };
+  }
+  if (prompt.length > 1000) {
+    return { ok: false, error: "AI composer prompt must be 1,000 characters or less." };
+  }
+  if (currentBody.length > 20_000) {
+    return { ok: false, error: "Current draft is too long for AI composer." };
+  }
+
+  return { ok: true, request: { prompt, currentBody, message } };
 }
 
 function parsePlatformInput(body) {
@@ -947,6 +1053,26 @@ function appendToolReference(systemPrompt, toolReference) {
   return `${systemPrompt}\n\nAvailable MCP tools for context only:\n${toolReference}\n\nOnly reference these tools when they are relevant.`;
 }
 
+function cleanAiTextResponse(value) {
+  const text = String(value ?? "").trim();
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed.bodyText === "string") {
+      return parsed.bodyText.trim();
+    }
+    if (typeof parsed.reply === "string") {
+      return parsed.reply.trim();
+    }
+    if (typeof parsed.message === "string") {
+      return parsed.message.trim();
+    }
+  } catch {
+    // Plain text is the expected response for the composer.
+  }
+
+  return text.replace(/^```(?:text|markdown)?\s*/i, "").replace(/```$/i, "").trim();
+}
+
 async function logEndpointCall(userId, endpoint, payload, status, response) {
   await logSystemEvent(userId, {
     category: "endpoints",
@@ -1025,5 +1151,12 @@ function toWebHeaders(headers) {
 
 function handleError(res, error) {
   console.error("BYOAI request failed:", error);
-  res.status(error.status || 500).json({ error: error.message || "BYOAI request failed." });
+  res.status(error.status || 500).json(getErrorPayload(error));
+}
+
+function getErrorPayload(error) {
+  return {
+    error: error.message || "BYOAI request failed.",
+    ...(Array.isArray(error.lookupFailures) ? { lookupFailures: error.lookupFailures } : {}),
+  };
 }

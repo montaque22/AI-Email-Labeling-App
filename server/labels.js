@@ -13,6 +13,9 @@ import {
 import { emitWebhookEvent } from "./webhooks.js";
 
 export const SYSTEM_LABEL_KEY = "processed";
+export const UNEMAILABLE_SYSTEM_LABEL_KEY = "unemailable";
+export const UNEMAILABLE_SYSTEM_LABEL_NAME = "Unemailable";
+const UNEMAILABLE_SYSTEM_LABEL_DESCRIPTION = "Secret system label for emails Emailable could not safely process.";
 
 export async function ensureLabelsTable() {
   if (!dbPool) {
@@ -290,12 +293,31 @@ async function listLabels(userId) {
       select id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
       from labels
       where user_id = $1
+        and system_key is null
       order by lower(name), created_at desc
     `,
     [userId],
   );
 
   return result.rows;
+}
+
+export async function ensureUnemailableSystemLabel(userId) {
+  const result = await dbPool.query(
+    `
+      insert into labels (id, user_id, name, description, system_key)
+      values ($1, $2, $3, $4, $5)
+      on conflict (user_id, system_key) where system_key is not null do update
+      set name = excluded.name,
+          description = excluded.description,
+          updated_at = now()
+      returning id, name, description, system_key as "systemKey", created_at as "createdAt", updated_at as "updatedAt"
+    `,
+    [randomUUID(), userId, UNEMAILABLE_SYSTEM_LABEL_NAME, UNEMAILABLE_SYSTEM_LABEL_DESCRIPTION, UNEMAILABLE_SYSTEM_LABEL_KEY],
+  );
+  const label = result.rows[0];
+  await syncLabelToConnectedAccounts(userId, label, "update");
+  return label;
 }
 
 async function createLabel(userId, name, description) {

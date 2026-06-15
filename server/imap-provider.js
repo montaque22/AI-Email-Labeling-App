@@ -151,6 +151,30 @@ export async function moveImapMessageToFolders({ account, emailId, addFolders = 
   });
 }
 
+export async function moveImapInboxMessageToFolder({ account, emailId, sourceMailbox, targetFolder }) {
+  return withImapClient(account, async (client, metadata) => {
+    const mailbox = sourceMailbox || metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
+    const found = await findImapMessage(client, mailbox, emailId);
+
+    if (!found) {
+      throw providerNotFoundError("IMAP message was not found");
+    }
+
+    await ensureImapMailbox(client, targetFolder);
+    if (found.mailbox !== targetFolder) {
+      await client.mailboxOpen(found.mailbox);
+      await client.messageMove([found.uid], targetFolder, { uid: true });
+    }
+
+    return { uid: found.uid, mailbox: targetFolder };
+  });
+}
+
+export async function moveImapInboxMessageToTrash({ account, emailId, sourceMailbox }) {
+  const trashMailbox = account.metadata?.trashMailbox || "Trash";
+  return moveImapInboxMessageToFolder({ account, emailId, sourceMailbox, targetFolder: trashMailbox });
+}
+
 export async function createImapDraft({ account, input }) {
   return withImapClient(account, async (client, metadata) => {
     const draftsMailbox = metadata.draftsMailbox || DEFAULT_DRAFTS_MAILBOX;
@@ -165,6 +189,115 @@ export async function createImapDraft({ account, input }) {
       mailbox: draftsMailbox,
       subject: getReplySubject(input.subject || original?.subject || ""),
       toRecipients: parseAddressList(input.to || original?.from || ""),
+    };
+  });
+}
+
+export async function createImapComposeDraft({ account, input }) {
+  return withImapClient(account, async (client, metadata) => {
+    const draftsMailbox = metadata.draftsMailbox || DEFAULT_DRAFTS_MAILBOX;
+    await ensureImapMailbox(client, draftsMailbox);
+    const raw = buildComposeMessage(account.email, input);
+    const result = await client.append(draftsMailbox, raw, ["\\Draft"], new Date());
+
+    return {
+      id: result?.uid ? String(result.uid) : cryptoRandomId(),
+      mailbox: draftsMailbox,
+      subject: input.subject || "",
+      toRecipients: parseAddressList(input.to || ""),
+    };
+  });
+}
+
+export async function searchImapInboxMessages(account, { folder, limit, pageToken = "", query = "" }) {
+  return withImapClient(account, async (client) => {
+    const mailbox = await findImapMailbox(client, folder);
+    if (!mailbox) {
+      return { messages: [], nextPageToken: null, totalEstimate: 0 };
+    }
+
+    const opened = await client.mailboxOpen(mailbox.path);
+    const searchQuery = buildImapSearchQuery(query);
+    const uids = (await client.search(searchQuery, { uid: true })) || [];
+    const sorted = [...uids].sort((a, b) => Number(b) - Number(a));
+    const offset = Math.max(Number.parseInt(pageToken || "0", 10) || 0, 0);
+    const selected = sorted.slice(offset, offset + limit);
+    const messages = [];
+
+    for (const uid of selected) {
+      const message = await client.fetchOne(String(uid), {
+        uid: true,
+        envelope: true,
+        flags: true,
+        bodyStructure: true,
+        internalDate: true,
+      }, { uid: true });
+      if (!message) {
+        continue;
+      }
+
+      messages.push(imapMessageToInboxListItem(message, account, mailbox.path));
+    }
+
+    return {
+      messages,
+      nextPageToken: offset + selected.length < sorted.length ? String(offset + selected.length) : null,
+      totalEstimate: opened.exists ?? sorted.length,
+    };
+  });
+}
+
+export async function getImapInboxCount(account, folder) {
+  return withImapClient(account, async (client) => {
+    const mailbox = await findImapMailbox(client, folder);
+    if (!mailbox) {
+      return null;
+    }
+
+    const opened = await client.mailboxOpen(mailbox.path);
+    return opened.exists ?? null;
+  });
+}
+
+export async function fetchImapInboxMessage(account, { emailId, mailbox }) {
+  return withImapClient(account, async (client, metadata) => {
+    const targetMailbox = mailbox || metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
+    const mailboxInfo = await findImapMailbox(client, targetMailbox);
+    if (!mailboxInfo) {
+      throw providerNotFoundError("IMAP mailbox was not found");
+    }
+
+    await client.mailboxOpen(mailboxInfo.path);
+    const message = await client.fetchOne(String(emailId), {
+      uid: true,
+      envelope: true,
+      bodyStructure: true,
+      internalDate: true,
+      source: true,
+    }, { uid: true });
+
+    if (!message) {
+      throw providerNotFoundError("IMAP message was not found");
+    }
+
+    const raw = message.source?.toString() ?? "";
+    const bodyText = extractTextFromRawMessage(raw);
+
+    return {
+      id: String(message.uid),
+      threadId: String(message.uid),
+      accountId: account.id,
+      accountEmail: account.email,
+      provider: account.provider,
+      mailbox: mailboxInfo.path,
+      from: (message.envelope?.from ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+      to: (message.envelope?.to ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+      cc: (message.envelope?.cc ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+      subject: message.envelope?.subject ?? "",
+      date: (message.internalDate ?? message.envelope?.date ?? new Date()).toISOString(),
+      bodyText,
+      bodyHtml: "",
+      attachments: collectImapAttachments(message.bodyStructure),
     };
   });
 }
@@ -355,6 +488,78 @@ function buildDraftMessage(from, input, original) {
     "",
     body,
   ].join("\r\n");
+}
+
+function buildComposeMessage(from, input) {
+  const lines = [
+    `From: ${from}`,
+    `To: ${input.to}`,
+    input.cc ? `Cc: ${input.cc}` : null,
+    input.bcc ? `Bcc: ${input.bcc}` : null,
+    `Subject: ${input.subject || ""}`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    input.bodyText || "",
+  ].filter((line) => line !== null);
+
+  return lines.join("\r\n");
+}
+
+function buildImapSearchQuery(query) {
+  const trimmed = String(query ?? "").trim();
+  if (!trimmed) {
+    return { all: true };
+  }
+
+  return { or: [{ subject: trimmed }, { from: trimmed }, { body: trimmed }] };
+}
+
+function imapMessageToInboxListItem(message, account, mailbox) {
+  const from = (message.envelope?.from ?? []).map(formatImapAddress).filter(Boolean).join(", ");
+  const date = message.internalDate ?? message.envelope?.date ?? new Date();
+
+  return {
+    id: String(message.uid),
+    threadId: String(message.uid),
+    accountId: account.id,
+    accountEmail: account.email,
+    provider: account.provider,
+    mailbox,
+    from,
+    sender: from,
+    subject: message.envelope?.subject ?? "",
+    snippet: "",
+    date: date.toISOString(),
+    labels: [mailbox],
+    hasAttachments: collectImapAttachments(message.bodyStructure).length > 0,
+  };
+}
+
+function collectImapAttachments(structure) {
+  const attachments = [];
+  collectImapAttachmentsFromNode(structure, attachments);
+  return attachments;
+}
+
+function collectImapAttachmentsFromNode(node, attachments) {
+  if (!node) {
+    return;
+  }
+
+  const disposition = String(node.disposition ?? "").toLowerCase();
+  if (node.dispositionParameters?.filename || node.parameters?.name || disposition === "attachment") {
+    attachments.push({
+      filename: node.dispositionParameters?.filename || node.parameters?.name || "Attachment",
+      type: [node.type, node.subtype].filter(Boolean).join("/").toLowerCase() || "application/octet-stream",
+      size: node.size ?? null,
+    });
+  }
+
+  for (const child of node.childNodes ?? []) {
+    collectImapAttachmentsFromNode(child, attachments);
+  }
 }
 
 function getReplySubject(subject) {
