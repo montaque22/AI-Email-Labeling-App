@@ -11,6 +11,7 @@ import {
   classifyEmailWithLabelCandidates,
   createProviderReplyDraft,
   EMAIL_RULE_SELECT,
+  findConnectedEmailsForMcp,
   getUserEmailAccount,
   mapEmailRuleRow,
   parseDraftInput,
@@ -22,6 +23,28 @@ import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 
 const MCP_KEY_PREFIX = "mcp";
+export const SYSTEM_MCP_TOOL_DEFINITIONS = [
+  {
+    name: "create_draft_reply",
+    title: "Create Draft Reply",
+    description: "Create a draft reply in the connected account that owns the message, using the same behavior as the REST Create Draft Reply API.",
+  },
+  {
+    name: "add_labels_on_email",
+    title: "Add Labels On Email",
+    description: "Classify an email with label candidates. Applies the uniquely highest-confidence label when it meets the current threshold; otherwise creates a pending email rule.",
+  },
+  {
+    name: "query_email_rules",
+    title: "Query Email Rules",
+    description: "Query email rules using the same AND/OR and equivalence behavior as the REST Query Email Rules API.",
+  },
+  {
+    name: "find_email",
+    title: "Find Email",
+    description: "Find connected-account emails by optional email id, subject, from, and to fields.",
+  },
+];
 
 export async function ensureMcpTables() {
   if (!dbPool) {
@@ -40,6 +63,10 @@ export async function ensureMcpTables() {
     )
   `);
   await dbPool.query("create index if not exists mcp_api_keys_user_id_idx on mcp_api_keys(user_id)");
+  await dbPool.query("alter table user_settings add column if not exists mcp_client_enabled boolean not null default false");
+  await dbPool.query("alter table user_settings add column if not exists encrypted_internal_mcp_token text");
+  await dbPool.query("alter table user_settings add column if not exists internal_mcp_token_hash text");
+  await dbPool.query("create index if not exists user_settings_internal_mcp_token_hash_idx on user_settings(internal_mcp_token_hash)");
 }
 
 export function registerMcpRoutes(app) {
@@ -55,7 +82,8 @@ export function registerMcpRoutes(app) {
         [req.user.id],
       );
 
-      res.json({ keys: result.rows });
+      const status = await getMcpServerStatus(req.user.id);
+      res.json({ keys: result.rows, ...status });
     } catch (error) {
       handleHttpError(res, error);
     }
@@ -67,6 +95,12 @@ export function registerMcpRoutes(app) {
     const keyPrefix = token.slice(0, 12);
 
     try {
+      const status = await getMcpServerStatus(req.user.id);
+      if (status.disabled) {
+        res.status(409).json({ error: "MCP Server is disabled while MCP Client is active." });
+        return;
+      }
+
       const result = await dbPool.query(
         `
           insert into mcp_api_keys (id, user_id, name, key_hash, key_prefix)
@@ -204,7 +238,28 @@ function createMcpServer(userId) {
     },
   );
 
+  server.registerTool(
+    "find_email",
+    {
+      title: "Find Email",
+      description: "Find emails across connected accounts using optional email id, subject, from, and to fields. The to field narrows the connected account.",
+      inputSchema: {
+        emailId: z.string().optional().describe("Provider email/message id or RFC822 Message-ID."),
+        subject: z.string().optional().describe("Subject text to search for."),
+        from: z.string().optional().describe("Sender email address or display text to match."),
+        to: z.string().optional().describe("Recipient/connected account email address to search in."),
+      },
+    },
+    async (input) => {
+      return loggedMcpToolResult(userId, "find_email", input, "internal:find-email", () => findEmailTool(userId, input));
+    },
+  );
+
   return server;
+}
+
+async function findEmailTool(userId, payload) {
+  return { emails: await findConnectedEmailsForMcp(userId, payload) };
 }
 
 async function createDraftReplyTool(userId, payload) {
@@ -273,6 +328,19 @@ async function authenticateMcpRequest(req) {
     return { ok: false, error: "Provide an MCP API key with Authorization: Bearer <token>" };
   }
 
+  const internalResult = await dbPool.query(
+    `
+      select user_id as "userId"
+      from user_settings
+      where internal_mcp_token_hash = $1
+      limit 1
+    `,
+    [hashInternalMcpToken(token)],
+  );
+  if (internalResult.rows[0]?.userId) {
+    return { ok: true, userId: internalResult.rows[0].userId, internal: true };
+  }
+
   const result = await dbPool.query(
     `
       update mcp_api_keys
@@ -283,12 +351,39 @@ async function authenticateMcpRequest(req) {
     [hashApiKey(token)],
   );
 
-  const userId = result.rows[0]?.userId;
-  if (!userId) {
-    return { ok: false, error: "Invalid MCP API key" };
-  }
+    const userId = result.rows[0]?.userId;
+    if (!userId) {
+      return { ok: false, error: "Invalid MCP API key" };
+    }
+    if (await isMcpClientEnabled(userId)) {
+      return { ok: false, error: "MCP Server is disabled while MCP Client is active" };
+    }
 
-  return { ok: true, userId };
+    return { ok: true, userId };
+}
+
+async function getMcpServerStatus(userId) {
+  return {
+    disabled: await isMcpClientEnabled(userId),
+    disabledReason: "MCP Client is active. Emailable is handling AI requests and logic directly.",
+  };
+}
+
+async function isMcpClientEnabled(userId) {
+  const result = await dbPool.query(
+    `
+      insert into user_settings (user_id, confidence_threshold)
+      values ($1, 0.9)
+      on conflict (user_id) do nothing
+      returning mcp_client_enabled as "mcpClientEnabled"
+    `,
+    [userId],
+  );
+  if (result.rows[0]) {
+    return Boolean(result.rows[0].mcpClientEnabled);
+  }
+  const existing = await dbPool.query(`select mcp_client_enabled as "mcpClientEnabled" from user_settings where user_id = $1`, [userId]);
+  return Boolean(existing.rows[0]?.mcpClientEnabled);
 }
 
 async function requireSession(req, res, next) {
@@ -327,6 +422,10 @@ function createMcpApiKey() {
 
 function hashApiKey(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function hashInternalMcpToken(token) {
+  return crypto.createHash("sha256").update(`internal-mcp:${token}`).digest("hex");
 }
 
 function jsonToolResult(result) {

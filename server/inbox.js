@@ -12,7 +12,7 @@ import {
 import { modifyGmailMessageLabels } from "./integrations.js";
 import { emitWebhookEvent } from "./webhooks.js";
 
-const INBOX_PAGE_SIZE = 30;
+const INBOX_PAGE_SIZE = 10;
 
 export function registerInboxRoutes(app) {
   app.get("/api/inbox/messages", requireSession, async (req, res) => {
@@ -193,6 +193,7 @@ async function listSpecialMailboxMessages(userId, query, options) {
           labelId: options.gmailLabelId,
           labelName: options.labelName,
           pageToken: pageToken[account.id] ?? "",
+          query: query.search,
         });
         nextPageState[account.id] = result.nextPageToken;
         providerResults.push(...result.messages);
@@ -202,7 +203,7 @@ async function listSpecialMailboxMessages(userId, query, options) {
           folder: mailbox,
           limit: INBOX_PAGE_SIZE,
           pageToken: pageToken[account.id] ?? "",
-          query: "",
+          query: query.search,
         });
         nextPageState[account.id] = result.nextPageToken;
         providerResults.push(...result.messages.map((message) => ({ ...message, labels: [options.labelName] })));
@@ -745,7 +746,7 @@ async function listGmailInboxMessages({ accessToken, account, label, providerLab
 
   for (const item of data.messages ?? []) {
     const message = await fetchGmailMessageMetadata(accessToken, item.id);
-    messages.push(gmailMessageToInboxListItem(message, account, label));
+    messages.push(await gmailMessageToInboxListItem(message, account, label, accessToken));
   }
 
   return { messages, nextPageToken: data.nextPageToken ?? null };
@@ -784,6 +785,7 @@ async function fetchGmailInboxMessage(accessToken, account, emailId) {
     bodyText: body.text,
     bodyHtml: sanitizeEmailHtml(body.html),
     attachments: collectGmailAttachments(message.payload),
+    replyCount: await getGmailSentReplyCount(accessToken, message.threadId, message.id),
   };
 }
 
@@ -807,12 +809,15 @@ async function createGmailComposeDraft(accessToken, account, compose) {
   return response.json();
 }
 
-async function listGmailSystemLabelMessages({ accessToken, account, labelId, labelName, pageToken }) {
+async function listGmailSystemLabelMessages({ accessToken, account, labelId, labelName, pageToken, query }) {
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
   url.searchParams.append("labelIds", labelId);
   url.searchParams.set("maxResults", String(INBOX_PAGE_SIZE));
   if (pageToken) {
     url.searchParams.set("pageToken", pageToken);
+  }
+  if (query) {
+    url.searchParams.set("q", query);
   }
 
   const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
@@ -825,7 +830,7 @@ async function listGmailSystemLabelMessages({ accessToken, account, labelId, lab
       continue;
     }
     const message = await fetchGmailMessageMetadata(accessToken, messageId);
-    messages.push(gmailMessageToInboxListItem(message, account, { name: labelName }));
+    messages.push(await gmailMessageToInboxListItem(message, account, { name: labelName }, accessToken));
   }
 
   return { messages, nextPageToken: data.nextPageToken ?? null };
@@ -850,7 +855,7 @@ async function trashGmailMessage(accessToken, emailId) {
   return response.json();
 }
 
-function gmailMessageToInboxListItem(message, account, label) {
+async function gmailMessageToInboxListItem(message, account, label, accessToken = null) {
   const headers = getGmailHeaders(message);
   const date = message.internalDate
     ? new Date(Number(message.internalDate))
@@ -870,7 +875,29 @@ function gmailMessageToInboxListItem(message, account, label) {
     date: date.toISOString(),
     labels: [label.name],
     hasAttachments: false,
+    replyCount: accessToken && message.threadId ? await getGmailSentReplyCount(accessToken, message.threadId, message.id) : 0,
   };
+}
+
+async function getGmailSentReplyCount(accessToken, threadId, currentMessageId = "") {
+  if (!threadId) {
+    return 0;
+  }
+
+  try {
+    const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`);
+    url.searchParams.set("format", "metadata");
+    url.searchParams.append("metadataHeaders", "From");
+    const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+    const thread = await response.json();
+    return (thread.messages ?? []).filter((message) =>
+      message.id !== currentMessageId &&
+      Array.isArray(message.labelIds) &&
+      message.labelIds.includes("SENT"),
+    ).length;
+  } catch {
+    return 0;
+  }
 }
 
 function sortInboxMessages(messages, sort) {
@@ -915,6 +942,7 @@ function parseMailboxListQuery(query) {
     query: {
       accountIds: parseCsv(query.accounts),
       pageToken: typeof query.pageToken === "string" ? query.pageToken : "",
+      search: typeof query.search === "string" ? query.search.trim() : "",
       sort: ["newest", "oldest", "sender", "subject"].includes(query.sort) ? query.sort : "newest",
     },
   };

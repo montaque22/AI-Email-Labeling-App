@@ -15,10 +15,10 @@ import {
   ArrowDown,
   ArrowUp,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Download,
-  GaugeCircle,
   FileCheck2,
   Gauge,
   GripVertical,
@@ -26,15 +26,19 @@ import {
   LogOut,
   MailCheck,
   Menu,
+  MoreVertical,
   Pencil,
   Plus,
   Save,
   Search,
+  Send,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Tag,
   Trash2,
+  Reply,
   RefreshCw,
   Upload,
   X,
@@ -218,6 +222,7 @@ type AiProviderDefinition = {
 
 type AiPlatform = {
   id: string;
+  name?: string;
   provider: string;
   providerLabel: string;
   model: string;
@@ -242,6 +247,9 @@ type ByoAiConfig = {
   platforms: AiPlatform[];
   aiEnabled: boolean;
   canEnableAi: boolean;
+  mcpClientEnabled?: boolean;
+  canEnableMcpClient?: boolean;
+  mcpClients?: AiMcpClientConfig[];
   mcpClient: AiMcpClientConfig;
 };
 
@@ -252,7 +260,11 @@ type AiMcpTool = {
 };
 
 type AiMcpClientConfig = {
+  id?: string;
+  name?: string;
   serverUrl: string;
+  authType?: "none" | "bearer";
+  isSystem?: boolean;
   enabled: boolean;
   status: "connected" | "untested" | "failed";
   lastError?: string;
@@ -260,6 +272,68 @@ type AiMcpClientConfig = {
   selectedTools: string[];
   hasBearerToken?: boolean;
 };
+
+const SYSTEM_MCP_CLIENT_ID = "system";
+const SYSTEM_MCP_TOOLS: AiMcpTool[] = [
+  {
+    name: "create_draft_reply",
+    description: "Create a draft reply in the connected account that owns the message.",
+    inputSchema: null,
+  },
+  {
+    name: "add_labels_on_email",
+    description: "Classify an email, apply the best label when confident, or create a pending rule for review.",
+    inputSchema: null,
+  },
+  {
+    name: "query_email_rules",
+    description: "Query email rules using AND/OR groups and supported equivalence operators.",
+    inputSchema: null,
+  },
+  {
+    name: "find_email",
+    description: "Find connected-account emails by optional email id, subject, from, and to fields.",
+    inputSchema: null,
+  },
+];
+
+function getDefaultSystemMcpClient(): AiMcpClientConfig {
+  return {
+    id: SYSTEM_MCP_CLIENT_ID,
+    name: "System MCP Tools",
+    serverUrl: "System managed",
+    authType: "none",
+    isSystem: true,
+    enabled: true,
+    status: "connected",
+    lastError: "",
+    tools: SYSTEM_MCP_TOOLS,
+    selectedTools: SYSTEM_MCP_TOOLS.map((tool) => tool.name),
+    hasBearerToken: false,
+  };
+}
+
+function ensureSystemMcpClient(clients: AiMcpClientConfig[]): AiMcpClientConfig[] {
+  const existing = clients.find((client) => client.id === SYSTEM_MCP_CLIENT_ID || client.isSystem);
+  const external = clients.filter((client) => client.id !== SYSTEM_MCP_CLIENT_ID && !client.isSystem);
+  if (!existing) {
+    return [getDefaultSystemMcpClient(), ...external];
+  }
+  return [
+    {
+      ...getDefaultSystemMcpClient(),
+      ...existing,
+      id: SYSTEM_MCP_CLIENT_ID,
+      isSystem: true,
+      name: "System MCP Tools",
+      serverUrl: "System managed",
+      authType: "none" as const,
+      tools: existing.tools?.length ? existing.tools : SYSTEM_MCP_TOOLS,
+      selectedTools: existing.selectedTools?.length ? existing.selectedTools : SYSTEM_MCP_TOOLS.map((tool) => tool.name),
+    },
+    ...external,
+  ];
+}
 
 type InboxSort = "newest" | "oldest" | "sender" | "subject";
 type InboxMode = "inbox" | "drafts" | "sent";
@@ -283,6 +357,7 @@ type InboxMessage = {
   date: string;
   labels: string[];
   hasAttachments: boolean;
+  replyCount?: number;
   rule?: InboxRuleStatus | null;
 };
 
@@ -301,6 +376,7 @@ type InboxMessageDetail = {
   bodyText: string;
   bodyHtml: string;
   attachments: InboxAttachment[];
+  replyCount?: number;
   rule?: InboxRuleStatus | null;
 };
 
@@ -823,7 +899,7 @@ function AuthenticatedLayout({
       </aside>
 
       <div className={cn("min-w-0 transition-all", sidebarCollapsed ? "md:pl-20" : "md:pl-64")}>
-        <header className="sticky top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-white/60 bg-white/55 px-4 shadow-sm backdrop-blur-xl sm:px-5">
+        <header className={cn("sticky top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-white/60 bg-white/55 px-4 shadow-sm backdrop-blur-xl sm:px-5", activePage === "inbox" && "max-md:hidden")}>
           <div className="flex min-w-0 items-center gap-3">
             <Button aria-label="Open menu" className="shrink-0 md:hidden" onClick={() => setMobileMenuOpen(true)} size="icon" type="button" variant="ghost">
               <Menu className="h-5 w-5" />
@@ -959,7 +1035,7 @@ function AuthenticatedLayout({
               privacyMode={privacyMode}
             />
           )}
-          {activePage === "inbox" && <InboxPage privacyMode={privacyMode} />}
+          {activePage === "inbox" && <InboxPage onOpenMobileMenu={() => setMobileMenuOpen(true)} privacyMode={privacyMode} />}
           {activePage === "labels" && <LabelsPage privacyMode={privacyMode} />}
           {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} privacyMode={privacyMode} />}
           {activePage === "metrics" && <MetricsPage />}
@@ -971,7 +1047,7 @@ function AuthenticatedLayout({
           {activePage === "email-accounts" && <EmailAccountsPage privacyMode={privacyMode} />}
           {activePage === "endpoints" && <EndpointsPage />}
           {activePage === "webhook" && <WebhookPage />}
-          {activePage === "mcp-server" && <McpServerPage />}
+          {activePage === "mcp-server" && <McpServerPage onNavigate={onNavigate} />}
         </main>
       </div>
     </div>
@@ -1102,7 +1178,7 @@ function OverviewPage({
   );
 }
 
-function InboxPage({ privacyMode }: { privacyMode: boolean }) {
+function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => void; privacyMode: boolean }) {
   const [labels, setLabels] = useState<Label[]>([]);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [inboxMode, setInboxMode] = useState<InboxMode>("inbox");
@@ -1112,8 +1188,10 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
   const [messages, setMessages] = useState<InboxMessage[]>([]);
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [sort, setSort] = useState<InboxSort>("newest");
+  const [sentSearch, setSentSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [messageLoadProgress, setMessageLoadProgress] = useState({ completed: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
   const [selectedMessage, setSelectedMessage] = useState<InboxMessage | null>(null);
   const [messageDetail, setMessageDetail] = useState<InboxMessageDetail | null>(null);
@@ -1128,6 +1206,9 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
   const [ruleEditorMessage, setRuleEditorMessage] = useState<InboxMessage | null>(null);
   const [isCountsLoading, setIsCountsLoading] = useState(false);
   const [toast, setToast] = useState<InboxToast | null>(null);
+  const [isByoAiActive, setIsByoAiActive] = useState(false);
+  const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
+  const [isMobileLabelPickerOpen, setIsMobileLabelPickerOpen] = useState(false);
 
   useEffect(() => {
     async function loadBootstrap() {
@@ -1135,12 +1216,14 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
       setError(null);
 
       try {
-        const [labelsResponse, accountsResponse] = await Promise.all([
+        const [labelsResponse, accountsResponse, byoAiResponse] = await Promise.all([
           fetch("/api/labels", { credentials: "include" }),
           fetch("/api/email-accounts", { credentials: "include" }),
+          fetch("/api/byoai/config", { credentials: "include" }),
         ]);
         const labelsData = await labelsResponse.json();
         const accountsData = await accountsResponse.json();
+        const byoAiData = await byoAiResponse.json().catch(() => ({}));
 
         if (!labelsResponse.ok) {
           setError(labelsData.error ?? "Could not load labels.");
@@ -1157,6 +1240,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
         setAccounts(loadedAccounts);
         setSelectedAccountIds(loadedAccounts.map((account: EmailAccount) => account.id));
         setSelectedLabelId((current) => current || loadedLabels[0]?.id || "");
+        setIsByoAiActive(Boolean(byoAiResponse.ok && byoAiData.aiEnabled));
       } catch {
         setError("Could not load Inbox setup.");
       } finally {
@@ -1175,7 +1259,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
     }
 
     void loadMessages({ reset: true });
-  }, [inboxMode, selectedLabelId, selectedAccountIds.join(","), sort]);
+  }, [inboxMode, selectedLabelId, selectedAccountIds.join(","), sort, sentSearch]);
 
   useEffect(() => {
     if (!isAccountMenuOpen) {
@@ -1229,7 +1313,32 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
     return () => window.clearTimeout(timeoutId);
   }, [toast]);
 
+  useEffect(() => {
+    const shouldLockScroll = Boolean(
+      selectedMessage ||
+        ruleEditorMessage ||
+        isComposeOpen ||
+        isMobileFilterOpen ||
+        isMobileLabelPickerOpen,
+    );
+
+    if (!shouldLockScroll) {
+      return;
+    }
+
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, [selectedMessage, ruleEditorMessage, isComposeOpen, isMobileFilterOpen, isMobileLabelPickerOpen]);
+
   const filteredMessages = messages;
+  const selectedLabel = labels.find((label) => label.id === selectedLabelId) ?? null;
 
   async function loadMessages({ reset }: { reset: boolean }) {
     if (selectedAccountIds.length === 0 || (inboxMode === "inbox" && !selectedLabelId)) {
@@ -1237,9 +1346,58 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
     }
 
     reset ? setIsLoading(true) : setIsLoadingMore(true);
+    if (reset) {
+      setMessages([]);
+      setMessageLoadProgress({ completed: 0, total: selectedAccountIds.length });
+    }
     setError(null);
 
     try {
+      const endpoint = inboxMode === "drafts" ? "/api/inbox/drafts" : inboxMode === "sent" ? "/api/inbox/sent" : "/api/inbox/messages";
+      if (reset) {
+        const messagesByAccount: InboxMessage[] = [];
+        const nextPageState: Record<string, string> = {};
+        const failures: string[] = [];
+
+        await Promise.all(selectedAccountIds.map(async (accountId) => {
+          const params = buildInboxMessageParams({
+            accountIds: [accountId],
+            inboxMode,
+            labelId: selectedLabelId,
+            search: sentSearch,
+            sort,
+          });
+
+          try {
+            const response = await fetch(`${endpoint}?${params.toString()}`, { credentials: "include" });
+            const data = await response.json();
+
+            if (!response.ok) {
+              failures.push(data.error ?? `Could not load ${getInboxModeDescription(inboxMode)}.`);
+              return;
+            }
+
+            messagesByAccount.push(...(data.messages ?? []));
+            Object.assign(nextPageState, decodeInboxPageToken(data.nextPageToken));
+          } catch {
+            failures.push(`Could not load ${getInboxModeDescription(inboxMode)}.`);
+          } finally {
+            setMessageLoadProgress((current) => ({
+              ...current,
+              completed: Math.min(current.total, current.completed + 1),
+            }));
+          }
+        }));
+
+        setMessages(sortInboxMessagesForClient(messagesByAccount, sort));
+        setNextPageToken(encodeInboxPageToken(nextPageState));
+        setSelectedMessageKeys([]);
+        if (messagesByAccount.length === 0 && failures.length > 0) {
+          setError(failures[0]);
+        }
+        return;
+      }
+
       const params = new URLSearchParams({
         accounts: selectedAccountIds.join(","),
         sort,
@@ -1247,11 +1405,13 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
       if (inboxMode === "inbox") {
         params.set("labelId", selectedLabelId);
       }
+      if (inboxMode === "sent" && sentSearch) {
+        params.set("search", sentSearch);
+      }
       if (!reset && nextPageToken) {
         params.set("pageToken", nextPageToken);
       }
 
-      const endpoint = inboxMode === "drafts" ? "/api/inbox/drafts" : inboxMode === "sent" ? "/api/inbox/sent" : "/api/inbox/messages";
       const response = await fetch(`${endpoint}?${params.toString()}`, { credentials: "include" });
       const data = await response.json();
 
@@ -1269,6 +1429,9 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
       setError(`Could not load ${inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "inbox messages"}.`);
     } finally {
       reset ? setIsLoading(false) : setIsLoadingMore(false);
+      if (reset) {
+        setMessageLoadProgress((current) => ({ ...current, completed: current.total }));
+      }
     }
   }
 
@@ -1334,12 +1497,28 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
 
   function handleInboxModeChange(mode: InboxMode) {
     setInboxMode(mode);
+    setIsMobileLabelPickerOpen(false);
+    if (mode !== "sent") {
+      setSentSearch("");
+    }
     setMessages([]);
     setNextPageToken(null);
     setSelectedMessageKeys([]);
     setSelectedMessage(null);
     setMessageDetail(null);
     setRuleEditorMessage(null);
+  }
+
+  function showRepliesForMessage(detail: InboxMessageDetail | null, summary: InboxMessage) {
+    const recipient = extractEmailForSearch(detail?.from || summary.from);
+    const subject = normalizeReplySearchSubject(detail?.subject || summary.subject);
+    setSelectedMessage(null);
+    setMessageDetail(null);
+    setInboxMode("sent");
+    setSentSearch([recipient ? `to:${recipient}` : "", subject ? `subject:"${subject.replace(/"/g, '\\"')}"` : ""].filter(Boolean).join(" "));
+    setMessages([]);
+    setNextPageToken(null);
+    setSelectedMessageKeys([]);
   }
 
   function adjustLabelCountsByName(changesByName: Record<string, number>) {
@@ -1538,9 +1717,40 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pt-20 md:pt-0">
       {toast ? <InboxToastMessage toast={toast} /> : null}
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+
+      <div className="fixed inset-x-0 top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-white/60 bg-white/60 px-4 shadow-sm backdrop-blur-xl md:hidden">
+        <Button aria-label="Open menu" className="shrink-0 rounded-full border-white/70 bg-white/60 shadow-sm backdrop-blur-xl" onClick={onOpenMobileMenu} size="icon" type="button" variant="ghost">
+          <Menu className="h-5 w-5" />
+        </Button>
+        <button
+          className="min-w-0 flex-1 truncate rounded-full border border-white/70 bg-white/60 px-4 py-2 text-center text-sm font-semibold text-zinc-950 shadow-sm backdrop-blur-xl disabled:cursor-default"
+          disabled={inboxMode !== "inbox"}
+          onClick={() => setIsMobileLabelPickerOpen(true)}
+          type="button"
+        >
+          {inboxMode === "inbox" ? selectedLabel?.name || "Choose label" : inboxMode === "drafts" ? "Drafts" : "Sent"}
+        </button>
+        <Button aria-label="Open inbox filters" className="shrink-0 rounded-full border-white/70 bg-white/60 shadow-sm backdrop-blur-xl" onClick={() => setIsMobileFilterOpen(true)} size="icon" type="button" variant="outline">
+          <SlidersHorizontal className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <Button
+        aria-label="Compose email"
+        className="fixed bottom-5 right-5 z-40 h-14 w-14 rounded-full border-white/70 bg-white/70 shadow-xl shadow-slate-900/15 backdrop-blur-xl md:hidden"
+        onClick={() => {
+          setComposeInitial(null);
+          setIsComposeOpen(true);
+        }}
+        size="icon"
+        type="button"
+        variant="outline"
+      >
+        <Plus className="h-5 w-5" />
+      </Button>
 
       <div className={cn("grid min-w-0 gap-4 xl:gap-5", inboxMode === "inbox" ? "xl:grid-cols-[260px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
         {inboxMode === "inbox" ? (
@@ -1577,7 +1787,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
         ) : null}
 
         <div className="min-w-0 space-y-4">
-          <Card className="min-w-0 max-w-full">
+          <Card className="hidden min-w-0 max-w-full md:block">
             <CardContent className="flex flex-row flex-wrap items-start justify-between gap-3 p-3 sm:p-4">
               <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center">
                 <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
@@ -1660,7 +1870,10 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
           </Card>
 
           <Card className="min-w-0 max-w-full overflow-hidden">
-            <CardHeader className="flex-row flex-wrap items-start justify-between gap-3 space-y-0">
+            <div className="block border-b border-white/60 px-3 pb-2 pt-3 md:hidden">
+              <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
+            </div>
+            <CardHeader className="hidden flex-row flex-wrap items-start justify-between gap-3 space-y-0 md:flex">
               <div className="min-w-0">
                 <CardTitle>Email</CardTitle>
                 <CardDescription>{filteredMessages.length} loaded {inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "messages"}</CardDescription>
@@ -1680,7 +1893,7 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
               </label>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="flex justify-start">
+              <div className="hidden justify-start md:flex">
                 {filteredMessages.length > 0 ? (
                   <button
                     className="w-fit cursor-pointer text-sm font-medium text-blue-600 underline-offset-4 hover:text-blue-700 hover:underline"
@@ -1694,48 +1907,20 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
                 )}
               </div>
               {isLoading ? (
-                <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
-                  Loading {inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "messages"}...
-                </p>
+                <InboxLoadingProgress completed={messageLoadProgress.completed} total={messageLoadProgress.total} />
               ) : filteredMessages.length === 0 ? (
                 <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
                   {inboxMode === "drafts" ? "No drafts found." : inboxMode === "sent" ? "No sent messages found." : "No messages found for this label."}
                 </p>
               ) : (
                 filteredMessages.map((message) => (
-                  <div
-                    className="grid w-full grid-cols-[auto_auto_minmax(110px,180px)_minmax(0,1fr)_auto] items-center gap-3 border-b border-zinc-200 bg-white/45 px-3 py-2 transition-colors last:border-b-0 hover:bg-white/80"
+                  <InboxMessageRow
+                    isSelected={selectedMessageKeys.includes(getInboxMessageKey(message))}
                     key={`${message.accountId}-${message.id}-${message.mailbox ?? ""}`}
-                  >
-                    <input
-                      checked={selectedMessageKeys.includes(getInboxMessageKey(message))}
-                      className="h-4 w-4 shrink-0"
-                      onChange={() => toggleMessage(message)}
-                      type="checkbox"
-                    />
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-600">
-                      {getSenderInitial(message.sender || message.from)}
-                    </span>
-                    <button className="min-w-0 cursor-pointer truncate text-left text-sm font-medium text-zinc-800" onClick={() => void openMessage(message)} type="button">
-                      {message.sender || message.from || "Unknown sender"}
-                    </button>
-                    <button className="flex min-w-0 cursor-pointer items-center gap-2 text-left" onClick={() => void openMessage(message)} type="button">
-                      {message.labels[0] ? <Badge className="shrink-0 bg-blue-50 text-blue-700">{message.labels[0]}</Badge> : null}
-                      <span className="min-w-0 truncate text-sm font-medium text-zinc-950">{message.subject || "(no subject)"}</span>
-                      <span className="min-w-0 truncate text-xs text-zinc-400">{message.snippet || "No preview available."}</span>
-                    </button>
-                    <div className="flex shrink-0 items-center justify-end gap-2 text-xs text-zinc-500">
-                      <InboxRuleBadge rule={message.rule ?? null} compact />
-                      {message.hasAttachments ? (
-                        <span aria-label="Has attachment" title="Has attachment">
-                          <Download className="h-3.5 w-3.5" />
-                        </span>
-                      ) : null}
-                      <div className="w-24 text-right">
-                        <p className="truncate">{formatInboxListDate(message.date)}</p>
-                      </div>
-                    </div>
-                  </div>
+                    message={message}
+                    onOpen={() => void openMessage(message)}
+                    onToggle={() => toggleMessage(message)}
+                  />
                 ))
               )}
               {nextPageToken ? (
@@ -1748,24 +1933,77 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
         </div>
       </div>
 
-      {selectedMessage && !ruleEditorMessage ? (
-        <InboxMessageModal
-          detail={messageDetail}
-          error={detailError}
-          isLoading={isDetailLoading}
-          isLabelActionRunning={isLabelActionRunning}
-          labels={labels}
-          onClose={() => {
-            setSelectedMessage(null);
-            setMessageDetail(null);
-          }}
-          onDelete={(message) => void deleteSelectedMessages([message])}
-          onEditRule={(message) => setRuleEditorMessage(message)}
-          onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
-          onReply={(detail, summary) => openReplyComposer(detail, summary)}
+      {isMobileFilterOpen ? (
+        <InboxMobileFilterDrawer
+          accounts={accounts}
+          onClose={() => setIsMobileFilterOpen(false)}
+          onSelectAllAccounts={() => setSelectedAccountIds(accounts.map((account) => account.id))}
+          onSelectNoAccounts={() => setSelectedAccountIds([])}
+          onToggleAccount={toggleAccount}
           privacyMode={privacyMode}
-          summary={selectedMessage}
+          selectedAccountIds={selectedAccountIds}
+          setSort={setSort}
+          sort={sort}
         />
+      ) : null}
+
+      {isMobileLabelPickerOpen ? (
+        <InboxMobileLabelPicker
+          isCountsLoading={isCountsLoading}
+          labelCounts={labelCounts}
+          labels={labels}
+          onClose={() => setIsMobileLabelPickerOpen(false)}
+          onSelect={(labelId) => {
+            setSelectedLabelId(labelId);
+            setIsMobileLabelPickerOpen(false);
+          }}
+          selectedLabelId={selectedLabelId}
+        />
+      ) : null}
+
+      {selectedMessage && !ruleEditorMessage ? (
+        <>
+          <div className="md:hidden">
+            <InboxMessagePushView
+              detail={messageDetail}
+              error={detailError}
+              isLoading={isDetailLoading}
+              isLabelActionRunning={isLabelActionRunning}
+              labels={labels}
+              onClose={() => {
+                setSelectedMessage(null);
+                setMessageDetail(null);
+              }}
+              onDelete={(message) => void deleteSelectedMessages([message])}
+              onEditRule={(message) => setRuleEditorMessage(message)}
+              onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
+              onReply={(detail, summary) => openReplyComposer(detail, summary)}
+              onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
+              privacyMode={privacyMode}
+              summary={selectedMessage}
+            />
+          </div>
+          <div className="hidden md:block">
+            <InboxMessageModal
+              detail={messageDetail}
+              error={detailError}
+              isLoading={isDetailLoading}
+              isLabelActionRunning={isLabelActionRunning}
+              labels={labels}
+              onClose={() => {
+                setSelectedMessage(null);
+                setMessageDetail(null);
+              }}
+              onDelete={(message) => void deleteSelectedMessages([message])}
+              onEditRule={(message) => setRuleEditorMessage(message)}
+              onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
+              onReply={(detail, summary) => openReplyComposer(detail, summary)}
+              onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
+              privacyMode={privacyMode}
+              summary={selectedMessage}
+            />
+          </div>
+        </>
       ) : null}
 
       {ruleEditorMessage ? (
@@ -1802,15 +2040,33 @@ function InboxPage({ privacyMode }: { privacyMode: boolean }) {
       ) : null}
 
       {isComposeOpen ? (
-        <InboxComposeModal
-          accounts={accounts}
-          initial={composeInitial}
-          onClose={() => {
-            setIsComposeOpen(false);
-            setComposeInitial(null);
-          }}
-          privacyMode={privacyMode}
-        />
+        <>
+          <div className="md:hidden">
+            <InboxComposeModal
+              accounts={accounts}
+              initial={composeInitial}
+              isByoAiActive={isByoAiActive}
+              onClose={() => {
+                setIsComposeOpen(false);
+                setComposeInitial(null);
+              }}
+              privacyMode={privacyMode}
+              variant="push"
+            />
+          </div>
+          <div className="hidden md:block">
+            <InboxComposeModal
+              accounts={accounts}
+              initial={composeInitial}
+              isByoAiActive={isByoAiActive}
+              onClose={() => {
+                setIsComposeOpen(false);
+                setComposeInitial(null);
+              }}
+              privacyMode={privacyMode}
+            />
+          </div>
+        </>
       ) : null}
     </div>
   );
@@ -1825,7 +2081,7 @@ function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode:
   const selectedIndex = options.findIndex((option) => option.id === mode);
 
   return (
-    <div className="relative inline-grid h-10 w-full grid-cols-3 rounded-md border border-zinc-200 bg-[#f7f7f7] p-1 shadow-sm backdrop-blur-xl sm:w-72">
+    <div className="relative inline-grid h-10 w-full grid-cols-3 rounded-md border border-zinc-200 bg-[#f7f7f7] p-1 shadow-sm backdrop-blur-xl md:w-72">
       <span
         className={cn(
           "absolute bottom-1 left-1 top-1 w-[calc((100%-0.5rem)/3)] rounded-md bg-white shadow-sm transition-transform duration-300 ease-out",
@@ -1850,6 +2106,321 @@ function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode:
   );
 }
 
+function InboxMobileFilterDrawer({
+  accounts,
+  onClose,
+  onSelectAllAccounts,
+  onSelectNoAccounts,
+  onToggleAccount,
+  privacyMode,
+  selectedAccountIds,
+  setSort,
+  sort,
+}: {
+  accounts: EmailAccount[];
+  onClose: () => void;
+  onSelectAllAccounts: () => void;
+  onSelectNoAccounts: () => void;
+  onToggleAccount: (accountId: string) => void;
+  privacyMode: boolean;
+  selectedAccountIds: string[];
+  setSort: (sort: InboxSort) => void;
+  sort: InboxSort;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 md:hidden">
+      <button aria-label="Close filters" className="absolute inset-0 cursor-default bg-slate-950/20" onClick={onClose} type="button" />
+      <aside className="absolute right-0 top-0 flex h-full w-[min(86vw,360px)] flex-col border-l border-white/70 bg-white/70 p-4 shadow-2xl shadow-slate-900/20 backdrop-blur-xl">
+        <div className="mb-5 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-base font-semibold text-zinc-950">Filters</p>
+            <p className="text-sm text-zinc-500">Adjust this Inbox view.</p>
+          </div>
+          <Button aria-label="Close filters" onClick={onClose} size="icon" type="button" variant="ghost">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="space-y-5 overflow-y-auto">
+          <label className="block">
+            <span className="mb-2 block text-xs font-medium uppercase text-zinc-500">Sort</span>
+            <select
+              className="h-10 w-full rounded-md border border-white/70 bg-white/65 px-3 text-sm text-zinc-700 shadow-sm outline-none backdrop-blur-xl"
+              onChange={(event) => setSort(event.target.value as InboxSort)}
+              value={sort}
+            >
+              <option value="newest">Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="sender">Sender</option>
+              <option value="subject">Subject</option>
+            </select>
+          </label>
+
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <span className="text-xs font-medium uppercase text-zinc-500">Accounts</span>
+              <span className="text-xs text-zinc-500">{selectedAccountIds.length}/{accounts.length}</span>
+            </div>
+            <div className="mb-2 flex gap-2">
+              <Button onClick={onSelectAllAccounts} size="sm" type="button" variant="outline">
+                All
+              </Button>
+              <Button onClick={onSelectNoAccounts} size="sm" type="button" variant="outline">
+                None
+              </Button>
+            </div>
+            <div className="space-y-2 rounded-xl border border-white/70 bg-white/45 p-2 shadow-inner">
+              {accounts.map((account) => (
+                <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm text-zinc-700 hover:bg-white/60" key={account.id}>
+                  <input checked={selectedAccountIds.includes(account.id)} onChange={() => onToggleAccount(account.id)} type="checkbox" />
+                  <span className="min-w-0 flex-1 truncate">{formatEmailForPrivacy(account.email, privacyMode)}</span>
+                  <Badge className="capitalize">{providerLabel(account.provider)}</Badge>
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function InboxMobileLabelPicker({
+  isCountsLoading,
+  labelCounts,
+  labels,
+  onClose,
+  onSelect,
+  selectedLabelId,
+}: {
+  isCountsLoading: boolean;
+  labelCounts: Record<string, number | null>;
+  labels: Label[];
+  onClose: () => void;
+  onSelect: (labelId: string) => void;
+  selectedLabelId: string;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4 md:hidden">
+      <button aria-label="Close label picker" className="absolute inset-0 cursor-default" onClick={onClose} type="button" />
+      <div className="relative w-full max-w-sm rounded-2xl border border-white/70 bg-white/60 p-4 shadow-2xl shadow-slate-900/20 backdrop-blur-xl">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-base font-semibold text-zinc-950">Choose label</p>
+            <p className="text-sm text-zinc-500">Select a category to view.</p>
+          </div>
+          <Button aria-label="Close label picker" onClick={onClose} size="icon" type="button" variant="ghost">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="max-h-[60vh] space-y-2 overflow-y-auto">
+          {labels.map((label) => (
+            <button
+              className={cn(
+                "flex w-full items-center justify-between gap-3 rounded-md border border-white/60 bg-white/45 px-3 py-2 text-left text-sm text-zinc-700 shadow-sm backdrop-blur-xl",
+                selectedLabelId === label.id && "border-blue-100 bg-blue-50/80 text-blue-800",
+              )}
+              key={label.id}
+              onClick={() => onSelect(label.id)}
+              type="button"
+            >
+              <span className="truncate font-medium">{label.name}</span>
+              <span className="text-xs text-zinc-500">{isCountsLoading ? <Loader /> : labelCounts[label.id] ?? "-"}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InboxMessageRow({
+  isSelected,
+  message,
+  onOpen,
+  onToggle,
+}: {
+  isSelected: boolean;
+  message: InboxMessage;
+  onOpen: () => void;
+  onToggle: () => void;
+}) {
+  const replyCount = typeof message.replyCount === "number" ? message.replyCount : 0;
+
+  return (
+    <div className="border-b border-zinc-200 bg-white/45 transition-colors last:border-b-0 hover:bg-white/80">
+      <div className="hidden w-full grid-cols-[auto_auto_minmax(110px,180px)_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 md:grid">
+        <input checked={isSelected} className="h-4 w-4 shrink-0" onChange={onToggle} type="checkbox" />
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-600">
+          {getSenderInitial(message.sender || message.from)}
+        </span>
+        <button className="min-w-0 cursor-pointer truncate text-left text-sm font-medium text-zinc-800" onClick={onOpen} type="button">
+          {message.sender || message.from || "Unknown sender"}
+        </button>
+        <button className="flex min-w-0 cursor-pointer items-center gap-2 text-left" onClick={onOpen} type="button">
+          {message.labels[0] ? <Badge className="shrink-0 bg-blue-50 text-blue-700">{message.labels[0]}</Badge> : null}
+          <span className="min-w-0 truncate text-sm font-medium text-zinc-950">{message.subject || "(no subject)"}</span>
+          <span className="min-w-0 truncate text-xs text-zinc-400">{message.snippet || "No preview available."}</span>
+        </button>
+        <div className="flex shrink-0 items-center justify-end gap-2 text-xs text-zinc-500">
+          {replyCount > 0 ? (
+            <Tooltip text={`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`}>
+              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-zinc-950 px-1.5 text-[11px] font-semibold text-white">
+                {replyCount}
+              </span>
+            </Tooltip>
+          ) : null}
+          {message.hasAttachments ? (
+            <span aria-label="Has attachment" title="Has attachment">
+              <Download className="h-3.5 w-3.5" />
+            </span>
+          ) : null}
+          <div className="w-24 text-right">
+            <p className="truncate">{formatInboxListDate(message.date)}</p>
+          </div>
+        </div>
+      </div>
+
+      <button className="block w-full cursor-pointer px-4 py-3 text-left md:hidden" onClick={onOpen} type="button">
+        <div className="flex items-start justify-between gap-3">
+          <p className="min-w-0 truncate text-base font-bold text-zinc-950">{message.sender || message.from || "Unknown sender"}</p>
+          {message.hasAttachments ? <Download className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" /> : null}
+        </div>
+        <div className="mt-1 flex min-w-0 items-center gap-2">
+          <p className="min-w-0 truncate text-base text-zinc-950">{message.subject || "(no subject)"}</p>
+          {replyCount > 0 ? (
+            <span className="inline-flex h-6 min-w-8 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white/70 px-2 text-sm font-semibold text-zinc-700 shadow-sm backdrop-blur-xl">
+              {replyCount}
+            </span>
+          ) : null}
+        </div>
+        <div className="mt-1 flex min-w-0 items-center gap-3">
+          <p className="min-w-0 flex-1 truncate text-base text-zinc-500">{message.snippet || "No preview available."}</p>
+          <p className="shrink-0 text-sm font-semibold text-zinc-500">{formatInboxListDate(message.date)}</p>
+        </div>
+      </button>
+    </div>
+  );
+}
+
+function InboxMessagePushView({
+  detail,
+  error,
+  isLoading,
+  isLabelActionRunning,
+  labels,
+  onClose,
+  onDelete,
+  onEditRule,
+  onSetLabel,
+  onReply,
+  onShowReplies,
+  privacyMode,
+  summary,
+}: {
+  detail: InboxMessageDetail | null;
+  error: string | null;
+  isLoading: boolean;
+  isLabelActionRunning: boolean;
+  labels: Label[];
+  onClose: () => void;
+  onDelete: (message: InboxMessage) => void;
+  onEditRule: (message: InboxMessage) => void;
+  onSetLabel: (message: InboxMessage, labelId: string) => void;
+  onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
+  onShowReplies: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
+  privacyMode: boolean;
+  summary: InboxMessage;
+}) {
+  const rule = detail?.rule ?? summary.rule ?? null;
+  const replyCount = detail?.replyCount ?? summary.replyCount ?? 0;
+  const fromText = detail?.from || summary.from || summary.sender || "Unknown sender";
+
+  return (
+    <section className="fixed inset-0 z-50 flex flex-col bg-[#f7f7f7] text-zinc-950 md:hidden">
+      <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-zinc-200 bg-white/70 px-2 backdrop-blur-xl">
+        <Button aria-label="Back to inbox" onClick={onClose} size="icon" type="button" variant="ghost">
+          <ChevronLeft className="h-5 w-5" />
+        </Button>
+        <div className="min-w-0 flex-1" />
+        <div className="flex shrink-0 items-center gap-1">
+          <Button aria-label="Reply" onClick={() => onReply(detail, summary)} size="icon" type="button" variant="ghost">
+            <Reply className="h-4 w-4" />
+          </Button>
+          <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" onClick={() => onDelete(summary)} size="icon" type="button" variant="ghost">
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-4">
+        <div className="mx-auto max-w-2xl space-y-4">
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <InboxRuleBadge onClick={() => onEditRule(summary)} rule={rule} />
+                {replyCount > 0 ? (
+                  <button
+                    className="inline-flex cursor-pointer items-center rounded-full border border-white/70 bg-white/65 px-2.5 py-1 text-xs font-medium text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/80"
+                    onClick={() => onShowReplies(detail, summary)}
+                    type="button"
+                  >
+                    {replyCount} {replyCount === 1 ? "reply" : "replies"}
+                  </button>
+                ) : null}
+              </div>
+              <p className="shrink-0 text-xs text-zinc-500">{formatInboxListDate(detail?.date || summary.date)}</p>
+            </div>
+            <h1 className="text-lg font-semibold leading-tight text-zinc-950">{detail?.subject || summary.subject || "(no subject)"}</h1>
+          </div>
+
+          <div className="rounded-2xl border border-white/70 bg-white/65 p-3 shadow-sm backdrop-blur-xl">
+            <div className="flex items-start gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-violet-100 text-sm font-semibold text-violet-700">
+                {getSenderInitial(fromText)}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-zinc-950">{extractDisplayNameFromText(fromText) || summary.sender || fromText}</p>
+                <p className="truncate text-xs text-zinc-500">From: {formatEmailTextForPrivacy(fromText, privacyMode)}</p>
+                {detail?.to ? <p className="truncate text-xs text-zinc-500">To: {formatEmailTextForPrivacy(detail.to, privacyMode)}</p> : null}
+              </div>
+              <p className="shrink-0 text-right text-xs text-zinc-500">{formatDateTime(detail?.date || summary.date)}</p>
+            </div>
+          </div>
+
+          {isLoading ? <p className="rounded-xl border border-white/70 bg-white/60 p-4 text-sm text-zinc-500">Loading email...</p> : null}
+          {error ? <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+
+          {detail ? (
+            <>
+              <div className="rounded-2xl border border-white/70 bg-white/75 p-4 shadow-sm backdrop-blur-xl">
+                {detail.bodyHtml ? (
+                  <AutoSizeEmailFrame html={detail.bodyHtml} title="Email body" />
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-zinc-700">{detail.bodyText || "No body content."}</pre>
+                )}
+              </div>
+              {detail.attachments.length > 0 ? (
+                <div className="space-y-2">
+                  {detail.attachments.map((attachment, index) => (
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-white/70 bg-white/65 px-3 py-2 text-sm shadow-sm backdrop-blur-xl" key={`${attachment.filename}-${index}`}>
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-zinc-950">{attachment.filename}</p>
+                        <p className="text-xs text-zinc-500">{attachment.type} {attachment.size ? ` / ${formatFileSize(attachment.size)}` : ""}</p>
+                      </div>
+                      <Download className="h-4 w-4 shrink-0 text-zinc-500" />
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function InboxToastMessage({ toast }: { toast: InboxToast }) {
   return (
     <div className="fixed right-5 top-20 z-50">
@@ -1862,6 +2433,22 @@ function InboxToastMessage({ toast }: { toast: InboxToast }) {
         )}
       >
         {toast.message}
+      </div>
+    </div>
+  );
+}
+
+function InboxLoadingProgress({ completed, total }: { completed: number; total: number }) {
+  const safeTotal = Math.max(1, total);
+  const progress = Math.max(0, Math.min(100, Math.round((completed / safeTotal) * 100)));
+
+  return (
+    <div aria-label="Loading messages" className="rounded-md border border-dashed border-zinc-300 p-8" role="status">
+      <div className="mx-auto h-2 max-w-sm overflow-hidden rounded-full bg-zinc-200/80">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-sky-500 to-indigo-500 transition-all duration-300 ease-out"
+          style={{ width: `${progress}%` }}
+        />
       </div>
     </div>
   );
@@ -1919,6 +2506,7 @@ function InboxMessageModal({
   onEditRule,
   onSetLabel,
   onReply,
+  onShowReplies,
   privacyMode,
   summary,
 }: {
@@ -1932,21 +2520,32 @@ function InboxMessageModal({
   onEditRule: (message: InboxMessage) => void;
   onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
+  onShowReplies: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
   privacyMode: boolean;
   summary: InboxMessage;
 }) {
   const rule = detail?.rule ?? summary.rule ?? null;
   const currentLabelId = getCommonMessageLabelId([summary], labels);
+  const replyCount = detail?.replyCount ?? summary.replyCount ?? 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
       <div className="max-h-[92vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
-        <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/72 shadow-inner ring-1 ring-white/60">
+        <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
           <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
             <div className="min-w-0">
               <h3 className="mt-1 truncate text-lg font-semibold text-zinc-950">{detail?.subject || summary.subject || "(no subject)"}</h3>
               <div className="mt-2">
-                <InboxRuleBadge rule={rule} />
+                <InboxRuleBadge onClick={() => onEditRule(summary)} rule={rule} />
+                {replyCount > 0 ? (
+                  <button
+                    className="ml-3 cursor-pointer text-sm font-medium text-blue-600 underline-offset-4 hover:text-blue-700 hover:underline"
+                    onClick={() => onShowReplies(detail, summary)}
+                    type="button"
+                  >
+                    {replyCount} {replyCount === 1 ? "reply" : "replies"}
+                  </button>
+                ) : null}
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -1957,17 +2556,16 @@ function InboxMessageModal({
                 onChange={(labelId) => onSetLabel(summary, labelId)}
                 value={currentLabelId}
               />
-              <Button onClick={() => onEditRule(summary)} type="button" variant="outline">
-                <Pencil className="h-4 w-4" />
-                {rule ? "Edit Rule" : "Create Rule"}
-              </Button>
-              <Button onClick={() => onDelete(summary)} type="button" variant="outline">
-                <Trash2 className="h-4 w-4" />
-                Delete
-              </Button>
-              <Button onClick={() => onReply(detail, summary)} type="button" variant="outline">
-                Reply
-              </Button>
+              <Tooltip side="bottom" text="Delete email">
+                <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" onClick={() => onDelete(summary)} size="icon" type="button" variant="outline">
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </Tooltip>
+              <Tooltip side="bottom" text="Reply">
+                <Button aria-label="Reply" onClick={() => onReply(detail, summary)} size="icon" type="button" variant="outline">
+                  <Reply className="h-4 w-4" />
+                </Button>
+              </Tooltip>
               <Button aria-label="Close email" onClick={onClose} size="icon" type="button" variant="ghost">
                 <X className="h-4 w-4" />
               </Button>
@@ -2018,33 +2616,71 @@ function InboxMessageModal({
   );
 }
 
-function InboxRuleBadge({ compact = false, rule }: { compact?: boolean; rule?: InboxRuleStatus | null }) {
+function AutoSizeEmailFrame({ html, title }: { html: string; title: string }) {
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const [height, setHeight] = useState(700);
+
+  function resizeFrame() {
+    const frame = frameRef.current;
+    const documentElement = frame?.contentDocument?.documentElement;
+    const body = frame?.contentDocument?.body;
+    const nextHeight = Math.max(documentElement?.scrollHeight ?? 0, body?.scrollHeight ?? 0, 320);
+    if (nextHeight) {
+      setHeight(nextHeight);
+    }
+  }
+
+  return (
+    <iframe
+      className="w-full rounded-xl bg-white"
+      onLoad={resizeFrame}
+      ref={frameRef}
+      sandbox="allow-same-origin"
+      scrolling="no"
+      srcDoc={html}
+      style={{ height }}
+      title={title}
+    />
+  );
+}
+
+function InboxRuleBadge({ compact = false, onClick, rule }: { compact?: boolean; onClick?: () => void; rule?: InboxRuleStatus | null }) {
   const status = !rule
     ? {
-        className: "bg-zinc-400 ring-zinc-200",
+        className: "border-zinc-200 bg-zinc-100 text-zinc-600",
+        label: "No rule",
         text: "No associated rule",
       }
     : rule.isPending
       ? {
-          className: "bg-amber-400 ring-amber-100",
+          className: "border-amber-200 bg-amber-50 text-amber-700",
+          label: "Pending",
           text: "Rule created. Needs review",
         }
       : {
-          className: "bg-emerald-500 ring-emerald-100",
+          className: "border-emerald-200 bg-emerald-50 text-emerald-700",
+          label: "Reviewed",
           text: "Sorted via rule",
         };
 
+  const className = cn(
+    "inline-flex items-center rounded-full border font-medium",
+    status.className,
+    compact ? "px-2 py-0.5 text-[11px]" : "px-2.5 py-1 text-xs",
+    onClick && "cursor-pointer shadow-sm ring-1 ring-white/70 transition hover:-translate-y-px hover:bg-white/80 hover:shadow-md",
+  );
+
   return (
-    <Tooltip text={status.text}>
-      <span
-        aria-label={status.text}
-        className={cn(
-          "inline-block rounded-full ring-4",
-          status.className,
-          compact ? "h-2.5 w-2.5" : "h-3 w-3",
-        )}
-        role="img"
-      />
+    <Tooltip align="start" side="bottom" text={onClick ? `${status.text}. Click to ${rule ? "edit" : "create"} rule.` : status.text}>
+      {onClick ? (
+        <button aria-label={status.text} className={className} onClick={onClick} type="button">
+          {status.label}
+        </button>
+      ) : (
+        <span aria-label={status.text} className={className}>
+          {status.label}
+        </span>
+      )}
     </Tooltip>
   );
 }
@@ -2066,15 +2702,18 @@ function InboxRuleModal({
 }) {
   const [existingRule, setExistingRule] = useState<EmailRule | null>(null);
   const [selectedLabel, setSelectedLabel] = useState("");
+  const [mobileSelectedLabels, setMobileSelectedLabels] = useState<string[]>([]);
+  const [isMobileLabelMenuOpen, setIsMobileLabelMenuOpen] = useState(false);
   const [labelReason, setLabelReason] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isExistingRule = Boolean(existingRule);
-  const originalSelectedLabel = existingRule?.labelsApplied[0] ?? "";
+  const originalSelectedLabel = existingRule?.labelsApplied.length === 1 ? existingRule.labelsApplied[0] : "";
   const originalReason = originalSelectedLabel ? existingRule?.labelReasons?.[originalSelectedLabel] ?? "" : "";
   const hasChanges = selectedLabel !== originalSelectedLabel || labelReason.trim() !== originalReason.trim();
-  const canReview = Boolean(selectedLabel && (!isExistingRule || existingRule?.isPending || hasChanges));
+  const mobileLabelError = mobileSelectedLabels.length > 1 ? "Choose one label before reviewing this rule." : "";
+  const canReview = Boolean(selectedLabel && !mobileLabelError && (!isExistingRule || existingRule?.isPending || hasChanges));
   const reviewedButtonClass = labelReason.trim()
     ? "bg-emerald-600 text-white hover:bg-emerald-700"
     : "bg-amber-500 text-white hover:bg-amber-600";
@@ -2091,6 +2730,7 @@ function InboxRuleModal({
         if (response.status === 404) {
           setExistingRule(null);
           setSelectedLabel("");
+          setMobileSelectedLabels([]);
           setLabelReason("");
           return;
         }
@@ -2101,9 +2741,11 @@ function InboxRuleModal({
         }
 
         const rule = data.rule as EmailRule;
-        const firstLabel = rule.labelsApplied[0] ?? "";
+        const savedLabels = Array.isArray(rule.labelsApplied) ? rule.labelsApplied : [];
+        const firstLabel = savedLabels.length === 1 ? savedLabels[0] : "";
         setExistingRule(rule);
         setSelectedLabel(firstLabel);
+        setMobileSelectedLabels(savedLabels);
         setLabelReason(firstLabel ? rule.labelReasons?.[firstLabel] ?? "" : "");
       } catch {
         setError("Could not load email rule.");
@@ -2114,6 +2756,33 @@ function InboxRuleModal({
 
     void loadRule();
   }, [summary.id]);
+
+  function selectSingleLabel(labelName: string) {
+    setSelectedLabel(labelName);
+    setMobileSelectedLabels([labelName]);
+    setLabelReason(existingRule?.labelReasons?.[labelName] ?? "");
+  }
+
+  function toggleMobileSelectedLabel(labelName: string) {
+    setMobileSelectedLabels((current) => {
+      const isSelected = current.includes(labelName);
+      if (!isSelected && current.length > 0) {
+        return current;
+      }
+
+      const next = isSelected ? current.filter((name) => name !== labelName) : [labelName];
+      if (next.length === 1) {
+        setSelectedLabel(next[0]);
+        setLabelReason(existingRule?.labelReasons?.[next[0]] ?? "");
+      } else {
+        setSelectedLabel("");
+        if (next.length === 0) {
+          setLabelReason("");
+        }
+      }
+      return next;
+    });
+  }
 
   async function saveRule() {
     if (!canReview) {
@@ -2165,7 +2834,7 @@ function InboxRuleModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
       <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
-        <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/72 shadow-inner ring-1 ring-white/60">
+        <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
           <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
             <div className="min-w-0">
               <h3 className="truncate text-lg font-semibold text-zinc-950">Edit Label</h3>
@@ -2194,7 +2863,50 @@ function InboxRuleModal({
               <div className="grid min-w-0 gap-4 lg:grid-cols-2">
                 <div className="min-w-0">
                   <p className="mb-2 text-xs font-medium uppercase text-zinc-500">Available labels</p>
-                  <div className="max-h-72 space-y-2 overflow-auto rounded-md border border-zinc-200 p-2">
+                  <div className="relative mb-2 block lg:hidden">
+                    <button
+                      className="flex h-10 w-full cursor-pointer items-center justify-between gap-3 rounded-md border border-white/70 bg-white/65 px-3 text-left text-sm text-zinc-700 shadow-sm backdrop-blur-xl"
+                      onClick={() => setIsMobileLabelMenuOpen((current) => !current)}
+                      type="button"
+                    >
+                      <span className="min-w-0 truncate">
+                        {mobileSelectedLabels.length > 0 ? mobileSelectedLabels.join(", ") : "Choose label"}
+                      </span>
+                      <ChevronRight className={cn("h-4 w-4 shrink-0 transition-transform", isMobileLabelMenuOpen && "rotate-90")} />
+                    </button>
+                    {mobileLabelError ? <p className="mt-2 text-xs text-red-600">{mobileLabelError}</p> : null}
+                    {isMobileLabelMenuOpen ? (
+                      <div className="absolute left-0 right-0 top-12 z-20 max-h-60 space-y-1 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-2 shadow-xl">
+                        {labels.map((label) => {
+                          const isChecked = mobileSelectedLabels.includes(label.name);
+                          const isDisabled = mobileSelectedLabels.length > 0 && !isChecked;
+
+                          return (
+                            <label
+                              className={cn(
+                                "flex items-start gap-2 rounded-md px-2 py-2 text-sm text-zinc-700 hover:bg-zinc-50",
+                                isDisabled ? "cursor-not-allowed opacity-45 hover:bg-transparent" : "cursor-pointer",
+                              )}
+                              key={label.id}
+                            >
+                              <input
+                                checked={isChecked}
+                                className="mt-0.5"
+                                disabled={isDisabled}
+                                onChange={() => toggleMobileSelectedLabel(label.name)}
+                                type="checkbox"
+                              />
+                              <span className="min-w-0">
+                                <span className="block font-medium text-zinc-950">{label.name}</span>
+                                <span className="mt-1 block text-xs leading-5 text-zinc-500">{renderLabelDescription(label.description, "0.90")}</span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="hidden max-h-72 space-y-2 overflow-auto rounded-md border border-zinc-200 p-2 lg:block">
                     {labels.map((label) => (
                       <button
                         className={cn(
@@ -2202,10 +2914,7 @@ function InboxRuleModal({
                           selectedLabel === label.name && "border-emerald-200 bg-emerald-50 text-emerald-900 hover:border-emerald-200 hover:bg-emerald-50",
                         )}
                         key={label.id}
-                        onClick={() => {
-                          setSelectedLabel(label.name);
-                          setLabelReason(existingRule?.labelReasons?.[label.name] ?? "");
-                        }}
+                        onClick={() => selectSingleLabel(label.name)}
                         type="button"
                       >
                         <span className="block font-medium text-zinc-950">{label.name}</span>
@@ -2217,12 +2926,13 @@ function InboxRuleModal({
                 <div className="min-w-0">
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <p className="text-xs font-medium uppercase text-zinc-500">Selected label</p>
-                    <span className="text-xs text-zinc-500">{selectedLabel ? "Ready" : "Choose one"}</span>
                   </div>
-                  <div className="min-h-72 rounded-md border border-dashed border-zinc-300 p-3">
+                  <div className="lg:min-h-72 lg:rounded-md lg:border lg:border-dashed lg:border-zinc-300 lg:p-3">
                     {selectedLabel ? (
-                      <div className="rounded-md bg-zinc-100 p-3 text-sm">
-                        <p className="font-medium text-zinc-950">{selectedLabel}</p>
+                      <div className="text-sm">
+                        <div className="border-b border-zinc-200 pb-2 lg:rounded-md lg:border-b-0 lg:bg-zinc-100 lg:p-3">
+                          <p className="font-medium text-zinc-950">{selectedLabel}</p>
+                        </div>
                         <label className="mt-3 block">
                           <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">When to use this label</span>
                           <textarea
@@ -2267,13 +2977,17 @@ function InboxRuleModal({
 function InboxComposeModal({
   accounts,
   initial,
+  isByoAiActive,
   onClose,
   privacyMode,
+  variant = "modal",
 }: {
   accounts: EmailAccount[];
   initial: Partial<InboxComposeDraft> | null;
+  isByoAiActive: boolean;
   onClose: () => void;
   privacyMode: boolean;
+  variant?: "modal" | "push";
 }) {
   const [accountId, setAccountId] = useState(initial?.accountId || accounts[0]?.id || "");
   const [to, setTo] = useState(initial?.to ?? "");
@@ -2292,6 +3006,14 @@ function InboxComposeModal({
   const [aiError, setAiError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const replyContext = initial?.replyContext ?? null;
+  const isPush = variant === "push";
+  const composeFormId = `inbox-compose-form-${variant}`;
+
+  useEffect(() => {
+    if (!isByoAiActive) {
+      setIsAiComposerOpen(false);
+    }
+  }, [isByoAiActive]);
 
   async function sendEmail(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2352,23 +3074,32 @@ function InboxComposeModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
-      <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
-        <div className="max-h-[calc(92vh-2rem)] overflow-y-auto rounded-xl bg-white/72 p-5 shadow-inner ring-1 ring-white/60">
-          <div className="mb-4 flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-sm font-semibold text-zinc-950">New email</h3>
-            </div>
-            <Button aria-label="Close compose" onClick={onClose} size="icon" type="button" variant="ghost">
-              <X className="h-4 w-4" />
+    <div className={cn("fixed inset-0 z-50", isPush ? "flex flex-col bg-[#f7f7f7] md:hidden" : "flex items-center justify-center bg-slate-950/20 p-4")}>
+      <div className={cn(isPush ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]")}>
+        <div className={cn(isPush ? "min-h-0 flex-1 overflow-y-auto bg-transparent p-4 pb-28" : "max-h-[calc(92vh-2rem)] overflow-y-auto rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60")}>
+          <div className={cn("mb-4 flex items-center justify-between gap-4", isPush && "sticky -top-4 z-10 -mx-4 -mt-4 border-b border-zinc-200 bg-white/75 px-2 py-2 backdrop-blur-xl")}>
+            <Button aria-label={isPush ? "Back to email" : "Close compose"} onClick={onClose} size="icon" type="button" variant="ghost">
+              {isPush ? <ChevronLeft className="h-5 w-5" /> : <X className="h-4 w-4" />}
             </Button>
+            <h3 className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-zinc-950">
+              {replyContext ? "Reply" : "New email"}
+            </h3>
+            {isPush ? (
+              <Button aria-label="Send email" disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} form={composeFormId} size="icon" type="submit" variant="ghost">
+                {isSaving ? <Loader /> : <Send className="h-4 w-4" />}
+              </Button>
+            ) : (
+              <span className="w-10" />
+            )}
           </div>
-        <form className="space-y-4" onSubmit={sendEmail}>
+        <form className="space-y-4" id={composeFormId} onSubmit={sendEmail}>
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           {saved ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">Email sent.</p> : null}
-          <div className="flex justify-end border-b border-zinc-200 pb-3">
-            <AiEnableSwitch canEnable enabled={isAiComposerOpen} label="AI Composer" onChange={setIsAiComposerOpen} />
-          </div>
+          {isByoAiActive ? (
+            <div className="flex justify-end border-b border-zinc-200 pb-3">
+              <AiEnableSwitch canEnable enabled={isAiComposerOpen} label="AI Composer" onChange={setIsAiComposerOpen} />
+            </div>
+          ) : null}
           {replyContext ? (
             <div className="rounded-xl border border-zinc-200 bg-white/60 p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-zinc-200 pb-3">
@@ -2409,7 +3140,7 @@ function InboxComposeModal({
               )}
             </div>
           ) : null}
-          {isAiComposerOpen ? (
+          {isByoAiActive && isAiComposerOpen ? (
             <div className="rounded-md border border-emerald-100 bg-emerald-50/50 p-4">
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                 <div className="space-y-3">
@@ -2532,7 +3263,7 @@ function InboxComposeModal({
               </div>
             ) : null}
           </label>
-          <div className="flex justify-end gap-2 border-t border-zinc-200 pt-4">
+          <div className={cn("flex justify-end gap-2 border-t border-zinc-200 pt-4", isPush && "hidden")}>
             <Button onClick={onClose} type="button" variant="outline">Cancel</Button>
             <Button disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} type="submit">
               {isSaving ? "Sending..." : "Send email"}
@@ -2551,7 +3282,7 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
-  const [activeDescriptionInput, setActiveDescriptionInput] = useState<"new" | "edit" | null>(null);
+  const [isAddLabelModalOpen, setIsAddLabelModalOpen] = useState(false);
   const [confidenceThreshold, setConfidenceThreshold] = useState("0.90");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -2564,8 +3295,6 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const newDescriptionRef = useRef<HTMLInputElement | null>(null);
-  const editDescriptionRef = useRef<HTMLInputElement | null>(null);
   const csvUploadRef = useRef<HTMLInputElement | null>(null);
   const syncedLabelCount = labels.filter((label) => isLabelFullySynced(label, connectedAccountCount)).length;
   const unsyncedLabelCount = labels.length - syncedLabelCount;
@@ -2645,6 +3374,8 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
 
       setNewName("");
       setNewDescription("");
+      setUploadError(null);
+      setIsAddLabelModalOpen(false);
       await loadLabels();
     } catch {
       setError("Could not create label.");
@@ -2735,6 +3466,7 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
       }
 
       await loadLabels();
+      setIsAddLabelModalOpen(false);
     } catch {
       setUploadError("Could not upload labels.");
     } finally {
@@ -2931,41 +3663,6 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
     }
   }
 
-  function insertConfidenceThresholdTemplate(kind: "new" | "edit") {
-    const input = kind === "new" ? newDescriptionRef.current : editDescriptionRef.current;
-
-    if (!input || document.activeElement !== input) {
-      return;
-    }
-
-    const value = kind === "new" ? newDescription : editDescription;
-    const selectionStart = input.selectionStart ?? value.length;
-    const selectionEnd = input.selectionEnd ?? selectionStart;
-    const nextValue =
-      value.slice(0, selectionStart) + CONFIDENCE_THRESHOLD_TEMPLATE + value.slice(selectionEnd);
-
-    if (nextValue.length > LABEL_DESCRIPTION_MAX_LENGTH) {
-      setError(`Label description must be ${LABEL_DESCRIPTION_MAX_LENGTH} characters or less.`);
-      return;
-    }
-
-    if (kind === "new") {
-      setNewDescription(nextValue);
-    } else {
-      setEditDescription(nextValue);
-    }
-
-    window.requestAnimationFrame(() => {
-      input.focus();
-      const nextCursor = selectionStart + CONFIDENCE_THRESHOLD_TEMPLATE.length;
-      input.setSelectionRange(nextCursor, nextCursor);
-    });
-  }
-
-  function isTemplateButtonEnabled(kind: "new" | "edit") {
-    return activeDescriptionInput === kind;
-  }
-
   return (
     <div className="space-y-6">
       {uploadError ? (
@@ -2987,7 +3684,7 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
       {deleteConfirmationIds.length > 0 ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
           <div className="w-[min(460px,100%)] rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
-            <div className="rounded-xl bg-white/72 p-5 shadow-inner ring-1 ring-white/60">
+            <div className="rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <h2 className="text-base font-semibold text-zinc-950">Delete label?</h2>
@@ -3024,7 +3721,92 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
           </div>
         </div>
       ) : null}
-      <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-[220px_260px_minmax(0,1fr)]">
+      {isAddLabelModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+          <div className="w-[min(560px,100%)] rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+            <div className="rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-semibold text-zinc-950">Add Label</h2>
+                  <p className="mt-1 text-sm text-zinc-500">Create labels that can be used by rules and reviews.</p>
+                </div>
+                <Button
+                  aria-label="Close add label modal"
+                  disabled={isSaving}
+                  onClick={() => setIsAddLabelModalOpen(false)}
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+
+              {error ? <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+
+              <form className="mt-5 space-y-4" onSubmit={handleAddLabel}>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-zinc-700" htmlFor="new-label-name">Name</label>
+                  <input
+                    className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                    id="new-label-name"
+                    maxLength={LABEL_NAME_MAX_LENGTH}
+                    onChange={(event) => setNewName(event.target.value)}
+                    pattern="[A-Za-z0-9 _-]+"
+                    required
+                    title="Letters, numbers, spaces, hyphens, and underscores only"
+                    value={newName}
+                  />
+                  <div className="mt-1 flex justify-end text-xs text-zinc-500">
+                    <span>{newName.length}/{LABEL_NAME_MAX_LENGTH}</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-zinc-700" htmlFor="new-label-description">Description</label>
+                  <input
+                    className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                    id="new-label-description"
+                    maxLength={LABEL_DESCRIPTION_MAX_LENGTH}
+                    onChange={(event) => setNewDescription(event.target.value)}
+                    required
+                    value={newDescription}
+                  />
+                  <div className="mt-1 flex justify-end text-xs text-zinc-500">
+                    <span>{newDescription.length}/{LABEL_DESCRIPTION_MAX_LENGTH}</span>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap justify-between gap-2 border-t border-zinc-200 pt-4">
+                  <div>
+                    <input
+                      accept=".csv,text/csv"
+                      className="hidden"
+                      onChange={(event) => void handleCsvUpload(event)}
+                      ref={csvUploadRef}
+                      type="file"
+                    />
+                    <Button disabled={isSaving} onClick={() => csvUploadRef.current?.click()} type="button" variant="outline">
+                      {labelAction === "upload" ? <Loader /> : <Upload className="h-4 w-4" />}
+                      {labelAction === "upload" ? "Uploading..." : "Upload CSV"}
+                    </Button>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button disabled={isSaving} onClick={() => setIsAddLabelModalOpen(false)} type="button" variant="outline">
+                      Cancel
+                    </Button>
+                    <Button disabled={isSaving} type="submit">
+                      {labelAction === "create" ? <Loader /> : <Plus className="h-4 w-4" />}
+                      {labelAction === "create" ? "Adding..." : "Add Label"}
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="items-center text-center">
             <CardDescription>Synced Labels</CardDescription>
@@ -3047,84 +3829,6 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
                 {labelAction === "sync" ? "Syncing..." : "Sync all"}
               </Button>
             ) : null}
-          </CardContent>
-        </Card>
-        <Card className="min-w-0 lg:col-span-2 xl:col-span-1">
-          <CardHeader className="gap-3 md:flex-row md:items-start md:justify-between md:space-y-0">
-            <div className="min-w-0">
-              <CardTitle>Add Label</CardTitle>
-              <CardDescription>Create labels that can be used by rules and reviews.</CardDescription>
-            </div>
-            <div className="shrink-0">
-              <input
-                accept=".csv,text/csv"
-                className="hidden"
-                onChange={(event) => void handleCsvUpload(event)}
-                ref={csvUploadRef}
-                type="file"
-              />
-              <Button className="w-full sm:w-auto" disabled={isSaving} onClick={() => csvUploadRef.current?.click()} type="button" variant="outline">
-                {labelAction === "upload" ? <Loader /> : <Upload className="h-4 w-4" />}
-                {labelAction === "upload" ? "Uploading..." : "Upload CSV"}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <form className="grid gap-3 2xl:grid-cols-[minmax(0,220px)_1fr_auto]" onSubmit={handleAddLabel}>
-              <div>
-                <input
-                  className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
-                  maxLength={LABEL_NAME_MAX_LENGTH}
-                  onChange={(event) => setNewName(event.target.value)}
-                  pattern="[A-Za-z0-9 _-]+"
-                  placeholder="Name"
-                  required
-                  title="Letters, numbers, spaces, hyphens, and underscores only"
-                  value={newName}
-                />
-                <div className="mt-1 flex justify-end text-xs text-zinc-500">
-                  <span>
-                    {newName.length}/{LABEL_NAME_MAX_LENGTH}
-                  </span>
-                </div>
-              </div>
-              <div>
-                <div className="flex gap-2">
-                  <input
-                    className="h-10 min-w-0 flex-1 glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
-                    maxLength={LABEL_DESCRIPTION_MAX_LENGTH}
-                    onBlur={() => window.setTimeout(() => setActiveDescriptionInput(null), 0)}
-                    onChange={(event) => setNewDescription(event.target.value)}
-                    onFocus={() => setActiveDescriptionInput("new")}
-                    placeholder="Description"
-                    ref={newDescriptionRef}
-                    value={newDescription}
-                  />
-                  <Button
-                    aria-label="Insert confidence threshold template"
-                    disabled={!isTemplateButtonEnabled("new")}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => insertConfidenceThresholdTemplate("new")}
-                    size="icon"
-                    type="button"
-                    variant="outline"
-                  >
-                    <Tooltip text="Insert {confidenceThreshold}. Saved labels keep the template, and read-only views show your current threshold value.">
-                      <GaugeCircle className="h-4 w-4" />
-                    </Tooltip>
-                  </Button>
-                </div>
-                <div className="mt-1 flex justify-end text-xs text-zinc-500">
-                  <span>
-                    {newDescription.length}/{LABEL_DESCRIPTION_MAX_LENGTH}
-                  </span>
-                </div>
-              </div>
-              <Button className="self-start 2xl:w-auto" disabled={isSaving} type="submit">
-                {labelAction === "create" ? <Loader /> : <Plus className="h-4 w-4" />}
-                {labelAction === "create" ? "Adding..." : "Add Label"}
-              </Button>
-            </form>
           </CardContent>
         </Card>
       </div>
@@ -3150,6 +3854,18 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
             >
               {labelAction === "delete" ? <Loader /> : <Trash2 className="h-4 w-4" />}
               {labelAction === "delete" ? "Deleting..." : "Delete selected"}
+            </Button>
+            <Button
+              disabled={isSaving}
+              onClick={() => {
+                setError(null);
+                setUploadError(null);
+                setIsAddLabelModalOpen(true);
+              }}
+              type="button"
+            >
+              <Plus className="h-4 w-4" />
+              Add Label
             </Button>
           </div>
         </CardHeader>
@@ -3207,30 +3923,12 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
                             </div>
                           </div>
                           <div>
-                            <div className="flex gap-2">
-                              <input
-	                                className="h-10 min-w-0 flex-1 glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
-	                                maxLength={LABEL_DESCRIPTION_MAX_LENGTH}
-	                                onBlur={() => window.setTimeout(() => setActiveDescriptionInput(null), 0)}
-                                onChange={(event) => setEditDescription(event.target.value)}
-                                onFocus={() => setActiveDescriptionInput("edit")}
-                                ref={editDescriptionRef}
-                                value={editDescription}
-                              />
-                              <Button
-	                                aria-label="Insert confidence threshold template"
-	                                disabled={!isTemplateButtonEnabled("edit")}
-                                onMouseDown={(event) => event.preventDefault()}
-                                onClick={() => insertConfidenceThresholdTemplate("edit")}
-                                size="icon"
-                                type="button"
-                                variant="outline"
-                              >
-                                <Tooltip text="Insert {confidenceThreshold}. Saved labels keep the template, and read-only views show your current threshold value.">
-                                  <GaugeCircle className="h-4 w-4" />
-                                </Tooltip>
-                              </Button>
-                            </div>
+                            <input
+                              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                              maxLength={LABEL_DESCRIPTION_MAX_LENGTH}
+                              onChange={(event) => setEditDescription(event.target.value)}
+                              value={editDescription}
+                            />
                             <div className="mt-1 flex justify-end text-xs text-zinc-500">
                               <span>
                                 {editDescription.length}/{LABEL_DESCRIPTION_MAX_LENGTH}
@@ -4121,7 +4819,7 @@ function RuleReviewPage({
         {addRuleStep === "search" ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
           <Card className="min-h-[720px] max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
-            <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/72 shadow-inner ring-1 ring-white/60">
+            <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
               <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
                 <div className="min-w-0">
                   <CardTitle>Add Rule</CardTitle>
@@ -4201,7 +4899,7 @@ function RuleReviewPage({
         {selectedRule ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
         <Card className="max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
-          <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/72 shadow-inner ring-1 ring-white/60">
+          <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
             <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
               <div className="min-w-0">
                 <CardTitle>Rule Details</CardTitle>
@@ -4472,6 +5170,14 @@ function AiPromptLibraryPage({ privacyMode }: { privacyMode: boolean }) {
 function ByoAiPage() {
   const [providers, setProviders] = useState<Record<string, AiProviderDefinition>>({});
   const [platforms, setPlatforms] = useState<AiPlatformDraft[]>([]);
+  const [platformModal, setPlatformModal] = useState<AiPlatformDraft | null>(null);
+  const [platformMenuId, setPlatformMenuId] = useState<string | null>(null);
+  const [platformDeleteTarget, setPlatformDeleteTarget] = useState<AiPlatformDraft | null>(null);
+  const [mcpClients, setMcpClients] = useState<AiMcpClientConfig[]>([]);
+  const [mcpModal, setMcpModal] = useState<AiMcpClientConfig | null>(null);
+  const [mcpModalBearerToken, setMcpModalBearerToken] = useState("");
+  const [mcpMenuId, setMcpMenuId] = useState<string | null>(null);
+  const [mcpDeleteTarget, setMcpDeleteTarget] = useState<AiMcpClientConfig | null>(null);
   const [mcpClient, setMcpClient] = useState<AiMcpClientConfig>({
     serverUrl: "",
     enabled: false,
@@ -4484,6 +5190,9 @@ function ByoAiPage() {
   const [mcpForm, setMcpForm] = useState({ serverUrl: "", bearerToken: "" });
   const [aiEnabled, setAiEnabled] = useState(false);
   const [canEnableAi, setCanEnableAi] = useState(false);
+  const [mcpClientEnabled, setMcpClientEnabled] = useState(false);
+  const [canEnableMcpClient, setCanEnableMcpClient] = useState(false);
+  const [showMcpClientActivationConfirm, setShowMcpClientActivationConfirm] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [isTogglingAi, setIsTogglingAi] = useState(false);
@@ -4492,10 +5201,15 @@ function ByoAiPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [messages, setMessages] = useState<Record<string, string>>({});
   const [pageError, setPageError] = useState<string | null>(null);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [mcpMessage, setMcpMessage] = useState<string | null>(null);
+  const [mcpModalError, setMcpModalError] = useState<string | null>(null);
+  const [mcpModalMessage, setMcpModalMessage] = useState<string | null>(null);
   const [toast, setToast] = useState<{ tone: "success" | "warning"; message: string } | null>(null);
   const hasConnectedPlatform = platforms.some((platform) => platform.status === "connected");
   const mcpSectionDisabled = !hasConnectedPlatform;
-  const canEnableMcp = aiEnabled && hasConnectedPlatform && mcpClient.status === "connected";
+  const canActivateMcpClient = aiEnabled && hasConnectedPlatform && canEnableMcpClient;
+  const externalMcpClientCount = mcpClients.filter((client) => !client.isSystem).length;
 
   useEffect(() => {
     void loadByoAiConfig();
@@ -4509,6 +5223,24 @@ function ByoAiPage() {
     const timeout = window.setTimeout(() => setToast(null), 3000);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    if (!platformMenuId && !mcpMenuId) {
+      return;
+    }
+
+    function closeOpenMenus(event: MouseEvent) {
+      const target = event.target;
+      if (target instanceof Element && target.closest("[data-row-menu-root]")) {
+        return;
+      }
+      setPlatformMenuId(null);
+      setMcpMenuId(null);
+    }
+
+    document.addEventListener("click", closeOpenMenus);
+    return () => document.removeEventListener("click", closeOpenMenus);
+  }, [platformMenuId, mcpMenuId]);
 
   async function loadByoAiConfig() {
     setIsLoading(true);
@@ -4536,6 +5268,9 @@ function ByoAiPage() {
     setPlatforms((config.platforms ?? []).map(toEditableAiPlatform));
     setAiEnabled(Boolean(config.aiEnabled));
     setCanEnableAi(Boolean(config.canEnableAi));
+    setMcpClientEnabled(Boolean(config.mcpClientEnabled));
+    setCanEnableMcpClient(Boolean(config.canEnableMcpClient));
+    setMcpClients(ensureSystemMcpClient(config.mcpClients ?? (config.mcpClient?.serverUrl ? [config.mcpClient] : [])));
     setMcpClient(config.mcpClient ?? {
       serverUrl: "",
       enabled: false,
@@ -4557,6 +5292,7 @@ function ByoAiPage() {
     const draft: AiPlatformDraft = {
       id: `draft-${Date.now()}`,
       provider: firstProvider,
+      name: "",
       providerLabel: definition?.label ?? "ChatGPT",
       model: definition?.defaultModel ?? "",
       baseUrl: firstProvider === "ollama" ? "http://localhost:11434" : "",
@@ -4567,7 +5303,7 @@ function ByoAiPage() {
       bearerToken: "",
       isDraft: true,
     };
-    setPlatforms((current) => [...current, draft]);
+    setPlatformModal(draft);
   }
 
   function updatePlatform(id: string, updates: Partial<AiPlatformDraft>) {
@@ -4595,6 +5331,29 @@ function ByoAiPage() {
     );
   }
 
+  function updatePlatformModal(updates: Partial<AiPlatformDraft>) {
+    setErrors((current) => (platformModal ? { ...current, [platformModal.id]: "" } : current));
+    setMessages((current) => (platformModal ? { ...current, [platformModal.id]: "" } : current));
+    setPlatformModal((platform) => {
+      if (!platform) {
+        return platform;
+      }
+
+      const provider = updates.provider ?? platform.provider;
+      const definition = providers[provider];
+      const providerChanged = updates.provider && updates.provider !== platform.provider;
+
+      return {
+        ...platform,
+        ...updates,
+        provider,
+        providerLabel: definition?.label ?? platform.providerLabel,
+        model: providerChanged ? definition?.defaultModel ?? "" : updates.model ?? platform.model,
+        baseUrl: providerChanged && provider === "ollama" ? "http://localhost:11434" : updates.baseUrl ?? platform.baseUrl,
+      };
+    });
+  }
+
   async function savePlatform(platform: AiPlatformDraft) {
     setSavingId(platform.id);
     setErrors((current) => ({ ...current, [platform.id]: "" }));
@@ -4610,6 +5369,7 @@ function ByoAiPage() {
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          name: platform.name ?? "",
           provider: platform.provider,
           model: platform.model,
           encryptedApiKey: encryptedSecrets.apiKey,
@@ -4627,6 +5387,7 @@ function ByoAiPage() {
       const savedId = data.platform?.id ?? platform.id;
       await loadByoAiConfig();
       setMessages((current) => ({ ...current, [savedId]: data.message ?? "AI platform saved." }));
+      setPlatformModal(null);
     } catch {
       setErrors((current) => ({ ...current, [platform.id]: "Could not test this AI platform." }));
     } finally {
@@ -4636,7 +5397,7 @@ function ByoAiPage() {
 
   async function deletePlatform(platform: AiPlatformDraft) {
     if (platform.isDraft) {
-      setPlatforms((current) => current.filter((entry) => entry.id !== platform.id));
+      setPlatformModal(null);
       return;
     }
 
@@ -4663,6 +5424,11 @@ function ByoAiPage() {
     } finally {
       setSavingId(null);
     }
+  }
+
+  function openEditPlatform(platform: AiPlatformDraft) {
+    setPlatformMenuId(null);
+    setPlatformModal({ ...platform, apiKey: "", bearerToken: "", isDraft: false });
   }
 
   async function movePlatform(index: number, direction: -1 | 1) {
@@ -4714,6 +5480,9 @@ function ByoAiPage() {
       }
 
       setAiEnabled(Boolean(data.aiEnabled));
+      if (!data.aiEnabled) {
+        setMcpClientEnabled(false);
+      }
       setToast({
         tone: data.aiEnabled ? "success" : "warning",
         message: data.aiEnabled ? "AI is active." : "AI was turned off.",
@@ -4725,9 +5494,41 @@ function ByoAiPage() {
     }
   }
 
+  async function updateMcpClientActivation(enabled: boolean) {
+    setIsTogglingMcp(true);
+    setPageError(null);
+
+    try {
+      const response = await fetch("/api/byoai/mcp-client/activation", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setPageError(data.error ?? "Could not update MCP Client activation.");
+        return;
+      }
+
+      setMcpClientEnabled(Boolean(data.mcpClientEnabled));
+      setToast({
+        tone: data.mcpClientEnabled ? "success" : "warning",
+        message: data.mcpClientEnabled ? "MCP Client is active. MCP Server keys were revoked." : "MCP Client was deactivated.",
+      });
+    } catch {
+      setPageError("Could not update MCP Client activation.");
+    } finally {
+      setIsTogglingMcp(false);
+      setShowMcpClientActivationConfirm(false);
+    }
+  }
+
   async function saveMcpClient() {
     setIsSavingMcp(true);
-    setPageError(null);
+    setMcpError(null);
+    setMcpMessage(null);
 
     try {
       const encryptedSecrets = await encryptByoAiSecrets({ bearerToken: mcpForm.bearerToken });
@@ -4743,15 +5544,16 @@ function ByoAiPage() {
       const data = await response.json();
 
       if (!response.ok) {
-        setPageError(data.error ?? "Could not connect to the MCP server.");
+        setMcpError(data.error ?? "Could not connect to the MCP server.");
         return;
       }
 
       setMcpClient(data.mcpClient);
       setMcpForm((current) => ({ ...current, bearerToken: "" }));
+      setMcpMessage(data.message ?? "MCP server tools loaded.");
       setToast({ tone: "success", message: "MCP server tools loaded." });
     } catch {
-      setPageError("Could not connect to the MCP server.");
+      setMcpError("Could not connect to the MCP server.");
     } finally {
       setIsSavingMcp(false);
     }
@@ -4759,7 +5561,8 @@ function ByoAiPage() {
 
   async function updateMcpClientSettings(next: Partial<Pick<AiMcpClientConfig, "enabled" | "selectedTools">>) {
     setIsTogglingMcp(true);
-    setPageError(null);
+    setMcpError(null);
+    setMcpMessage(null);
 
     try {
       const response = await fetch("/api/byoai/mcp-client/settings", {
@@ -4774,13 +5577,14 @@ function ByoAiPage() {
       const data = await response.json();
 
       if (!response.ok) {
-        setPageError(data.error ?? "Could not update MCP client settings.");
+        setMcpError(data.error ?? "Could not update MCP client settings.");
         return;
       }
 
       setMcpClient(data.mcpClient);
+      setMcpMessage("MCP client settings saved.");
     } catch {
-      setPageError("Could not update MCP client settings.");
+      setMcpError("Could not update MCP client settings.");
     } finally {
       setIsTogglingMcp(false);
     }
@@ -4791,6 +5595,231 @@ function ByoAiPage() {
       ? mcpClient.selectedTools.filter((toolName) => toolName !== name)
       : [...mcpClient.selectedTools, name];
     void updateMcpClientSettings({ selectedTools });
+  }
+
+  function openAddMcpServer() {
+    setMcpModal({
+      id: `draft-${Date.now()}`,
+      name: "",
+      serverUrl: "",
+      authType: "none",
+      enabled: true,
+      status: "untested",
+      lastError: "",
+      tools: [],
+      selectedTools: [],
+      hasBearerToken: false,
+    });
+    setMcpModalBearerToken("");
+    setMcpModalError(null);
+    setMcpModalMessage(null);
+  }
+
+  function openEditMcpServer(client: AiMcpClientConfig) {
+    setMcpMenuId(null);
+    setMcpModal({ ...client, authType: client.authType ?? "none" });
+    setMcpModalBearerToken("");
+    setMcpModalError(null);
+    setMcpModalMessage(null);
+  }
+
+  function updateMcpModal(updates: Partial<AiMcpClientConfig>) {
+    setMcpModal((client) => (client ? { ...client, ...updates } : client));
+    setMcpModalError(null);
+    setMcpModalMessage(null);
+  }
+
+  async function testMcpServer() {
+    if (!mcpModal) {
+      return;
+    }
+
+    setIsSavingMcp(true);
+    setMcpModalError(null);
+    setMcpModalMessage(null);
+
+    try {
+      const encryptedSecrets = await encryptByoAiSecrets({ bearerToken: mcpModalBearerToken });
+      const response = await fetch("/api/byoai/mcp-clients/test", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: mcpModal.id?.startsWith("draft-") ? undefined : mcpModal.id,
+          name: mcpModal.name ?? "",
+          serverUrl: mcpModal.serverUrl,
+          authType: mcpModal.authType ?? "none",
+          encryptedBearerToken: encryptedSecrets.bearerToken,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setMcpModalError(data.error ?? "Could not connect to the MCP server.");
+        setMcpModal((client) =>
+          client
+            ? {
+                ...client,
+                status: "failed",
+                lastError: data.error ?? "Connection failed.",
+              }
+            : client,
+        );
+        return;
+      }
+
+      setMcpModal((client) =>
+        client
+          ? {
+              ...client,
+              status: "connected",
+              lastError: "",
+              tools: data.tools ?? [],
+              selectedTools: client.selectedTools.filter((name) => (data.tools ?? []).some((tool: AiMcpTool) => tool.name === name)),
+            }
+          : client,
+      );
+      setMcpModalMessage(data.message ?? "MCP server connection tested successfully.");
+    } catch {
+      setMcpModalError("Could not connect to the MCP server.");
+      setMcpModal((client) =>
+        client
+          ? {
+              ...client,
+              status: "failed",
+              lastError: "Connection failed.",
+            }
+          : client,
+      );
+    } finally {
+      setIsSavingMcp(false);
+    }
+  }
+
+  async function saveMcpServer() {
+    if (!mcpModal) {
+      return;
+    }
+
+    setIsSavingMcp(true);
+    setMcpModalError(null);
+    setMcpModalMessage(null);
+
+    try {
+      const encryptedSecrets = await encryptByoAiSecrets({ bearerToken: mcpModalBearerToken });
+      if (mcpModal.isSystem) {
+        const response = await fetch("/api/byoai/mcp-clients/system", {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ selectedTools: mcpModal.selectedTools }),
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+          setMcpModalError(data.error ?? "Could not save system MCP tools.");
+          return;
+        }
+
+        const nextClients = ensureSystemMcpClient(data.mcpClients ?? []);
+        setMcpClients(nextClients);
+        setMcpClient(data.mcpClient ?? (nextClients.length ? nextClients[0] : mcpClient));
+        setMcpModal(null);
+        setToast({ tone: "success", message: "System MCP tools saved." });
+        return;
+      }
+
+      const isDraft = !mcpModal.id || mcpModal.id.startsWith("draft-");
+      const response = await fetch(isDraft ? "/api/byoai/mcp-clients" : `/api/byoai/mcp-clients/${mcpModal.id}`, {
+        method: isDraft ? "POST" : "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: mcpModal.name ?? "",
+          serverUrl: mcpModal.serverUrl,
+          authType: mcpModal.authType ?? "none",
+          encryptedBearerToken: encryptedSecrets.bearerToken,
+          enabled: true,
+          selectedTools: mcpModal.selectedTools,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setMcpModalError(data.error ?? "Could not save this MCP server.");
+        return;
+      }
+
+      const nextClients = ensureSystemMcpClient(data.mcpClients ?? []);
+      setMcpClients(nextClients);
+      setMcpClient(data.mcpClient ?? (nextClients.length ? nextClients[0] : mcpClient));
+      setMcpModal(null);
+      setMcpModalBearerToken("");
+      setToast({ tone: "success", message: "MCP server saved." });
+    } catch {
+      setMcpModalError("Could not save this MCP server.");
+    } finally {
+      setIsSavingMcp(false);
+    }
+  }
+
+  async function deleteMcpServer(client: AiMcpClientConfig) {
+    if (client.isSystem) {
+      return;
+    }
+
+    if (!client.id || client.id.startsWith("draft-")) {
+      setMcpDeleteTarget(null);
+      setMcpModal(null);
+      return;
+    }
+
+    setIsSavingMcp(true);
+    setMcpModalError(null);
+
+    try {
+      const response = await fetch(`/api/byoai/mcp-clients/${client.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setMcpModalError(data.error ?? "Could not delete this MCP server.");
+        return;
+      }
+
+      const nextClients = ensureSystemMcpClient(data.mcpClients ?? []);
+      setMcpClients(nextClients);
+      setMcpClient(nextClients.length ? nextClients[0] : {
+        serverUrl: "",
+        enabled: false,
+        status: "untested",
+        lastError: "",
+        tools: [],
+        selectedTools: [],
+        hasBearerToken: false,
+      });
+      setMcpDeleteTarget(null);
+      setMcpModal(null);
+      setToast({ tone: "warning", message: "MCP server deleted." });
+    } catch {
+      setMcpModalError("Could not delete this MCP server.");
+    } finally {
+      setIsSavingMcp(false);
+    }
+  }
+
+  function toggleMcpModalTool(name: string) {
+    setMcpModal((client) => {
+      if (!client) {
+        return client;
+      }
+      const selectedTools = client.selectedTools.includes(name)
+        ? client.selectedTools.filter((toolName) => toolName !== name)
+        : [...client.selectedTools, name];
+      return { ...client, selectedTools };
+    });
   }
 
   return (
@@ -4805,7 +5834,7 @@ function ByoAiPage() {
           {toast.message}
         </div>
       ) : null}
-      <Card className={cn(aiEnabled && "animate-pulse border-emerald-300 shadow-[0_0_28px_rgba(16,185,129,0.28)] ring-1 ring-emerald-200")}>
+      <Card className={cn(aiEnabled && "border-emerald-300 shadow-[0_0_28px_rgba(16,185,129,0.28)] ring-1 ring-emerald-200")}>
         <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle>Bring your own artificial intelligence (BYOAI)</CardTitle>
@@ -4813,23 +5842,24 @@ function ByoAiPage() {
               Add your own API keys to let Emailable handle the AI logic for choosing labels and drafting replies.
             </CardDescription>
           </div>
-          <AiEnableSwitch
-            canEnable={canEnableAi}
-            disabled={isLoading || isTogglingAi}
-            enabled={aiEnabled}
-            onChange={(value) => void toggleAiEnabled(value)}
-          />
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {pageError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{pageError}</p> : null}
-
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-zinc-600">{platforms.length}/3 platforms configured</p>
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <AiEnableSwitch
+              canEnable={canEnableAi}
+              disabled={isLoading || isTogglingAi}
+              enabled={aiEnabled}
+              label="Activate"
+              onChange={(value) => void toggleAiEnabled(value)}
+            />
             <Button disabled={isLoading || platforms.length >= 3} onClick={addPlatform} type="button">
               <Plus className="h-4 w-4" />
               Add AI Platform
             </Button>
           </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {pageError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{pageError}</p> : null}
+
+          <p className="text-sm text-zinc-600">{platforms.length}/3 platforms configured</p>
 
           {isLoading ? (
             <p className="rounded-md border border-dashed border-zinc-200 px-4 py-8 text-center text-sm text-zinc-500">
@@ -4840,126 +5870,82 @@ function ByoAiPage() {
               No AI platforms yet.
             </p>
           ) : (
-            <div className="space-y-4">
-              {platforms.map((platform, index) => {
-                const definition = providers[platform.provider];
-                const isOllama = platform.provider === "ollama";
-                return (
-                  <Card key={platform.id}>
-                    <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="space-y-2">
+            <div className="overflow-visible rounded-md border border-zinc-200">
+              <table className="w-full text-left text-sm">
+                <thead className="text-xs uppercase text-zinc-500">
+                  <tr>
+                    <th className="w-16 px-4 py-3">Order</th>
+                    <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Platform</th>
+                    <th className="px-4 py-3">Model</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="w-12 px-4 py-3" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-200">
+                  {platforms.map((platform, index) => (
+                    <tr key={platform.id}>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1 text-zinc-400">
+                          <GripVertical className="h-4 w-4" />
+                          <Button disabled={index === 0 || Boolean(savingId)} onClick={() => void movePlatform(index, -1)} size="icon" type="button" variant="ghost">
+                            <ArrowUp className="h-4 w-4" />
+                          </Button>
+                          <Button disabled={index === platforms.length - 1 || Boolean(savingId)} onClick={() => void movePlatform(index, 1)} size="icon" type="button" variant="ghost">
+                            <ArrowDown className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 font-medium text-zinc-950">
                         <div className="flex flex-wrap items-center gap-2">
-                          <CardTitle className="text-base">{platform.providerLabel}</CardTitle>
-                          <Badge className={index === 0 ? "bg-emerald-50 text-emerald-700" : "bg-zinc-100 text-zinc-600"}>
-                            {index === 0 ? "Default" : "Fallback"}
-                          </Badge>
-                          {platform.status === "connected" ? (
-                            <Badge className="bg-emerald-50 text-emerald-700">Connected</Badge>
-                          ) : (
-                            <Badge className="bg-zinc-100 text-zinc-600">Not saved</Badge>
-                          )}
+                          <span>{platform.name || platform.providerLabel}</span>
+                          {index === 0 ? <Badge className="bg-emerald-50 text-emerald-700">Default</Badge> : null}
                         </div>
-                        <CardDescription>
-                          Save tests the connection before this platform can be used by AI endpoints.
-                        </CardDescription>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <GripVertical className="h-4 w-4 text-zinc-400" />
-                        <Button disabled={index === 0 || Boolean(savingId)} onClick={() => void movePlatform(index, -1)} size="icon" type="button" variant="outline">
-                          <ArrowUp className="h-4 w-4" />
-                        </Button>
-                        <Button disabled={index === platforms.length - 1 || Boolean(savingId)} onClick={() => void movePlatform(index, 1)} size="icon" type="button" variant="outline">
-                          <ArrowDown className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      {errors[platform.id] ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{errors[platform.id]}</p> : null}
-                      {messages[platform.id] ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{messages[platform.id]}</p> : null}
-
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <label className="block">
-                          <span className="mb-1 block text-sm font-medium text-zinc-700">Platform</span>
-                          <select
-                            className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
-                            disabled={savingId === platform.id}
-                            onChange={(event) => updatePlatform(platform.id, { provider: event.target.value })}
-                            value={platform.provider}
-                          >
-                            {Object.entries(providers).map(([id, provider]) => (
-                              <option key={id} value={id}>
-                                {provider.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-
-                        {isOllama ? (
-                          <InputField
-                            label="Model"
-                            onChange={(value) => updatePlatform(platform.id, { model: value })}
-                            placeholder="llama3.1"
-                            value={platform.model}
+                      </td>
+                      <td className="px-4 py-3 text-zinc-600">{platform.providerLabel}</td>
+                      <td className="px-4 py-3 text-zinc-600">{platform.model || "Not set"}</td>
+                      <td className="px-4 py-3">
+                        {platform.status === "connected" ? (
+                          <ConnectedActivationBadge
+                            active={aiEnabled}
+                            inactiveTooltip="This AI platform is connected, but Emailable will not use it until Activate is turned on."
                           />
+                        ) : platform.status === "failed" ? (
+                          <Badge className="bg-red-50 text-red-700">Failed</Badge>
                         ) : (
-                          <label className="block">
-                            <span className="mb-1 block text-sm font-medium text-zinc-700">Model</span>
-                            <select
-                              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
-                              disabled={savingId === platform.id}
-                              onChange={(event) => updatePlatform(platform.id, { model: event.target.value })}
-                              value={platform.model}
-                            >
-                              {(definition?.models ?? []).map((model) => (
-                                <option key={model} value={model}>
-                                  {model}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
+                          <Badge className="bg-zinc-100 text-zinc-600">Untested</Badge>
                         )}
-                      </div>
-
-                      {isOllama ? (
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <InputField
-                            label="Ollama URL"
-                            onChange={(value) => updatePlatform(platform.id, { baseUrl: value })}
-                            placeholder="http://localhost:11434"
-                            value={platform.baseUrl}
-                          />
-                          <InputField
-                            label="Optional bearer token"
-                            onChange={(value) => updatePlatform(platform.id, { bearerToken: value })}
-                            placeholder={platform.hasBearerToken ? "Saved token. Re-enter to change." : "Bearer token"}
-                            type="password"
-                            value={platform.bearerToken}
-                          />
-                        </div>
-                      ) : (
-                        <InputField
-                          label="API Key"
-                          onChange={(value) => updatePlatform(platform.id, { apiKey: value })}
-                          placeholder={platform.hasApiKey ? "Saved key. Re-enter to test or change." : "Paste API key"}
-                          type="password"
-                          value={platform.apiKey}
-                        />
-                      )}
-
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <Button disabled={savingId === platform.id} onClick={() => void deletePlatform(platform)} type="button" variant="outline">
-                          <Trash2 className="h-4 w-4" />
-                          Delete
-                        </Button>
-                        <Button disabled={savingId === platform.id} onClick={() => void savePlatform(platform)} type="button">
-                          {savingId === platform.id ? <Loader /> : <Save className="h-4 w-4" />}
-                          Save
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
+                      </td>
+                      <td className="relative px-4 py-3 text-right" data-row-menu-root onClick={(event) => event.stopPropagation()}>
+                        <button
+                          aria-label="AI platform options"
+                          className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-md hover:bg-zinc-100"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setPlatformMenuId((current) => (current === platform.id ? null : platform.id));
+                          }}
+                          type="button"
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
+                        {platformMenuId === platform.id ? (
+                          <div className="absolute bottom-11 right-4 z-[70] w-36 rounded-md border border-zinc-200 bg-white p-1 text-sm shadow-lg" onMouseDown={(event) => event.stopPropagation()}>
+                            <button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-zinc-50" onClick={() => openEditPlatform(platform)} type="button">
+                              <Pencil className="h-4 w-4" />
+                              Edit
+                            </button>
+                            <button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-red-600 hover:bg-red-50" onClick={() => { setPlatformMenuId(null); setPlatformDeleteTarget(platform); }} type="button">
+                              <Trash2 className="h-4 w-4" />
+                              Delete
+                            </button>
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </CardContent>
@@ -4973,17 +5959,25 @@ function ByoAiPage() {
               Connect this account to an external MCP server. Selected tools are exposed as references to the AI prompts used by Emailable.
             </CardDescription>
           </div>
-          <Tooltip text={canEnableMcp ? "Enable MCP tool references for AI endpoints." : "Save a connected AI platform, enable AI, and save valid MCP server details first."}>
-            <span>
-              <AiEnableSwitch
-                canEnable={canEnableMcp}
-                disabled={!canEnableMcp || isTogglingMcp || isSavingMcp}
-                enabled={mcpClient.enabled}
-                label="Enable"
-                onChange={(enabled) => void updateMcpClientSettings({ enabled })}
-              />
-            </span>
-          </Tooltip>
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <AiEnableSwitch
+              canEnable={canActivateMcpClient}
+              disabled={isTogglingMcp}
+              enabled={mcpClientEnabled}
+              label="Activate"
+              onChange={(enabled) => {
+                if (enabled) {
+                  setShowMcpClientActivationConfirm(true);
+                } else {
+                  void updateMcpClientActivation(false);
+                }
+              }}
+            />
+            <Button disabled={mcpSectionDisabled || externalMcpClientCount >= 5} onClick={openAddMcpServer} type="button">
+              <Plus className="h-4 w-4" />
+              Add MCP Server
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           {mcpSectionDisabled ? (
@@ -4991,61 +5985,459 @@ function ByoAiPage() {
               Add and save at least one working AI platform before configuring MCP client tools.
             </p>
           ) : null}
-          <div className="grid gap-4 md:grid-cols-2">
-            <InputField
-              disabled={mcpSectionDisabled || isSavingMcp}
-              label="MCP server URL"
-              onChange={(value) => setMcpForm((current) => ({ ...current, serverUrl: value }))}
-              placeholder="https://example.com/mcp"
-              type="url"
-              value={mcpForm.serverUrl}
-            />
-            <InputField
-              disabled={mcpSectionDisabled || isSavingMcp}
-              label="Optional bearer token"
-              onChange={(value) => setMcpForm((current) => ({ ...current, bearerToken: value }))}
-              placeholder={mcpClient.hasBearerToken ? "Saved token. Re-enter to change." : "Bearer token"}
-              type="password"
-              value={mcpForm.bearerToken}
-            />
-          </div>
-          <div className="flex justify-end">
-            <Button disabled={mcpSectionDisabled || isSavingMcp || !mcpForm.serverUrl.trim()} onClick={() => void saveMcpClient()} type="button">
-              {isSavingMcp ? <Loader /> : <Save className="h-4 w-4" />}
-              Save MCP Server
-            </Button>
-          </div>
-          {mcpClient.status === "connected" ? (
-            <div className="space-y-3 rounded-md border border-zinc-200 p-4">
-              <div>
-                <p className="text-sm font-medium text-zinc-950">Available tools</p>
-                <p className="text-sm text-zinc-500">Select the MCP tools Emailable should reference when calling AI endpoints.</p>
-              </div>
-              {mcpClient.tools.length === 0 ? (
-                <p className="text-sm text-zinc-500">No tools were returned by this MCP server.</p>
-              ) : (
-                <div className="grid gap-2 md:grid-cols-2">
-                  {mcpClient.tools.map((tool) => (
-                    <label className="flex cursor-pointer items-start gap-3 rounded-md border border-zinc-200 p-3 text-sm hover:bg-zinc-50" key={tool.name}>
-                      <input
-                        checked={mcpClient.selectedTools.includes(tool.name)}
-                        disabled={!mcpClient.enabled || isTogglingMcp}
-                        onChange={() => toggleMcpTool(tool.name)}
-                        type="checkbox"
-                      />
-                      <span>
-                        <span className="block font-medium text-zinc-950">{tool.name}</span>
-                        <span className="block text-zinc-500">{tool.description || "No description provided."}</span>
-                      </span>
-                    </label>
+          {mcpClients.length === 0 ? (
+            <p className="rounded-md border border-dashed border-zinc-200 px-4 py-8 text-center text-sm text-zinc-500">
+              No MCP servers yet.
+            </p>
+          ) : (
+            <div className="overflow-visible rounded-md border border-zinc-200">
+              <table className="w-full text-left text-sm">
+                <thead className="text-xs uppercase text-zinc-500">
+                  <tr>
+                    <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">URL</th>
+                    <th className="px-4 py-3">Selected tools</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="w-12 px-4 py-3" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-200">
+                  {mcpClients.map((client, index) => (
+                    <tr key={client.id ?? client.serverUrl}>
+                      <td className="px-4 py-3 font-medium text-zinc-950">{client.name || `MCP Server ${index + 1}`}</td>
+                      <td className="max-w-[420px] truncate px-4 py-3 text-zinc-600">{client.serverUrl}</td>
+                      <td className="px-4 py-3 text-zinc-600">
+                        {client.selectedTools.length}
+                        {client.isSystem ? `/${client.tools.length}` : null}
+                      </td>
+                      <td className="px-4 py-3">
+                        {client.status === "connected" ? (
+                          <ConnectedActivationBadge
+                            active={mcpClientEnabled}
+                            inactiveTooltip="This server is connected, but Emailable will not use any tools until MCP Client is activated."
+                          />
+                        ) : client.status === "failed" ? (
+                          <Badge className="bg-red-50 text-red-700">Failed</Badge>
+                        ) : (
+                          <Badge className="bg-zinc-100 text-zinc-600">Untested</Badge>
+                        )}
+                      </td>
+                      <td className="relative px-4 py-3 text-right" data-row-menu-root onClick={(event) => event.stopPropagation()}>
+                        <button
+                          aria-label="MCP server options"
+                          className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-md hover:bg-zinc-100"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setMcpMenuId((current) => (current === client.id ? null : client.id ?? null));
+                          }}
+                          type="button"
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
+                        {client.id && mcpMenuId === client.id ? (
+                          <div
+                            className="absolute bottom-11 right-4 z-[70] w-36 rounded-md border border-zinc-200 bg-white p-1 text-sm shadow-lg"
+                            onMouseDown={(event) => event.stopPropagation()}
+                          >
+                            <button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left hover:bg-zinc-50" onClick={() => openEditMcpServer(client)} type="button">
+                              <Pencil className="h-4 w-4" />
+                              {client.isSystem ? "Select tools" : "Edit"}
+                            </button>
+                            {!client.isSystem ? (
+                              <button className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-red-600 hover:bg-red-50" onClick={() => { setMcpMenuId(null); setMcpDeleteTarget(client); }} type="button">
+                                <Trash2 className="h-4 w-4" />
+                                Delete
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
                   ))}
-                </div>
-              )}
+                </tbody>
+              </table>
             </div>
-          ) : null}
+          )}
         </CardContent>
       </Card>
+      {platformModal ? (
+        <AiPlatformModal
+          errors={errors}
+          isSaving={savingId === platformModal.id}
+          messages={messages}
+          onCancel={() => setPlatformModal(null)}
+          onChange={updatePlatformModal}
+          onDelete={() => setPlatformDeleteTarget(platformModal)}
+          onSave={() => void savePlatform(platformModal)}
+          platform={platformModal}
+          providers={providers}
+        />
+      ) : null}
+      {platformDeleteTarget ? (
+        <ConfirmModal
+          body="This AI platform will be deleted. If it is the default, the next platform becomes the default."
+          confirmLabel="Delete"
+          isBusy={savingId === platformDeleteTarget.id}
+          onCancel={() => setPlatformDeleteTarget(null)}
+          onConfirm={() => void deletePlatform(platformDeleteTarget)}
+          title="Delete AI platform?"
+        />
+      ) : null}
+      {mcpModal ? (
+        <McpServerModal
+          bearerToken={mcpModalBearerToken}
+          error={mcpModalError}
+          isSaving={isSavingMcp}
+          message={mcpModalMessage}
+          mcpClient={mcpModal}
+          onBearerTokenChange={setMcpModalBearerToken}
+          onCancel={() => setMcpModal(null)}
+          onChange={updateMcpModal}
+          onDelete={() => setMcpDeleteTarget(mcpModal)}
+          onSave={() => void saveMcpServer()}
+          onTest={() => void testMcpServer()}
+          onToggleTool={toggleMcpModalTool}
+        />
+      ) : null}
+      {mcpDeleteTarget ? (
+        <ConfirmModal
+          body="This MCP server and its selected tools will be removed from AI endpoint context."
+          confirmLabel="Delete"
+          isBusy={isSavingMcp}
+          onCancel={() => setMcpDeleteTarget(null)}
+          onConfirm={() => void deleteMcpServer(mcpDeleteTarget)}
+          title="Delete MCP server?"
+        />
+      ) : null}
+      {showMcpClientActivationConfirm ? (
+        <ConfirmModal
+          body="Enabling MCP Client will disable Emailable's MCP Server because Emailable will now fully handle AI requests and logic. This will revoke and remove any existing MCP keys."
+          confirmLabel="Activate"
+          isBusy={isTogglingMcp}
+          onCancel={() => setShowMcpClientActivationConfirm(false)}
+          onConfirm={() => void updateMcpClientActivation(true)}
+          title="Activate MCP Client?"
+        />
+      ) : null}
     </div>
+  );
+}
+
+function AiPlatformModal({
+  errors,
+  isSaving,
+  messages,
+  onCancel,
+  onChange,
+  onDelete,
+  onSave,
+  platform,
+  providers,
+}: {
+  errors: Record<string, string>;
+  isSaving: boolean;
+  messages: Record<string, string>;
+  onCancel: () => void;
+  onChange: (updates: Partial<AiPlatformDraft>) => void;
+  onDelete: () => void;
+  onSave: () => void;
+  platform: AiPlatformDraft;
+  providers: Record<string, AiProviderDefinition>;
+}) {
+  const definition = providers[platform.provider];
+  const isOllama = platform.provider === "ollama";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+      <div className="w-full max-w-3xl rounded-2xl border border-white/70 bg-white/35 p-3 shadow-2xl backdrop-blur-[5px]">
+        <div className="rounded-xl border border-white/80 bg-white/40 p-5 shadow-sm">
+          <div className="mb-5 flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-zinc-950">{platform.isDraft ? "Add AI platform" : "Edit AI platform"}</h2>
+              <p className="text-sm text-zinc-500">Save tests the connection before this platform can be used by AI endpoints.</p>
+            </div>
+            <Button aria-label="Close AI platform modal" disabled={isSaving} onClick={onCancel} size="icon" type="button" variant="ghost">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <div className="space-y-4">
+            {errors[platform.id] ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{errors[platform.id]}</p> : null}
+            {messages[platform.id] ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{messages[platform.id]}</p> : null}
+
+            <InputField disabled={isSaving} label="Name (optional)" onChange={(value) => onChange({ name: value })} placeholder={platform.providerLabel} value={platform.name ?? ""} />
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-zinc-700">Platform</span>
+                <select
+                  className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                  disabled={isSaving}
+                  onChange={(event) => onChange({ provider: event.target.value })}
+                  value={platform.provider}
+                >
+                  {Object.entries(providers).map(([id, provider]) => (
+                    <option key={id} value={id}>
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {isOllama ? (
+                <InputField disabled={isSaving} label="Model" onChange={(value) => onChange({ model: value })} placeholder="llama3.1" value={platform.model} />
+              ) : (
+                <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-zinc-700">Model</span>
+                  <select
+                    className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                    disabled={isSaving}
+                    onChange={(event) => onChange({ model: event.target.value })}
+                    value={platform.model}
+                  >
+                    {(definition?.models ?? []).map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+
+            {isOllama ? (
+              <div className="grid gap-4 md:grid-cols-2">
+                <InputField disabled={isSaving} label="Ollama URL" onChange={(value) => onChange({ baseUrl: value })} placeholder="http://localhost:11434" value={platform.baseUrl} />
+                <InputField
+                  disabled={isSaving}
+                  label="Optional bearer token"
+                  onChange={(value) => onChange({ bearerToken: value })}
+                  placeholder={platform.hasBearerToken ? "Saved token. Re-enter to change." : "Bearer token"}
+                  type="password"
+                  value={platform.bearerToken}
+                />
+              </div>
+            ) : (
+              <InputField
+                disabled={isSaving}
+                label="API Key"
+                onChange={(value) => onChange({ apiKey: value })}
+                placeholder={platform.hasApiKey ? "Saved key. Re-enter to test or change." : "Paste API key"}
+                type="password"
+                value={platform.apiKey}
+              />
+            )}
+          </div>
+
+          <div className="mt-6 flex flex-wrap justify-end gap-2">
+            <Button disabled={isSaving} onClick={onCancel} type="button" variant="outline">
+              Cancel
+            </Button>
+            {!platform.isDraft ? (
+              <Button disabled={isSaving} onClick={onDelete} type="button" variant="outline">
+                <Trash2 className="h-4 w-4 text-red-600" />
+                Delete
+              </Button>
+            ) : null}
+            <Button disabled={isSaving} onClick={onSave} type="button">
+              {isSaving ? <Loader /> : <Save className="h-4 w-4" />}
+              Save
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function McpServerModal({
+  bearerToken,
+  error,
+  isSaving,
+  message,
+  mcpClient,
+  onBearerTokenChange,
+  onCancel,
+  onChange,
+  onDelete,
+  onSave,
+  onTest,
+  onToggleTool,
+}: {
+  bearerToken: string;
+  error: string | null;
+  isSaving: boolean;
+  message: string | null;
+  mcpClient: AiMcpClientConfig;
+  onBearerTokenChange: (value: string) => void;
+  onCancel: () => void;
+  onChange: (updates: Partial<AiMcpClientConfig>) => void;
+  onDelete: () => void;
+  onSave: () => void;
+  onTest: () => void;
+  onToggleTool: (name: string) => void;
+}) {
+  const isSaved = Boolean(mcpClient.id && !mcpClient.id.startsWith("draft-"));
+  const isSystem = Boolean(mcpClient.isSystem);
+  const canSave = isSystem || (mcpClient.serverUrl.trim().length > 0 && mcpClient.status === "connected" && mcpClient.selectedTools.length > 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+      <div className="w-full max-w-4xl rounded-2xl border border-white/70 bg-white/35 p-3 shadow-2xl backdrop-blur-[5px]">
+        <div className="rounded-xl border border-white/80 bg-white/40 p-5 shadow-sm">
+          <div className="mb-5 flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-zinc-950">{isSystem ? "System MCP Tools" : isSaved ? "Edit MCP server" : "Add MCP server"}</h2>
+              <p className="text-sm text-zinc-500">
+                {isSystem
+                  ? "Choose which built-in Emailable MCP tools AI endpoints can reference. This server is managed by the system."
+                  : "Connect to a Streamable HTTP MCP server and choose which tools Emailable can reference."}
+              </p>
+            </div>
+            <Button aria-label="Close MCP server modal" disabled={isSaving} onClick={onCancel} size="icon" type="button" variant="ghost">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <div className="space-y-4">
+            {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+            {message ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</p> : null}
+
+            {!isSystem ? (
+              <>
+                <InputField disabled={isSaving} label="Name (optional)" onChange={(value) => onChange({ name: value })} placeholder="Production n8n" value={mcpClient.name ?? ""} />
+
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px_auto] lg:items-end">
+                  <InputField disabled={isSaving} label="URL" onChange={(value) => onChange({ serverUrl: value, status: "untested", tools: [], selectedTools: [] })} placeholder="https://example.com/mcp/core" type="url" value={mcpClient.serverUrl} />
+                  <label className="block">
+                    <span className="mb-1 block text-sm font-medium text-zinc-700">Auth type</span>
+                    <select
+                      className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                      disabled={isSaving}
+                      onChange={(event) => onChange({ authType: event.target.value as "none" | "bearer" })}
+                      value={mcpClient.authType ?? "none"}
+                    >
+                      <option value="none">None</option>
+                      <option value="bearer">Bearer Token</option>
+                    </select>
+                  </label>
+                  <Button disabled={isSaving || !mcpClient.serverUrl.trim()} onClick={onTest} type="button" variant="outline">
+                    {isSaving ? <Loader /> : <RefreshCw className="h-4 w-4" />}
+                    Test connection
+                  </Button>
+                </div>
+
+                {(mcpClient.authType ?? "none") === "bearer" ? (
+                  <InputField
+                    disabled={isSaving}
+                    label="Bearer token"
+                    onChange={onBearerTokenChange}
+                    placeholder={mcpClient.hasBearerToken ? "Saved token. Re-enter to change." : "Bearer token"}
+                    type="password"
+                    value={bearerToken}
+                  />
+                ) : null}
+              </>
+            ) : null}
+
+            {mcpClient.status === "connected" ? (
+              <div className="space-y-3 rounded-md border border-zinc-200 p-4">
+                <div>
+                  <p className="text-sm font-medium text-zinc-950">Available tools</p>
+                  <p className="text-sm text-zinc-500">Select at least one tool for this MCP server.</p>
+                </div>
+                {mcpClient.tools.length === 0 ? (
+                  <p className="text-sm text-zinc-500">No tools were returned by this MCP server.</p>
+                ) : (
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {mcpClient.tools.map((tool) => (
+                      <label className="flex cursor-pointer items-start gap-3 rounded-md border border-zinc-200 p-3 text-sm hover:bg-zinc-50" key={tool.name}>
+                        <input checked={mcpClient.selectedTools.includes(tool.name)} disabled={isSaving} onChange={() => onToggleTool(tool.name)} type="checkbox" />
+                        <span>
+                          <span className="block font-medium text-zinc-950">{tool.name}</span>
+                          <span className="block text-zinc-500">{tool.description || "No description provided."}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-6 flex flex-wrap justify-end gap-2">
+            <Button disabled={isSaving} onClick={onCancel} type="button" variant="outline">
+              Cancel
+            </Button>
+            {isSaved && !isSystem ? (
+              <Button disabled={isSaving} onClick={onDelete} type="button" variant="outline">
+                <Trash2 className="h-4 w-4 text-red-600" />
+                Delete
+              </Button>
+            ) : null}
+            <Button disabled={isSaving || !canSave} onClick={onSave} type="button">
+              {isSaving ? <Loader /> : <Save className="h-4 w-4" />}
+              Save
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({
+  body,
+  confirmLabel,
+  isBusy,
+  onCancel,
+  onConfirm,
+  title,
+}: {
+  body: string;
+  confirmLabel: string;
+  isBusy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  title: string;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/20 p-4">
+      <div className="w-full max-w-md rounded-2xl border border-white/70 bg-white/35 p-3 shadow-2xl backdrop-blur-[5px]">
+        <div className="rounded-xl border border-white/80 bg-white/40 p-5 shadow-sm">
+          <h2 className="text-lg font-semibold text-zinc-950">{title}</h2>
+          <p className="mt-2 text-sm text-zinc-600">{body}</p>
+          <div className="mt-6 flex justify-end gap-2">
+            <Button disabled={isBusy} onClick={onCancel} type="button" variant="outline">
+              Cancel
+            </Button>
+            <Button disabled={isBusy} onClick={onConfirm} type="button">
+              {isBusy ? <Loader /> : <Trash2 className="h-4 w-4" />}
+              {confirmLabel}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConnectedActivationBadge({ active, inactiveTooltip }: { active: boolean; inactiveTooltip: string }) {
+  const badge = (
+    <Badge className={active ? "bg-emerald-50 text-emerald-700" : "bg-zinc-100 text-zinc-600"}>
+      Connected
+    </Badge>
+  );
+
+  if (active) {
+    return badge;
+  }
+
+  return (
+    <Tooltip text={inactiveTooltip}>
+      <span className="inline-flex">{badge}</span>
+    </Tooltip>
   );
 }
 
@@ -5059,7 +6451,7 @@ function AiPromptEditorPage({ promptKey, privacyMode = false }: { promptKey: str
   const [draftSearchSubject, setDraftSearchSubject] = useState("");
   const [draftSearchResults, setDraftSearchResults] = useState<DraftEmailSearchResult[]>([]);
   const [isSearchingDraftEmails, setIsSearchingDraftEmails] = useState(false);
-  const [isEmailExamplesOpen, setIsEmailExamplesOpen] = useState(true);
+  const [isEmailExamplesOpen, setIsEmailExamplesOpen] = useState(false);
   const [draftSearchError, setDraftSearchError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -5306,21 +6698,19 @@ function AiPromptEditorPage({ promptKey, privacyMode = false }: { promptKey: str
 		            <Card className="border-zinc-200">
 		              <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
                     <div className="min-w-0">
-		                  <CardTitle className="text-base">Email examples</CardTitle>
+		                  <button
+		                    className="flex cursor-pointer items-center gap-2 text-left"
+		                    onClick={() => setIsEmailExamplesOpen((current) => !current)}
+		                    type="button"
+		                  >
+		                    <ChevronRight className={cn("h-4 w-4 text-zinc-500 transition-transform", isEmailExamplesOpen && "rotate-90")} />
+		                    <CardTitle className="text-base">Email examples</CardTitle>
+		                  </button>
 		                  <CardDescription>
 		                    Find sent emails from connected Gmail accounts and insert them as markdown tables with To, Subject, and
 		                    BodyText fields.
 		                  </CardDescription>
                     </div>
-                    <Button
-                      className="shrink-0"
-                      onClick={() => setIsEmailExamplesOpen((current) => !current)}
-                      size="sm"
-                      type="button"
-                      variant="outline"
-                    >
-                      {isEmailExamplesOpen ? "Collapse" : "Expand"}
-                    </Button>
 		              </CardHeader>
 		              {isEmailExamplesOpen ? <CardContent>
 		                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
@@ -6088,7 +7478,7 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
       {showImapModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
-            <div className="max-h-[calc(90vh-2rem)] overflow-hidden rounded-xl bg-white/72 shadow-inner ring-1 ring-white/60">
+            <div className="max-h-[calc(90vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
               <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
                 <div>
                   <h3 className="text-lg font-semibold text-zinc-950">Connect IMAP Account</h3>
@@ -6604,6 +7994,7 @@ function EndpointsPage() {
                 canEnable={Boolean(aiConfig?.canEnableAi)}
                 disabled={isTogglingAi || !aiConfig}
                 enabled={Boolean(aiConfig?.aiEnabled)}
+                label="Activate"
                 onChange={(value) => void toggleEndpointAiEnabled(value)}
               />
             </div>
@@ -6614,7 +8005,7 @@ function EndpointsPage() {
                 statusBadge={<AiEndpointStatusBadge enabled={Boolean(aiConfig?.aiEnabled)} />}
                 title="AI Reply"
                 notes={[
-                  "Requires Enable AI to be on.",
+                  "Requires Activate to be on.",
                   "accountEmail is optional. When present, Emailable uses it to find the email faster.",
                   "Uses the Draft Reply prompt as the system prompt and creates a provider draft reply from the AI response.",
                 ]}
@@ -6640,7 +8031,7 @@ function EndpointsPage() {
                 statusBadge={<AiEndpointStatusBadge enabled={Boolean(aiConfig?.aiEnabled)} />}
                 title="AI Label"
                 notes={[
-                  "Requires Enable AI to be on.",
+                  "Requires Activate to be on.",
                   "Uses the Email Label prompt as the system prompt.",
                   "The AI returns label candidates and Emailable applies the highest-confidence label or creates a pending rule for review.",
                 ]}
@@ -6665,10 +8056,12 @@ function EndpointsPage() {
   );
 }
 
-function McpServerPage() {
+function McpServerPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
   const [apiKeys, setApiKeys] = useState<IntegrationApiKey[]>([]);
   const [keyName, setKeyName] = useState("");
   const [newToken, setNewToken] = useState<string | null>(null);
+  const [isMcpServerDisabled, setIsMcpServerDisabled] = useState(false);
+  const [disabledReason, setDisabledReason] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -6692,6 +8085,8 @@ function McpServerPage() {
       }
 
       setApiKeys(data.keys ?? []);
+      setIsMcpServerDisabled(Boolean(data.disabled));
+      setDisabledReason(data.disabledReason ?? "");
     } catch {
       setError("Could not load MCP keys.");
     } finally {
@@ -6703,6 +8098,12 @@ function McpServerPage() {
     setIsSaving(true);
     setError(null);
     setNewToken(null);
+
+    if (isMcpServerDisabled) {
+      setError("MCP Server is disabled while MCP Client is active.");
+      setIsSaving(false);
+      return;
+    }
 
     try {
       const response = await fetch("/api/mcp-api-keys", {
@@ -6772,7 +8173,7 @@ function McpServerPage() {
               placeholder="Key name"
               value={keyName}
             />
-            <Button disabled={isSaving} onClick={() => void createMcpKey()} type="button">
+            <Button disabled={isSaving || isMcpServerDisabled} onClick={() => void createMcpKey()} type="button">
               <Plus className="h-4 w-4" />
               Create MCP Key
             </Button>
@@ -6786,6 +8187,15 @@ function McpServerPage() {
           ) : null}
 
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          {isMcpServerDisabled ? (
+            <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              {disabledReason || "MCP Server is disabled while MCP Client is active."}{" "}
+              <button className="font-medium text-amber-950 underline" onClick={() => onNavigate("ai-byoai")} type="button">
+                Deactivate MCP Client
+              </button>
+              {" "}to enable this server again.
+            </p>
+          ) : null}
 
           <div className="overflow-hidden rounded-md border border-zinc-200">
             <div className="grid grid-cols-[1fr_140px_120px] gap-3 border-b border-zinc-200 glass-panel px-4 py-3 text-xs font-medium uppercase text-zinc-500">
@@ -6825,9 +8235,19 @@ function McpServerPage() {
           <CardDescription>Available tools for connected MCP clients.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          {isMcpServerDisabled ? (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+              MCP Server tools are disabled because MCP Client is active.{" "}
+              <button className="font-medium underline" onClick={() => onNavigate("ai-byoai")} type="button">
+                Go to BYOAI
+              </button>
+              {" "}and deactivate MCP Client to use this server.
+            </p>
+          ) : null}
           <EndpointDoc
             method="TOOL"
             path="create_draft_reply"
+            statusBadge={isMcpServerDisabled ? <Badge className="bg-red-50 text-red-700">Disabled</Badge> : undefined}
             title="Create Draft Reply"
             payload={{
               accountEmail: "user@gmail.com",
@@ -6840,6 +8260,7 @@ function McpServerPage() {
           <EndpointDoc
             method="TOOL"
             path="add_labels_on_email"
+            statusBadge={isMcpServerDisabled ? <Badge className="bg-red-50 text-red-700">Disabled</Badge> : undefined}
             title="Add Labels On Email"
             notes={[
               "Payload matches the REST classify-and-label endpoint.",
@@ -6864,6 +8285,7 @@ function McpServerPage() {
           <EndpointDoc
             method="TOOL"
             path="query_email_rules"
+            statusBadge={isMcpServerDisabled ? <Badge className="bg-red-50 text-red-700">Disabled</Badge> : undefined}
             title="Query Email Rules"
             notes={["Supported equivalences: equals, notEquals, contains."]}
             payload={{
@@ -6877,6 +8299,36 @@ function McpServerPage() {
               limit: 25,
             }}
             response={{ rules: [{ emailId: "188c1f2d7e1a1234", isPending: true }] }}
+          />
+          <EndpointDoc
+            method="TOOL"
+            path="find_email"
+            statusBadge={isMcpServerDisabled ? <Badge className="bg-red-50 text-red-700">Disabled</Badge> : undefined}
+            title="Find Email"
+            notes={[
+              "All fields are optional. If no fields are supplied, no results are returned.",
+              "The to field narrows the search to the connected account with that email address.",
+              "emailId, subject, and from are used to find specific matching emails.",
+            ]}
+            payload={{
+              emailId: "188c1f2d7e1a1234",
+              subject: "Invoice for review",
+              from: "vendor@example.com",
+              to: "user@gmail.com",
+            }}
+            response={{
+              emails: [
+                {
+                  accountEmail: "user@gmail.com",
+                  provider: "gmail",
+                  emailId: "188c1f2d7e1a1234",
+                  threadId: "188c1f2d7e1a1234",
+                  fromEmail: "vendor@example.com",
+                  subject: "Invoice for review",
+                  snippet: "Please review the attached invoice.",
+                },
+              ],
+            }}
           />
         </CardContent>
       </Card>
@@ -6974,7 +8426,7 @@ function AiEndpointStatusBadge({ enabled }: { enabled: boolean }) {
     return badge;
   }
 
-  return <Tooltip text="Enable this by turning on Enable AI after saving a working AI platform.">{badge}</Tooltip>;
+  return <Tooltip text="Enable this by turning on Activate after saving a working AI platform.">{badge}</Tooltip>;
 }
 
 function ConfidenceThresholdPage() {
@@ -7328,11 +8780,27 @@ function RuleStatusDonut({ isLoading, pending, nonPending }: { isLoading: boolea
   );
 }
 
-function Tooltip({ children, text }: { children: ReactNode; text: string }) {
+function Tooltip({
+  align = "center",
+  children,
+  side = "top",
+  text,
+}: {
+  align?: "center" | "start";
+  children: ReactNode;
+  side?: "top" | "bottom";
+  text: string;
+}) {
   return (
     <span className="group relative inline-flex">
       {children}
-      <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-64 -translate-x-1/2 rounded-md bg-zinc-950 px-3 py-2 text-left text-xs font-normal leading-5 text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      <span
+        className={cn(
+          "pointer-events-none absolute z-20 w-max max-w-64 whitespace-normal rounded-md border border-white/70 bg-white/65 px-3 py-2 text-left text-xs font-medium leading-5 text-zinc-800 opacity-0 shadow-xl shadow-slate-900/10 ring-1 ring-zinc-200/40 backdrop-blur-md transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
+          align === "start" ? "left-0" : "left-1/2 -translate-x-1/2",
+          side === "bottom" ? "top-full mt-2" : "bottom-full mb-2",
+        )}
+      >
         {text}
       </span>
     </span>
@@ -7439,6 +8907,10 @@ function extractEmailAddressFromText(value = "") {
 function extractDisplayNameFromText(value = "") {
   const match = value.match(/^"?([^"<]+)"?\s*</);
   return (match?.[1] ?? "").trim();
+}
+
+function extractEmailForSearch(value = "") {
+  return extractEmailAddressFromText(value).replace(/"/g, "");
 }
 
 function mapAuthUser(user: { email?: string | null; name?: string | null; image?: string | null }): AuthUser {
@@ -7979,6 +9451,86 @@ function getInboxMessageKey(message: InboxMessage) {
   return `${message.accountId}:${message.mailbox ?? ""}:${message.id}`;
 }
 
+function buildInboxMessageParams({
+  accountIds,
+  inboxMode,
+  labelId,
+  pageToken,
+  search,
+  sort,
+}: {
+  accountIds: string[];
+  inboxMode: InboxMode;
+  labelId: string;
+  pageToken?: string | null;
+  search: string;
+  sort: InboxSort;
+}) {
+  const params = new URLSearchParams({
+    accounts: accountIds.join(","),
+    sort,
+  });
+  if (inboxMode === "inbox") {
+    params.set("labelId", labelId);
+  }
+  if (inboxMode === "sent" && search) {
+    params.set("search", search);
+  }
+  if (pageToken) {
+    params.set("pageToken", pageToken);
+  }
+  return params;
+}
+
+function sortInboxMessagesForClient(messages: InboxMessage[], sort: InboxSort) {
+  return [...messages].sort((first, second) => {
+    if (sort === "oldest") {
+      return new Date(first.date).getTime() - new Date(second.date).getTime();
+    }
+    if (sort === "sender") {
+      return (first.sender || first.from).localeCompare(second.sender || second.from);
+    }
+    if (sort === "subject") {
+      return first.subject.localeCompare(second.subject);
+    }
+    return new Date(second.date).getTime() - new Date(first.date).getTime();
+  });
+}
+
+function decodeInboxPageToken(token?: string | null): Record<string, string> {
+  if (!token) {
+    return {};
+  }
+
+  try {
+    const normalized = token.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const parsed = JSON.parse(window.atob(padded));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function encodeInboxPageToken(state: Record<string, string>) {
+  const compactState = Object.fromEntries(Object.entries(state).filter(([, value]) => Boolean(value)));
+  if (Object.keys(compactState).length === 0) {
+    return null;
+  }
+
+  return window.btoa(JSON.stringify(compactState)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function getInboxModeDescription(mode: InboxMode) {
+  if (mode === "drafts") {
+    return "drafts";
+  }
+  if (mode === "sent") {
+    return "sent messages";
+  }
+  return "inbox messages";
+}
+
 function getCommonMessageLabelId(messages: InboxMessage[], labels: Label[]) {
   if (messages.length === 0) {
     return "";
@@ -8004,6 +9556,10 @@ function messageToBulkPayload(message: InboxMessage) {
 
 function normalizeReplySubject(subject: string) {
   return /^re:/i.test(subject) ? subject : `Re: ${subject || "(no subject)"}`;
+}
+
+function normalizeReplySearchSubject(subject: string) {
+  return String(subject || "").replace(/^(re|fw|fwd):\s*/i, "").trim();
 }
 
 function providerLabel(provider: string) {

@@ -686,6 +686,10 @@ async function modifyMessageLabels(req, res, action) {
       });
     }
 
+    const emailContext = await getEmailContextForWebhook(req.integrationUser.id, {
+      emailId: input.emailId,
+      accountEmail: account.email,
+    });
     if (action === "add") {
       await recordMetricEvent(req.integrationUser.id, "email_labeled", {
         emailId: input.emailId,
@@ -705,6 +709,7 @@ async function modifyMessageLabels(req, res, action) {
       added: action === "add" ? labels.labels.map((label) => label.name) : [],
       removed: action === "remove" ? labels.labels.map((label) => label.name) : [],
       labels: labels.labels,
+      ...buildLabelUpdatedEmailContextPayload(emailContext),
     });
     await logEndpointCall(req.integrationUser.id, `POST /api/integrations/email/labels/${action}`, req.body, "success", responsePayload);
 
@@ -849,12 +854,7 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
     throw error;
   }
 
-  const labelsToRemove = removeLabelNames
-    .filter((name) => typeof name === "string")
-    .map((name) => name.trim())
-    .filter((name) => name && name.toLowerCase() !== labelName.toLowerCase());
   const labels = await resolveProviderLabels(userId, messageTarget.account.id, [labelName]);
-  const removedLabels = labelsToRemove.length > 0 ? await resolveProviderLabels(userId, messageTarget.account.id, labelsToRemove) : { ok: true, labels: [] };
 
   if (!labels.ok) {
     const error = new Error(labels.error);
@@ -863,12 +863,7 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
     throw error;
   }
 
-  if (!removedLabels.ok) {
-    const error = new Error(removedLabels.error);
-    error.status = removedLabels.status;
-    error.labels = removedLabels.labels;
-    throw error;
-  }
+  const syncedLabelsToRemove = await resolveOtherSyncedProviderLabels(userId, messageTarget.account.id, labelName);
 
   if (messageTarget.account.provider === "gmail") {
     const accessToken = await getValidEmailAccountAccessToken(messageTarget.account);
@@ -876,22 +871,14 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
       accessToken,
       emailId,
       addLabelIds: labels.labels.map((label) => label.providerLabelId),
-      removeLabelIds: [],
+      removeLabelIds: syncedLabelsToRemove.map((label) => label.providerLabelId),
     });
-    if (removedLabels.labels.length > 0) {
-      await modifyGmailMessageLabels({
-        accessToken,
-        emailId,
-        addLabelIds: [],
-        removeLabelIds: removedLabels.labels.map((label) => label.providerLabelId),
-      });
-    }
   } else {
     await moveImapMessageToFolders({
       account: messageTarget.account,
       emailId,
       addFolders: labels.labels.map((label) => label.providerLabelId),
-      removeFolders: removedLabels.labels.map((label) => label.providerLabelId),
+      removeFolders: syncedLabelsToRemove.map((label) => label.providerLabelId),
     });
   }
 
@@ -904,9 +891,10 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
     emailId,
     accountEmail: messageTarget.account.email,
     added: labels.labels.map((label) => label.name),
-    removed: removedLabels.labels.map((label) => label.name),
+    removed: syncedLabelsToRemove.map((label) => label.name),
     labels: labels.labels,
     source,
+    ...buildLabelUpdatedEmailContextPayload(messageTarget),
   });
 
   return {
@@ -916,7 +904,36 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
   };
 }
 
-async function searchConnectedEmailsForRules(userId, { query, accountEmail }) {
+async function getEmailContextForWebhook(userId, { emailId, accountEmail = "", subject = "" }) {
+  try {
+    return await findConnectedEmailContextById(userId, { emailId, accountEmail, subject });
+  } catch (error) {
+    console.warn(`Could not fetch email context for label webhook ${emailId}:`, error.message);
+    return null;
+  }
+}
+
+function buildLabelUpdatedEmailContextPayload(target) {
+  const email = target?.email;
+  if (!email) {
+    return {};
+  }
+
+  return {
+    subject: email.subject || "",
+    from: {
+      email: email.fromEmail || "",
+      name: email.fromName || "",
+    },
+    body: simplifyWebhookEmailBody(email.bodyText || email.snippet || ""),
+  };
+}
+
+function simplifyWebhookEmailBody(value) {
+  return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 8000);
+}
+
+async function searchConnectedEmailsForRules(userId, { query, accountEmail, fromEmail = "" }) {
   const accounts = await getConnectedEmailAccounts(userId);
   const results = [];
   const selectedAccounts = accountEmail
@@ -941,11 +958,13 @@ async function searchConnectedEmailsForRules(userId, { query, accountEmail }) {
     try {
       if (account.provider === "gmail") {
         const accessToken = await getValidEmailAccountAccessToken(account);
-        const emails = await searchGmailEmailsForRules(accessToken, { query }, 10 - results.length);
+        const emails = await searchGmailEmailsForRules(accessToken, { query, fromEmail }, 10 - results.length);
         results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
       } else {
         const emails = await searchImapEmailContexts(account, { subject: query }, 10 - results.length);
-        results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
+        results.push(...emails
+          .filter((email) => !fromEmail || emailMatchesFrom(email, fromEmail))
+          .map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
       }
     } catch (error) {
       if (error.status !== 404) {
@@ -957,10 +976,79 @@ async function searchConnectedEmailsForRules(userId, { query, accountEmail }) {
   return results.slice(0, 10);
 }
 
-async function searchGmailEmailsForRules(accessToken, { query }, limit) {
+export async function findConnectedEmailsForMcp(userId, payload = {}) {
+  const emailId = typeof payload.emailId === "string" ? payload.emailId.trim() : "";
+  const subject = typeof payload.subject === "string" ? payload.subject.trim() : "";
+  const from = typeof payload.from === "string" ? payload.from.trim().toLowerCase() : "";
+  const to = typeof payload.to === "string" ? payload.to.trim().toLowerCase() : "";
+
+  if (!emailId && !subject && !from && !to) {
+    return [];
+  }
+
+  if (emailId) {
+    try {
+      const match = await findConnectedEmailContextById(userId, { emailId, accountEmail: to, subject });
+      if (from && !emailMatchesFrom(match.email, from)) {
+        return [];
+      }
+      return [mcpEmailSearchResult(match)];
+    } catch (error) {
+      if (error.status === 404) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  const candidates = await searchConnectedEmailsForRules(userId, { query: subject, accountEmail: to, fromEmail: from });
+  return candidates
+    .filter((email) => !subject || normalizeComparableSubject(email.subject).includes(normalizeComparableSubject(subject)))
+    .filter((email) => !from || emailMatchesFrom(email, from))
+    .slice(0, 10)
+    .map((email) => ({
+      accountEmail: email.accountEmail,
+      provider: email.provider,
+      emailId: email.emailId,
+      threadId: email.threadId,
+      fromEmail: email.fromEmail,
+      fromName: email.fromName,
+      to: email.to,
+      subject: email.subject,
+      snippet: email.snippet,
+    }));
+}
+
+function mcpEmailSearchResult(match) {
+  return {
+    accountEmail: match.account.email,
+    provider: match.account.provider,
+    emailId: match.email.emailId,
+    threadId: match.email.threadId,
+    fromEmail: match.email.fromEmail,
+    fromName: match.email.fromName,
+    to: match.email.to,
+    subject: match.email.subject,
+    snippet: match.email.snippet,
+  };
+}
+
+function emailMatchesFrom(email, from) {
+  const normalized = String(from || "").toLowerCase();
+  return String(email.fromEmail || "").toLowerCase().includes(normalized) || String(email.fromName || "").toLowerCase().includes(normalized);
+}
+
+async function searchGmailEmailsForRules(accessToken, { query, fromEmail = "" }, limit) {
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+  const queryParts = [];
   if (query) {
-    url.searchParams.set("q", `subject:${quoteGmailSearchValue(query)}`);
+    queryParts.push(`subject:${quoteGmailSearchValue(query)}`);
+  }
+  if (fromEmail) {
+    queryParts.push(`from:${quoteGmailSearchValue(fromEmail)}`);
+  }
+  if (queryParts.length) {
+    url.searchParams.set("q", queryParts.join(" "));
   }
   url.searchParams.set("maxResults", String(Math.min(Math.max(limit, 1), 10)));
 
@@ -1067,12 +1155,30 @@ async function findConnectedMessageById(userId, emailId, subject) {
       if (account.provider === "gmail") {
         assertGmailAccountHasRequiredScopes(account);
         const accessToken = await getValidEmailAccountAccessToken(account);
-        const message = await fetchGmailMessageMetadata(accessToken, emailId);
-        matches.push({ account, subject: getProviderMessageSubject(account.provider, message) });
+        const message = await fetchGmailMessageFullByAnyId(accessToken, emailId);
+        const headers = getGmailHeaders(message);
+        const bodyText = extractGmailTextBody(message.payload) || message.snippet || "";
+        matches.push({
+          account,
+          subject: getProviderMessageSubject(account.provider, message),
+          email: {
+            emailId: message.id || emailId,
+            threadId: message.threadId || message.id || emailId,
+            accountEmail: account.email,
+            provider: account.provider,
+            fromEmail: extractEmailAddress(headers.from || ""),
+            fromName: extractDisplayName(headers.from || "") || extractEmailAddress(headers.from || ""),
+            to: formatEmailList(headers.to || ""),
+            subject: headers.subject || "",
+            snippet: bodyText.slice(0, 300),
+            bodyText,
+          },
+        });
       } else {
         const match = await findImapMessageAccountMatch(account, emailId, subject);
         if (match) {
-          matches.push({ account, subject: match.subject });
+          const email = await fetchImapEmailContextById(account, emailId, subject);
+          matches.push({ account, subject: match.subject, email: email ?? { subject: match.subject } });
         }
       }
     } catch (error) {
@@ -2229,6 +2335,34 @@ export async function resolveProviderLabels(userId, emailAccountId, labelNames) 
   }
 
   return { ok: true, labels: resolved };
+}
+
+async function resolveOtherSyncedProviderLabels(userId, emailAccountId, selectedLabelName) {
+  const result = await dbPool.query(
+    `
+      select min(l.name) as name,
+             lower(min(l.name)) as "sortName",
+             las.provider_label_id as "providerLabelId"
+      from labels l
+      join label_account_syncs las on las.label_id = l.id and las.email_account_id = $2
+      where l.user_id = $1
+        and lower(l.name) <> lower($3)
+        and las.sync_status = 'synced'
+        and las.provider_label_id is not null
+      group by las.provider_label_id
+      order by "sortName"
+    `,
+    [userId, emailAccountId, selectedLabelName],
+  );
+
+  const byProviderId = new Map();
+  for (const row of result.rows) {
+    byProviderId.set(row.providerLabelId, {
+      name: row.name,
+      providerLabelId: row.providerLabelId,
+    });
+  }
+  return [...byProviderId.values()];
 }
 
 export async function modifyGmailMessageLabels({ accessToken, emailId, addLabelIds, removeLabelIds }) {
