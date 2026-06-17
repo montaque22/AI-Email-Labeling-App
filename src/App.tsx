@@ -782,30 +782,27 @@ function AuthenticatedLayout({
   return (
     <div className="min-h-screen bg-transparent text-zinc-950">
       <aside className={cn("fixed inset-y-0 left-0 hidden border-r border-white/60 bg-white/55 shadow-sm backdrop-blur-2xl transition-all md:flex md:flex-col", sidebarCollapsed ? "w-20" : "w-64")}>
-        <div className={cn("flex h-16 items-center border-b border-zinc-200 px-4", sidebarCollapsed ? "justify-center" : "justify-between gap-3")}>
-          <div className={cn("flex min-w-0 items-center gap-3", sidebarCollapsed && "justify-center")}>
+        <div className={cn("flex h-16 items-center border-b border-zinc-200 px-4", sidebarCollapsed ? "justify-start" : "justify-between gap-3")}>
+          {!sidebarCollapsed ? (
+          <div className="flex min-w-0 items-center gap-3">
             <EmailableLogo className="h-9 w-9 shrink-0" />
-            {!sidebarCollapsed ? (
               <div className="min-w-0">
                 <p className="truncate bg-gradient-to-r from-cyan-500 via-blue-600 to-violet-600 bg-clip-text text-xl font-bold text-transparent">
                   Emailable
                 </p>
               </div>
-            ) : null}
           </div>
+          ) : null}
           {!sidebarCollapsed ? (
             <Button aria-label="Collapse menu" onClick={() => setSidebarCollapsed(true)} size="icon" type="button" variant="ghost">
               <Menu className="h-4 w-4" />
             </Button>
-          ) : null}
-        </div>
-        {sidebarCollapsed ? (
-          <div className="border-b border-zinc-200 p-3">
-            <Button aria-label="Expand menu" className="w-full" onClick={() => setSidebarCollapsed(false)} size="icon" type="button" variant="ghost">
+          ) : (
+            <Button aria-label="Expand menu" onClick={() => setSidebarCollapsed(false)} size="icon" type="button" variant="ghost">
               <Menu className="h-4 w-4" />
             </Button>
-          </div>
-        ) : null}
+          )}
+        </div>
         <nav className={cn("flex-1 space-y-1 py-4", sidebarCollapsed ? "px-2" : "px-3")}>
           {navItems.map((item) => {
             const Icon = item.icon;
@@ -926,7 +923,7 @@ function AuthenticatedLayout({
               onClick={() => setMobileMenuOpen(false)}
               type="button"
             />
-            <div className="relative flex h-full w-[min(82vw,320px)] flex-col border-r border-white/70 bg-white/90 shadow-2xl backdrop-blur-2xl">
+            <div className="relative h-full w-[min(82vw,320px)] overflow-y-auto border-r border-white/70 bg-white/90 shadow-2xl backdrop-blur-2xl">
               <div className="flex h-16 items-center justify-between border-b border-zinc-200 px-4">
                 <div className="flex min-w-0 items-center gap-3">
                   <EmailableLogo className="h-9 w-9 shrink-0" />
@@ -938,7 +935,7 @@ function AuthenticatedLayout({
                   <X className="h-4 w-4" />
                 </Button>
               </div>
-              <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
+              <nav className="space-y-1 px-3 py-4">
                 {navItems.map((item) => {
                   const Icon = item.icon;
                   const isActive =
@@ -2571,7 +2568,7 @@ function InboxMessageModal({
               </Button>
             </div>
           </div>
-          <div className="max-h-[calc(92vh-112px)] overflow-y-auto p-5">
+          <div className="max-h-[calc(92vh-112px)] overflow-y-auto px-5 pb-10 pt-5">
           {isLoading ? <p className="text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           {detail ? (
@@ -2996,10 +2993,10 @@ function InboxComposeModal({
   const [subject, setSubject] = useState(initial?.subject ?? "");
   const [bodyText, setBodyText] = useState(initial?.bodyText ?? "");
   const [attachments, setAttachments] = useState<InboxAttachment[]>([]);
-  const [isAiComposerOpen, setIsAiComposerOpen] = useState(false);
+  const [isAiDraftOpen, setIsAiDraftOpen] = useState(false);
   const [isOriginalMessageExpanded, setIsOriginalMessageExpanded] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
-  const [aiSuggestion, setAiSuggestion] = useState("");
+  const [aiMessages, setAiMessages] = useState<Array<{ id: number; role: "user" | "assistant"; text: string }>>([]);
   const [isGeneratingAiSuggestion, setIsGeneratingAiSuggestion] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3011,7 +3008,7 @@ function InboxComposeModal({
 
   useEffect(() => {
     if (!isByoAiActive) {
-      setIsAiComposerOpen(false);
+      setIsAiDraftOpen(false);
     }
   }, [isByoAiActive]);
 
@@ -3043,9 +3040,15 @@ function InboxComposeModal({
   }
 
   async function generateAiSuggestion() {
+    const prompt = aiInstruction.trim();
+    if (!prompt) {
+      return;
+    }
+
     setIsGeneratingAiSuggestion(true);
     setAiError(null);
-    setAiSuggestion("");
+    setAiMessages((current) => [...current, { id: Date.now(), role: "user", text: prompt }]);
+    setAiInstruction("");
 
     try {
       const response = await fetch("/api/byoai/compose-suggestion", {
@@ -3053,7 +3056,7 @@ function InboxComposeModal({
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: aiInstruction,
+          prompt,
           currentBody: bodyText,
           message: replyContext,
         }),
@@ -3065,7 +3068,7 @@ function InboxComposeModal({
         return;
       }
 
-      setAiSuggestion(data.bodyText ?? "");
+      setAiMessages((current) => [...current, { id: Date.now() + 1, role: "assistant", text: data.bodyText ?? "" }]);
     } catch {
       setAiError("Could not draft with AI.");
     } finally {
@@ -3078,28 +3081,86 @@ function InboxComposeModal({
       <div className={cn(isPush ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]")}>
         <div className={cn(isPush ? "min-h-0 flex-1 overflow-y-auto bg-transparent p-4 pb-28" : "max-h-[calc(92vh-2rem)] overflow-y-auto rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60")}>
           <div className={cn("mb-4 flex items-center justify-between gap-4", isPush && "sticky -top-4 z-10 -mx-4 -mt-4 border-b border-zinc-200 bg-white/75 px-2 py-2 backdrop-blur-xl")}>
-            <Button aria-label={isPush ? "Back to email" : "Close compose"} onClick={onClose} size="icon" type="button" variant="ghost">
-              {isPush ? <ChevronLeft className="h-5 w-5" /> : <X className="h-4 w-4" />}
-            </Button>
-            <h3 className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-zinc-950">
-              {replyContext ? "Reply" : "New email"}
-            </h3>
             {isPush ? (
-              <Button aria-label="Send email" disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} form={composeFormId} size="icon" type="submit" variant="ghost">
-                {isSaving ? <Loader /> : <Send className="h-4 w-4" />}
+              <Button aria-label="Back to email" onClick={onClose} size="icon" type="button" variant="ghost">
+                <ChevronLeft className="h-5 w-5" />
               </Button>
             ) : (
               <span className="w-10" />
             )}
+            <h3 className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-zinc-950">
+              {isAiDraftOpen ? "AI Draft" : replyContext ? "Reply" : "New email"}
+            </h3>
+            {isPush ? (
+              <div className="flex items-center gap-1">
+                {isByoAiActive ? (
+                  <Button aria-label="AI Draft" onClick={() => setIsAiDraftOpen(true)} size="icon" type="button" variant="ghost">
+                    <Sparkles className="h-4 w-4" />
+                  </Button>
+                ) : null}
+                <Button aria-label="Send email" disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} form={composeFormId} size="icon" type="submit" variant="ghost">
+                  {isSaving ? <Loader /> : <Send className="h-4 w-4" />}
+                </Button>
+              </div>
+            ) : (
+              <Button aria-label={isAiDraftOpen ? "Back to email draft" : "Close compose"} onClick={isAiDraftOpen ? () => setIsAiDraftOpen(false) : onClose} size="icon" type="button" variant="ghost">
+                <X className="h-4 w-4" />
+              </Button>
+            )}
           </div>
+        {isAiDraftOpen ? (
+          <div className={cn("relative flex min-h-[560px] flex-col overflow-hidden", isPush && "min-h-[calc(100vh-7rem)]")}>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 pb-24">
+              {aiMessages.map((message) => (
+                  <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")} key={message.id}>
+                    {message.role === "assistant" ? (
+                      <button
+                        className="max-w-[85%] cursor-pointer whitespace-pre-wrap rounded-xl border border-white/70 bg-white/65 px-4 py-3 text-left text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl transition hover:border-emerald-200 hover:bg-emerald-50/80"
+                        onClick={() => {
+                          setBodyText(message.text);
+                          setIsAiDraftOpen(false);
+                        }}
+                        title="Apply this draft"
+                        type="button"
+                      >
+                        {message.text}
+                        <span className="mt-2 block text-xs font-medium text-emerald-700">Click to apply</span>
+                      </button>
+                    ) : (
+                      <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border border-white/70 bg-white/65 px-4 py-3 text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl">
+                        {message.text}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
+            </div>
+            <div className="absolute inset-x-0 bottom-0 z-10 bg-white/35 p-3 backdrop-blur-xl">
+              <div className="flex items-center gap-2">
+                <input
+                  className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white/45 px-3 text-sm outline-none placeholder:text-zinc-400 shadow-sm backdrop-blur-xl focus:border-zinc-400"
+                  maxLength={1000}
+                  onChange={(event) => setAiInstruction(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey && aiInstruction.trim() && !isGeneratingAiSuggestion) {
+                      event.preventDefault();
+                      void generateAiSuggestion();
+                    }
+                  }}
+                  placeholder={replyContext ? "Ask AI how to draft this reply..." : "Ask AI how to draft this email..."}
+                  type="text"
+                  value={aiInstruction}
+                />
+                <Button className="h-9 w-9 border border-white/70 bg-white/55 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/75" disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} size="icon" type="button" variant="outline">
+                  {isGeneratingAiSuggestion ? <Loader /> : <Send className="h-4 w-4" />}
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : (
         <form className="space-y-4" id={composeFormId} onSubmit={sendEmail}>
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           {saved ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">Email sent.</p> : null}
-          {isByoAiActive ? (
-            <div className="flex justify-end border-b border-zinc-200 pb-3">
-              <AiEnableSwitch canEnable enabled={isAiComposerOpen} label="AI Composer" onChange={setIsAiComposerOpen} />
-            </div>
-          ) : null}
           {replyContext ? (
             <div className="rounded-xl border border-zinc-200 bg-white/60 p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-zinc-200 pb-3">
@@ -3140,63 +3201,6 @@ function InboxComposeModal({
               )}
             </div>
           ) : null}
-          {isByoAiActive && isAiComposerOpen ? (
-            <div className="rounded-md border border-emerald-100 bg-emerald-50/50 p-4">
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                <div className="space-y-3">
-                  <div>
-                    <p className="text-sm font-medium text-zinc-950">AI Composer</p>
-                    <p className="text-sm text-zinc-600">
-                      Tell the AI how to draft the email. It uses your Draft Reply prompt behind the scenes.
-                    </p>
-                  </div>
-                  <textarea
-                    className="min-h-28 w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
-                    maxLength={1000}
-                    onChange={(event) => setAiInstruction(event.target.value)}
-                    placeholder={replyContext ? "Example: Write a warm, concise reply confirming I will follow up tomorrow." : "Example: Write a concise outreach email asking for a meeting next week."}
-                    value={aiInstruction}
-                  />
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-xs text-zinc-500">{aiInstruction.length}/1000</span>
-                    <Button disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} type="button">
-                      {isGeneratingAiSuggestion ? <Loader /> : <Sparkles className="h-4 w-4" />}
-                      Draft with AI
-                    </Button>
-                  </div>
-                  {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
-                </div>
-                <div className="space-y-3">
-                  <p className="text-sm font-medium text-zinc-950">Suggestion preview</p>
-                  {aiSuggestion ? (
-                    <div className="space-y-3">
-                      <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-md border border-zinc-200 bg-white p-3 font-sans text-sm leading-6 text-zinc-700">
-                        {aiSuggestion}
-                      </pre>
-                      <div className="flex justify-end gap-2">
-                        <Button onClick={() => setAiSuggestion("")} type="button" variant="outline">
-                          Decline
-                        </Button>
-                        <Button
-                          onClick={() => {
-                            setBodyText(aiSuggestion);
-                            setAiSuggestion("");
-                          }}
-                          type="button"
-                        >
-                          Accept
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="flex min-h-32 items-center justify-center rounded-md border border-dashed border-zinc-200 bg-white/70 px-4 py-8 text-center text-sm text-zinc-500">
-                      AI suggestions will appear here.
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-          ) : null}
           <div className="space-y-2 rounded-xl bg-white/55 p-3 ring-1 ring-white/60">
             <div className="flex flex-wrap items-center gap-2">
               <label className="block w-full shrink-0 sm:w-36">
@@ -3228,16 +3232,18 @@ function InboxComposeModal({
               />
             </div>
           </div>
-          <input
-            className="w-full border-0 bg-transparent px-0 py-2 text-xl font-semibold text-zinc-950 outline-none placeholder:text-zinc-400"
-            onChange={(event) => setSubject(event.target.value)}
-            placeholder="Subject"
-            value={subject}
-          />
-          <label className="block">
-            <span className="sr-only">Body</span>
-            <textarea className="min-h-56 w-full resize-y border-0 bg-transparent px-0 py-2 text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-400" onChange={(event) => setBodyText(event.target.value)} placeholder="Write your message..." required value={bodyText} />
-          </label>
+          <div className="space-y-2 rounded-xl bg-white/55 p-3 ring-1 ring-white/60">
+            <input
+              className="w-full rounded-lg border border-zinc-200 bg-white/25 px-3 py-3 text-xl font-semibold text-zinc-950 outline-none placeholder:text-zinc-400 focus:border-zinc-400"
+              onChange={(event) => setSubject(event.target.value)}
+              placeholder="Subject"
+              value={subject}
+            />
+            <label className="block">
+              <span className="sr-only">Body</span>
+              <textarea className="min-h-56 w-full resize-y rounded-lg border-0 bg-white/20 px-3 py-3 text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-400" onChange={(event) => setBodyText(event.target.value)} placeholder="Write your message..." required value={bodyText} />
+            </label>
+          </div>
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-zinc-700">Attachments</span>
             <input
@@ -3265,11 +3271,18 @@ function InboxComposeModal({
           </label>
           <div className={cn("flex justify-end gap-2 border-t border-zinc-200 pt-4", isPush && "hidden")}>
             <Button onClick={onClose} type="button" variant="outline">Cancel</Button>
+            {isByoAiActive ? (
+              <Button onClick={() => setIsAiDraftOpen(true)} type="button" variant="outline">
+                <Sparkles className="h-4 w-4" />
+                AI Draft
+              </Button>
+            ) : null}
             <Button disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} type="submit">
               {isSaving ? "Sending..." : "Send email"}
             </Button>
           </div>
         </form>
+        )}
         </div>
       </div>
     </div>
