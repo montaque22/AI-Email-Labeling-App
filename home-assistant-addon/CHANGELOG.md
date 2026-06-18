@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.17
+
+- Switched Home Assistant installs and updates to prebuilt GHCR images.
+- Added reusable architecture-specific Docker build caches for faster image publishing.
+
 ## 0.1.16
 
 - Added mobile Inbox press-and-hold selection with glass checkboxes and bulk actions.

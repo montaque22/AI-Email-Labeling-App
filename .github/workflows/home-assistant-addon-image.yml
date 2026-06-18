@@ -68,12 +68,12 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: ./home-assistant-addon
-          file: ./home-assistant-addon/Dockerfile
+          context: .
+          file: ./home-assistant-addon/Dockerfile.prebuilt
           platforms: ${{ matrix.platform }}
           push: true
-          build-args: |
-            APP_CACHE_BUST=${{ github.sha }}
+          cache-from: type=gha,scope=emailable-${{ matrix.addon_arch }}
+          cache-to: type=gha,mode=max,scope=emailable-${{ matrix.addon_arch }}
           tags: |
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
             ${{ steps.meta.outputs.image }}:latest

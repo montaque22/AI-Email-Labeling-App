@@ -1,8 +1,9 @@
 name: Emailable
-version: "0.1.16"
+version: "0.1.17"
 slug: emailable
 description: Email labeling assistant with API and MCP tools.
 url: "https://github.com/montaque22/AI-Email-Labeling-App"
+image: "ghcr.io/montaque22/emailable-{arch}"
 arch:
   - aarch64
   - amd64
