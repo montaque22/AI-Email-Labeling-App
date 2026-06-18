@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentType, type ReactNode } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentType, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
 import {
   Cell,
   Line,
@@ -14,6 +14,7 @@ import {
   BarChart3,
   ArrowDown,
   ArrowUp,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -1206,6 +1207,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
   const [isByoAiActive, setIsByoAiActive] = useState(false);
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const [isMobileLabelPickerOpen, setIsMobileLabelPickerOpen] = useState(false);
+  const [isMobileEditMode, setIsMobileEditMode] = useState(false);
 
   useEffect(() => {
     async function loadBootstrap() {
@@ -1472,6 +1474,18 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
   const allVisibleSelected = filteredMessages.length > 0 && filteredMessages.every((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
   const selectedMessagesLabelValue = getCommonMessageLabelId(selectedMessages, labels);
 
+  function enterMobileEditMode(message?: InboxMessage) {
+    setIsMobileEditMode(true);
+    if (message) {
+      setSelectedMessageKeys((current) => [...new Set([...current, getInboxMessageKey(message)])]);
+    }
+  }
+
+  function cancelMobileEditMode() {
+    setIsMobileEditMode(false);
+    setSelectedMessageKeys([]);
+  }
+
   function toggleMessage(message: InboxMessage) {
     const key = getInboxMessageKey(message);
     setSelectedMessageKeys((current) => (current.includes(key) ? current.filter((item) => item !== key) : [...current, key]));
@@ -1495,6 +1509,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
   function handleInboxModeChange(mode: InboxMode) {
     setInboxMode(mode);
     setIsMobileLabelPickerOpen(false);
+    setIsMobileEditMode(false);
     if (mode !== "sent") {
       setSentSearch("");
     }
@@ -1719,23 +1734,51 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
       <div className="fixed inset-x-0 top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-white/60 bg-white/60 px-4 shadow-sm backdrop-blur-xl md:hidden">
-        <Button aria-label="Open menu" className="shrink-0 rounded-full border-white/70 bg-white/60 shadow-sm backdrop-blur-xl" onClick={onOpenMobileMenu} size="icon" type="button" variant="ghost">
-          <Menu className="h-5 w-5" />
-        </Button>
-        <button
-          className="min-w-0 flex-1 truncate rounded-full border border-white/70 bg-white/60 px-4 py-2 text-center text-sm font-semibold text-zinc-950 shadow-sm backdrop-blur-xl disabled:cursor-default"
-          disabled={inboxMode !== "inbox"}
-          onClick={() => setIsMobileLabelPickerOpen(true)}
-          type="button"
-        >
-          {inboxMode === "inbox" ? selectedLabel?.name || "Choose label" : inboxMode === "drafts" ? "Drafts" : "Sent"}
-        </button>
-        <Button aria-label="Open inbox filters" className="shrink-0 rounded-full border-white/70 bg-white/60 shadow-sm backdrop-blur-xl" onClick={() => setIsMobileFilterOpen(true)} size="icon" type="button" variant="outline">
-          <SlidersHorizontal className="h-4 w-4" />
-        </Button>
+        {isMobileEditMode ? (
+          <>
+            <button className="shrink-0 cursor-pointer text-sm font-medium text-blue-600" onClick={cancelMobileEditMode} type="button">
+              Cancel
+            </button>
+            <div className="flex min-w-0 flex-1 justify-center">
+              {selectedMessages.length > 0 ? (
+                <LabelActionSelect
+                  disabled={isBulkActionRunning || isLabelActionRunning}
+                  isLoading={isLabelActionRunning}
+                  labels={labels}
+                  onChange={(labelId) => void setMessagesLabel(selectedMessages, labelId)}
+                  value={selectedMessagesLabelValue}
+                />
+              ) : (
+                <span className="text-sm font-medium text-zinc-500">Select messages</span>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button className="cursor-pointer text-sm font-medium text-blue-600" onClick={toggleAllVisibleMessages} type="button">
+                {allVisibleSelected ? "Deselect all" : "Select all"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <Button aria-label="Open menu" className="shrink-0 rounded-full border-white/70 bg-white/60 shadow-sm backdrop-blur-xl" onClick={onOpenMobileMenu} size="icon" type="button" variant="ghost">
+              <Menu className="h-5 w-5" />
+            </Button>
+            <button
+              className="min-w-0 flex-1 truncate rounded-full border border-white/70 bg-white/60 px-4 py-2 text-center text-sm font-semibold text-zinc-950 shadow-sm backdrop-blur-xl disabled:cursor-default"
+              disabled={inboxMode !== "inbox"}
+              onClick={() => setIsMobileLabelPickerOpen(true)}
+              type="button"
+            >
+              {inboxMode === "inbox" ? selectedLabel?.name || "Choose label" : inboxMode === "drafts" ? "Drafts" : "Sent"}
+            </button>
+            <Button aria-label="Open inbox filters" className="shrink-0 rounded-full border-white/70 bg-white/60 shadow-sm backdrop-blur-xl" onClick={() => setIsMobileFilterOpen(true)} size="icon" type="button" variant="outline">
+              <SlidersHorizontal className="h-4 w-4" />
+            </Button>
+          </>
+        )}
       </div>
 
-      <Button
+      {!isMobileEditMode ? <Button
         aria-label="Compose email"
         className="fixed bottom-5 right-5 z-40 h-14 w-14 rounded-full border-white/70 bg-white/70 shadow-xl shadow-slate-900/15 backdrop-blur-xl md:hidden"
         onClick={() => {
@@ -1747,7 +1790,20 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
         variant="outline"
       >
         <Plus className="h-5 w-5" />
-      </Button>
+      </Button> : null}
+      {isMobileEditMode && selectedMessages.length > 0 ? (
+        <Button
+          aria-label="Delete selected emails"
+          className="fixed bottom-5 right-5 z-40 h-14 w-14 rounded-full border-red-200/80 bg-red-50/80 text-red-600 shadow-xl shadow-red-900/10 backdrop-blur-xl hover:bg-red-100/90 hover:text-red-700 md:hidden"
+          disabled={isBulkActionRunning || isLabelActionRunning}
+          onClick={() => void deleteSelectedMessages()}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
+          {isBulkActionRunning ? <Loader /> : <Trash2 className="h-5 w-5" />}
+        </Button>
+      ) : null}
 
       <div className={cn("grid min-w-0 gap-4 xl:gap-5", inboxMode === "inbox" ? "xl:grid-cols-[260px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
         {inboxMode === "inbox" ? (
@@ -1912,9 +1968,11 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
               ) : (
                 filteredMessages.map((message) => (
                   <InboxMessageRow
+                    isEditMode={isMobileEditMode}
                     isSelected={selectedMessageKeys.includes(getInboxMessageKey(message))}
                     key={`${message.accountId}-${message.id}-${message.mailbox ?? ""}`}
                     message={message}
+                    onLongPress={() => enterMobileEditMode(message)}
                     onOpen={() => void openMessage(message)}
                     onToggle={() => toggleMessage(message)}
                   />
@@ -2232,22 +2290,87 @@ function InboxMobileLabelPicker({
 }
 
 function InboxMessageRow({
+  isEditMode,
   isSelected,
   message,
+  onLongPress,
   onOpen,
   onToggle,
 }: {
+  isEditMode: boolean;
   isSelected: boolean;
   message: InboxMessage;
+  onLongPress: () => void;
   onOpen: () => void;
   onToggle: () => void;
 }) {
   const replyCount = typeof message.replyCount === "number" ? message.replyCount : 0;
+  const longPressTimeoutRef = useRef<number | null>(null);
+  const touchStartXRef = useRef(0);
+  const touchStartYRef = useRef(0);
+  const longPressFiredRef = useRef(false);
+  const [pressState, setPressState] = useState<"idle" | "pressing" | "popped">("idle");
+
+  function clearLongPressTimer() {
+    if (longPressTimeoutRef.current) {
+      window.clearTimeout(longPressTimeoutRef.current);
+      longPressTimeoutRef.current = null;
+    }
+  }
+
+  function releasePress() {
+    clearLongPressTimer();
+    setPressState("idle");
+  }
+
+  function handleMobilePointerDown(event: PointerEvent<HTMLDivElement>) {
+    touchStartXRef.current = event.clientX;
+    touchStartYRef.current = event.clientY;
+    longPressFiredRef.current = false;
+
+    if (!isEditMode) {
+      clearLongPressTimer();
+      setPressState("pressing");
+      longPressTimeoutRef.current = window.setTimeout(() => {
+        longPressFiredRef.current = true;
+        setPressState("popped");
+        onLongPress();
+        clearLongPressTimer();
+        window.setTimeout(() => setPressState("idle"), 180);
+      }, 520);
+    }
+  }
+
+  function handleMobilePointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (isEditMode) {
+      return;
+    }
+
+    const deltaX = event.clientX - touchStartXRef.current;
+    const deltaY = event.clientY - touchStartYRef.current;
+    if (Math.abs(deltaX) > 12 || Math.abs(deltaY) > 16) {
+      releasePress();
+    }
+  }
+
+  function handleMobileRowClick() {
+    if (longPressFiredRef.current) {
+      longPressFiredRef.current = false;
+      return;
+    }
+
+    if (isEditMode) {
+      onToggle();
+      return;
+    }
+
+    onOpen();
+  }
 
   return (
     <div className="border-b border-zinc-200 bg-white/45 transition-colors last:border-b-0 hover:bg-white/80">
       <div className="hidden w-full grid-cols-[auto_auto_minmax(110px,180px)_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 md:grid">
-        <input checked={isSelected} className="h-4 w-4 shrink-0" onChange={onToggle} type="checkbox" />
+        <GlassCheckbox checked={isSelected} onChange={onToggle} />
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-600">
           {getSenderInitial(message.sender || message.from)}
         </span>
@@ -2278,25 +2401,89 @@ function InboxMessageRow({
         </div>
       </div>
 
-      <button className="block w-full cursor-pointer px-4 py-3 text-left md:hidden" onClick={onOpen} type="button">
-        <div className="flex items-start justify-between gap-3">
-          <p className="min-w-0 truncate text-base font-bold text-zinc-950">{message.sender || message.from || "Unknown sender"}</p>
-          {message.hasAttachments ? <Download className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" /> : null}
-        </div>
-        <div className="mt-1 flex min-w-0 items-center gap-2">
-          <p className="min-w-0 truncate text-base text-zinc-950">{message.subject || "(no subject)"}</p>
-          {replyCount > 0 ? (
-            <span className="inline-flex h-6 min-w-8 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white/70 px-2 text-sm font-semibold text-zinc-700 shadow-sm backdrop-blur-xl">
-              {replyCount}
-            </span>
+      <div className="relative overflow-hidden md:hidden">
+        <div
+          className={cn(
+            "relative flex w-full touch-pan-y items-start gap-3 bg-white/45 px-4 py-3 text-left transition duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] will-change-transform",
+            isEditMode ? "cursor-pointer" : "cursor-pointer",
+            pressState === "pressing" ? "scale-[0.975] bg-white/65 shadow-inner" : null,
+            pressState === "popped" ? "scale-[1.025] bg-white/80 shadow-lg" : null,
+          )}
+          onClick={handleMobileRowClick}
+          onPointerCancel={releasePress}
+          onPointerDown={handleMobilePointerDown}
+          onPointerLeave={releasePress}
+          onPointerMove={handleMobilePointerMove}
+          onPointerUp={releasePress}
+          role="button"
+          tabIndex={0}
+        >
+          {isEditMode ? (
+            <GlassCheckbox
+              checked={isSelected}
+              onChange={onToggle}
+              onClick={(event) => event.stopPropagation()}
+              className="self-center"
+            />
           ) : null}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <p className="min-w-0 truncate text-base font-bold text-zinc-950">{message.sender || message.from || "Unknown sender"}</p>
+              {message.hasAttachments ? <Download className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" /> : null}
+            </div>
+            <div className="mt-1 flex min-w-0 items-center gap-2">
+              <p className="min-w-0 truncate text-base text-zinc-950">{message.subject || "(no subject)"}</p>
+              {replyCount > 0 ? (
+                <span className="inline-flex h-6 min-w-8 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white/70 px-2 text-sm font-semibold text-zinc-700 shadow-sm backdrop-blur-xl">
+                  {replyCount}
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-1 flex min-w-0 items-center gap-3">
+              <p className="min-w-0 flex-1 truncate text-base text-zinc-500">{message.snippet || "No preview available."}</p>
+              <p className="shrink-0 text-sm font-semibold text-zinc-500">{formatInboxListDate(message.date)}</p>
+            </div>
+          </div>
         </div>
-        <div className="mt-1 flex min-w-0 items-center gap-3">
-          <p className="min-w-0 flex-1 truncate text-base text-zinc-500">{message.snippet || "No preview available."}</p>
-          <p className="shrink-0 text-sm font-semibold text-zinc-500">{formatInboxListDate(message.date)}</p>
-        </div>
-      </button>
+      </div>
     </div>
+  );
+}
+
+function GlassCheckbox({
+  checked,
+  className,
+  onChange,
+  onClick,
+}: {
+  checked: boolean;
+  className?: string;
+  onChange: () => void;
+  onClick?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <button
+      aria-checked={checked}
+      className={cn(
+        "group relative flex h-[26px] w-[26px] shrink-0 cursor-pointer items-center justify-center rounded-full border border-zinc-300/80 bg-gradient-to-br from-zinc-50/95 via-zinc-100/75 to-zinc-200/55 shadow-sm shadow-slate-900/15 backdrop-blur-xl transition duration-200 hover:border-zinc-400/70 hover:from-white hover:to-zinc-200/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/70",
+        checked ? "border-blue-300/80 bg-none bg-blue-500/85 text-white shadow-blue-500/20" : "text-transparent",
+        className,
+      )}
+      onClick={(event) => {
+        onClick?.(event);
+        onChange();
+      }}
+      role="checkbox"
+      type="button"
+    >
+      <span
+        className={cn(
+          "absolute inset-0 rounded-full bg-gradient-to-br from-white/75 to-white/10 opacity-90 transition",
+          checked ? "opacity-30" : "group-hover:opacity-100",
+        )}
+      />
+      <Check className={cn("relative h-4 w-4 transition duration-200", checked ? "scale-100 opacity-100" : "scale-50 opacity-0")} />
+    </button>
   );
 }
 
