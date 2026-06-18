@@ -551,7 +551,11 @@ async function relabelInboxMessages(userId, action) {
 }
 
 async function setInboxMessagesLabel(userId, action) {
-  const [accounts, labels] = await Promise.all([getInboxAccounts(userId, []), getInboxLabels(userId)]);
+  const [accounts, labels, allLabels] = await Promise.all([
+    getInboxAccounts(userId, []),
+    getInboxLabels(userId),
+    getInboxLabels(userId, { includeSystem: true }),
+  ]);
   const accountsById = new Map(accounts.map((account) => [account.id, account]));
   const targetLabel = action.labelId ? labels.find((label) => label.id === action.labelId) : null;
   const targetSyncsByAccountId = new Map((targetLabel?.syncs ?? []).map((sync) => [sync.emailAccountId, sync]));
@@ -564,9 +568,9 @@ async function setInboxMessagesLabel(userId, action) {
     throw error;
   }
 
-  for (const label of labels) {
+  for (const label of allLabels) {
     for (const sync of label.syncs) {
-      if (!sync.providerLabelId || sync.syncStatus !== "synced") {
+      if (!sync.providerLabelId) {
         continue;
       }
       const list = allSyncsByAccountId.get(sync.emailAccountId) ?? [];
@@ -595,13 +599,16 @@ async function setInboxMessagesLabel(userId, action) {
 
       if (account.provider === "gmail") {
         const accessToken = await getValidEmailAccountAccessToken(account);
+        const removeLabelIds = [...new Set(
+          allAccountSyncs
+            .filter(({ sync }) => sync.providerLabelId !== targetSync?.providerLabelId)
+            .map(({ sync }) => sync.providerLabelId),
+        )];
         await modifyGmailMessageLabels({
           accessToken,
           emailId: message.emailId,
           addLabelIds: targetSync?.providerLabelId ? [targetSync.providerLabelId] : [],
-          removeLabelIds: allAccountSyncs
-            .filter(({ sync }) => sync.providerLabelId !== targetSync?.providerLabelId)
-            .map(({ sync }) => sync.providerLabelId),
+          removeLabelIds,
         });
       } else if (account.provider === "imap") {
         await moveImapInboxMessageToFolder({
@@ -690,7 +697,7 @@ async function getInboxAccounts(userId, accountIds = []) {
   return accounts.filter((account) => selected.has(account.id));
 }
 
-async function getInboxLabels(userId) {
+async function getInboxLabels(userId, { includeSystem = false } = {}) {
   const result = await dbPool.query(
     `
       select l.id,
@@ -709,11 +716,11 @@ async function getInboxLabels(userId) {
       from labels l
       left join label_account_syncs las on las.label_id = l.id
       where l.user_id = $1
-        and l.system_key is null
+        and ($2::boolean or l.system_key is null)
       group by l.id
       order by lower(l.name)
     `,
-    [userId],
+    [userId, includeSystem],
   );
 
   return result.rows;
@@ -755,7 +762,7 @@ async function listGmailInboxMessages({ accessToken, account, label, providerLab
 async function fetchGmailMessageMetadata(accessToken, emailId) {
   const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}`);
   url.searchParams.set("format", "metadata");
-  for (const header of ["From", "To", "Cc", "Subject", "Date"]) {
+  for (const header of ["From", "To", "Cc", "Subject", "Date", "Message-ID", "References"]) {
     url.searchParams.append("metadataHeaders", header);
   }
 
@@ -770,6 +777,7 @@ async function fetchGmailInboxMessage(accessToken, account, emailId) {
   const message = await response.json();
   const headers = getGmailHeaders(message);
   const body = extractGmailBodies(message.payload);
+  const threadMessages = await fetchGmailThreadMessages(accessToken, account, message.threadId);
 
   return {
     id: message.id,
@@ -785,8 +793,43 @@ async function fetchGmailInboxMessage(accessToken, account, emailId) {
     bodyText: body.text,
     bodyHtml: sanitizeEmailHtml(body.html),
     attachments: collectGmailAttachments(message.payload),
-    replyCount: await getGmailSentReplyCount(accessToken, message.threadId, message.id),
+    threadMessages,
+    replyCount: threadMessages.filter((threadMessage) => threadMessage.id !== message.id && threadMessage.isSent).length,
   };
+}
+
+async function fetchGmailThreadMessages(accessToken, account, threadId) {
+  if (!threadId) {
+    return [];
+  }
+
+  const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`);
+  url.searchParams.set("format", "full");
+  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+  const thread = await response.json();
+
+  return (thread.messages ?? [])
+    .map((message) => {
+      const headers = getGmailHeaders(message);
+      const body = extractGmailBodies(message.payload);
+      return {
+        id: message.id,
+        threadId: message.threadId,
+        accountId: account.id,
+        accountEmail: account.email,
+        provider: account.provider,
+        from: headers.from || "",
+        to: headers.to || "",
+        cc: headers.cc || "",
+        subject: headers.subject || "",
+        date: new Date(Number(message.internalDate || Date.parse(headers.date) || Date.now())).toISOString(),
+        bodyText: body.text,
+        bodyHtml: sanitizeEmailHtml(body.html),
+        attachments: collectGmailAttachments(message.payload),
+        isSent: Array.isArray(message.labelIds) && message.labelIds.includes("SENT"),
+      };
+    })
+    .sort((left, right) => new Date(left.date).getTime() - new Date(right.date).getTime());
 }
 
 async function getGmailLabelEstimate(accessToken, providerLabelId) {
@@ -800,10 +843,16 @@ async function getGmailLabelEstimate(accessToken, providerLabelId) {
 }
 
 async function createGmailComposeDraft(accessToken, account, compose) {
-  const raw = buildGmailComposeMessage(account.email, compose);
+  const original = compose.replyToEmailId ? await fetchGmailMessageMetadata(accessToken, compose.replyToEmailId) : null;
+  const raw = buildGmailComposeMessage(account.email, compose, original);
   const response = await providerFetch("https://gmail.googleapis.com/gmail/v1/users/me/drafts", accessToken, {
     method: "POST",
-    body: JSON.stringify({ message: { raw } }),
+    body: JSON.stringify({
+      message: {
+        raw,
+        ...(original?.threadId ? { threadId: original.threadId } : {}),
+      },
+    }),
   });
 
   return response.json();
@@ -837,10 +886,14 @@ async function listGmailSystemLabelMessages({ accessToken, account, labelId, lab
 }
 
 async function sendGmailComposeMessage(accessToken, account, compose) {
-  const raw = buildGmailComposeMessage(account.email, compose);
+  const original = compose.replyToEmailId ? await fetchGmailMessageMetadata(accessToken, compose.replyToEmailId) : null;
+  const raw = buildGmailComposeMessage(account.email, compose, original);
   const response = await providerFetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", accessToken, {
     method: "POST",
-    body: JSON.stringify({ raw }),
+    body: JSON.stringify({
+      raw,
+      ...(original?.threadId ? { threadId: original.threadId } : {}),
+    }),
   });
 
   return response.json();
@@ -977,6 +1030,8 @@ function parseComposeInput(body) {
     bcc: typeof body?.bcc === "string" ? body.bcc.trim() : "",
     subject: typeof body?.subject === "string" ? body.subject.trim() : "",
     bodyText: typeof body?.bodyText === "string" ? body.bodyText : "",
+    replyToEmailId: typeof body?.replyToEmailId === "string" ? body.replyToEmailId.trim() : "",
+    threadId: typeof body?.threadId === "string" ? body.threadId.trim() : "",
     attachments: Array.isArray(body?.attachments)
       ? body.attachments
           .filter((attachment) => attachment && typeof attachment === "object")
@@ -1132,13 +1187,18 @@ function collectGmailAttachments(part, attachments = []) {
   return attachments;
 }
 
-function buildGmailComposeMessage(from, compose) {
+function buildGmailComposeMessage(from, compose, original = null) {
+  const originalHeaders = original ? getGmailHeaders(original) : {};
+  const originalMessageId = originalHeaders["message-id"] || "";
+  const references = [originalHeaders.references, originalMessageId].filter(Boolean).join(" ");
   const lines = [
     `From: ${from}`,
     `To: ${compose.to}`,
     compose.cc ? `Cc: ${compose.cc}` : null,
     compose.bcc ? `Bcc: ${compose.bcc}` : null,
     `Subject: ${compose.subject}`,
+    originalMessageId ? `In-Reply-To: ${originalMessageId}` : null,
+    references ? `References: ${references}` : null,
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: 7bit",

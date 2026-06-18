@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.16
+
+- Added mobile Inbox press-and-hold selection with glass checkboxes and bulk actions.
+- Added disabled loading states for messages while deletion is in progress.
+- Updated Inbox label changes to remove prior Emailable labels and move IMAP messages between folders.
+- Fixed Gmail replies so they remain attached to the original thread.
+- Added chronological conversation threads to mobile and desktop email detail views.
+
 ## 0.1.15
 
 - Added a mobile-optimized Inbox experience with a fixed header, filter drawer, label picker, floating compose action, and compact message rows.

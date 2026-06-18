@@ -377,8 +377,26 @@ type InboxMessageDetail = {
   bodyText: string;
   bodyHtml: string;
   attachments: InboxAttachment[];
+  threadMessages?: InboxThreadMessage[];
   replyCount?: number;
   rule?: InboxRuleStatus | null;
+};
+
+type InboxThreadMessage = {
+  id: string;
+  threadId: string;
+  accountId: string;
+  accountEmail: string;
+  provider: string;
+  from: string;
+  to: string;
+  cc?: string;
+  subject: string;
+  date: string;
+  bodyText: string;
+  bodyHtml: string;
+  attachments: InboxAttachment[];
+  isSent?: boolean;
 };
 
 type InboxAttachment = {
@@ -396,6 +414,8 @@ type InboxComposeDraft = {
   subject: string;
   bodyText: string;
   replyContext?: {
+    emailId: string;
+    threadId: string;
     subject: string;
     from: string;
     snippet: string;
@@ -1198,6 +1218,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [composeInitial, setComposeInitial] = useState<Partial<InboxComposeDraft> | null>(null);
   const [selectedMessageKeys, setSelectedMessageKeys] = useState<string[]>([]);
+  const [deletingMessageKeys, setDeletingMessageKeys] = useState<string[]>([]);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isBulkActionRunning, setIsBulkActionRunning] = useState(false);
   const [isLabelActionRunning, setIsLabelActionRunning] = useState(false);
@@ -1664,6 +1685,8 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
       return;
     }
 
+    const requestedDeleteKeys = messagesToDelete.map(getInboxMessageKey);
+    setDeletingMessageKeys(requestedDeleteKeys);
     setIsBulkActionRunning(true);
     setError(null);
     try {
@@ -1707,6 +1730,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
     } catch {
       setError("Could not delete messages.");
     } finally {
+      setDeletingMessageKeys([]);
       setIsBulkActionRunning(false);
     }
   }
@@ -1718,6 +1742,8 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
       subject: normalizeReplySubject(detail?.subject || summary.subject),
       bodyText: "",
       replyContext: {
+        emailId: detail?.id || summary.id,
+        threadId: detail?.threadId || summary.threadId,
         subject: detail?.subject || summary.subject,
         from: detail?.from || summary.from,
         snippet: summary.snippet,
@@ -1903,7 +1929,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
                       value={selectedMessagesLabelValue}
                     />
                     <Button disabled={isBulkActionRunning || isLabelActionRunning} onClick={() => void deleteSelectedMessages()} type="button" variant="outline">
-                      <Trash2 className="h-4 w-4" />
+                      {isBulkActionRunning ? <Loader /> : <Trash2 className="h-4 w-4" />}
                       Delete
                     </Button>
                   </>
@@ -1969,6 +1995,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
                 filteredMessages.map((message) => (
                   <InboxMessageRow
                     isEditMode={isMobileEditMode}
+                    isDeleting={deletingMessageKeys.includes(getInboxMessageKey(message))}
                     isSelected={selectedMessageKeys.includes(getInboxMessageKey(message))}
                     key={`${message.accountId}-${message.id}-${message.mailbox ?? ""}`}
                     message={message}
@@ -2022,6 +2049,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
             <InboxMessagePushView
               detail={messageDetail}
               error={detailError}
+              isDeleting={deletingMessageKeys.includes(getInboxMessageKey(selectedMessage))}
               isLoading={isDetailLoading}
               isLabelActionRunning={isLabelActionRunning}
               labels={labels}
@@ -2042,6 +2070,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
             <InboxMessageModal
               detail={messageDetail}
               error={detailError}
+              isDeleting={deletingMessageKeys.includes(getInboxMessageKey(selectedMessage))}
               isLoading={isDetailLoading}
               isLabelActionRunning={isLabelActionRunning}
               labels={labels}
@@ -2291,6 +2320,7 @@ function InboxMobileLabelPicker({
 
 function InboxMessageRow({
   isEditMode,
+  isDeleting,
   isSelected,
   message,
   onLongPress,
@@ -2298,6 +2328,7 @@ function InboxMessageRow({
   onToggle,
 }: {
   isEditMode: boolean;
+  isDeleting: boolean;
   isSelected: boolean;
   message: InboxMessage;
   onLongPress: () => void;
@@ -2368,7 +2399,18 @@ function InboxMessageRow({
   }
 
   return (
-    <div className="border-b border-zinc-200 bg-white/45 transition-colors last:border-b-0 hover:bg-white/80">
+    <div
+      aria-busy={isDeleting}
+      className={cn(
+        "relative border-b border-zinc-200 bg-white/45 transition last:border-b-0 hover:bg-white/80",
+        isDeleting ? "pointer-events-none opacity-60" : null,
+      )}
+    >
+      {isDeleting ? (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/45 backdrop-blur-[1px]">
+          <Loader />
+        </div>
+      ) : null}
       <div className="hidden w-full grid-cols-[auto_auto_minmax(110px,180px)_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 md:grid">
         <GlassCheckbox checked={isSelected} onChange={onToggle} />
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-600">
@@ -2490,6 +2532,7 @@ function GlassCheckbox({
 function InboxMessagePushView({
   detail,
   error,
+  isDeleting,
   isLoading,
   isLabelActionRunning,
   labels,
@@ -2504,6 +2547,7 @@ function InboxMessagePushView({
 }: {
   detail: InboxMessageDetail | null;
   error: string | null;
+  isDeleting: boolean;
   isLoading: boolean;
   isLabelActionRunning: boolean;
   labels: Label[];
@@ -2518,7 +2562,6 @@ function InboxMessagePushView({
 }) {
   const rule = detail?.rule ?? summary.rule ?? null;
   const replyCount = detail?.replyCount ?? summary.replyCount ?? 0;
-  const fromText = detail?.from || summary.from || summary.sender || "Unknown sender";
 
   return (
     <section className="fixed inset-0 z-50 flex flex-col bg-[#f7f7f7] text-zinc-950 md:hidden">
@@ -2531,8 +2574,8 @@ function InboxMessagePushView({
           <Button aria-label="Reply" onClick={() => onReply(detail, summary)} size="icon" type="button" variant="ghost">
             <Reply className="h-4 w-4" />
           </Button>
-          <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" onClick={() => onDelete(summary)} size="icon" type="button" variant="ghost">
-            <Trash2 className="h-4 w-4" />
+          <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" disabled={isDeleting} onClick={() => onDelete(summary)} size="icon" type="button" variant="ghost">
+            {isDeleting ? <Loader /> : <Trash2 className="h-4 w-4" />}
           </Button>
         </div>
       </div>
@@ -2558,47 +2601,10 @@ function InboxMessagePushView({
             <h1 className="text-lg font-semibold leading-tight text-zinc-950">{detail?.subject || summary.subject || "(no subject)"}</h1>
           </div>
 
-          <div className="rounded-2xl border border-white/70 bg-white/65 p-3 shadow-sm backdrop-blur-xl">
-            <div className="flex items-start gap-3">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-violet-100 text-sm font-semibold text-violet-700">
-                {getSenderInitial(fromText)}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold text-zinc-950">{extractDisplayNameFromText(fromText) || summary.sender || fromText}</p>
-                <p className="truncate text-xs text-zinc-500">From: {formatEmailTextForPrivacy(fromText, privacyMode)}</p>
-                {detail?.to ? <p className="truncate text-xs text-zinc-500">To: {formatEmailTextForPrivacy(detail.to, privacyMode)}</p> : null}
-              </div>
-              <p className="shrink-0 text-right text-xs text-zinc-500">{formatDateTime(detail?.date || summary.date)}</p>
-            </div>
-          </div>
-
           {isLoading ? <p className="rounded-xl border border-white/70 bg-white/60 p-4 text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
-          {detail ? (
-            <>
-              <div className="rounded-2xl border border-white/70 bg-white/75 p-4 shadow-sm backdrop-blur-xl">
-                {detail.bodyHtml ? (
-                  <AutoSizeEmailFrame html={detail.bodyHtml} title="Email body" />
-                ) : (
-                  <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-zinc-700">{detail.bodyText || "No body content."}</pre>
-                )}
-              </div>
-              {detail.attachments.length > 0 ? (
-                <div className="space-y-2">
-                  {detail.attachments.map((attachment, index) => (
-                    <div className="flex items-center justify-between gap-3 rounded-xl border border-white/70 bg-white/65 px-3 py-2 text-sm shadow-sm backdrop-blur-xl" key={`${attachment.filename}-${index}`}>
-                      <div className="min-w-0">
-                        <p className="truncate font-medium text-zinc-950">{attachment.filename}</p>
-                        <p className="text-xs text-zinc-500">{attachment.type} {attachment.size ? ` / ${formatFileSize(attachment.size)}` : ""}</p>
-                      </div>
-                      <Download className="h-4 w-4 shrink-0 text-zinc-500" />
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </>
-          ) : null}
+          {detail ? <InboxThreadConversation detail={detail} privacyMode={privacyMode} /> : null}
         </div>
       </div>
     </section>
@@ -2682,6 +2688,7 @@ function LabelActionSelect({
 function InboxMessageModal({
   detail,
   error,
+  isDeleting,
   isLoading,
   isLabelActionRunning,
   labels,
@@ -2696,6 +2703,7 @@ function InboxMessageModal({
 }: {
   detail: InboxMessageDetail | null;
   error: string | null;
+  isDeleting: boolean;
   isLoading: boolean;
   isLabelActionRunning: boolean;
   labels: Label[];
@@ -2741,8 +2749,8 @@ function InboxMessageModal({
                 value={currentLabelId}
               />
               <Tooltip side="bottom" text="Delete email">
-                <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" onClick={() => onDelete(summary)} size="icon" type="button" variant="outline">
-                  <Trash2 className="h-4 w-4" />
+                <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" disabled={isDeleting} onClick={() => onDelete(summary)} size="icon" type="button" variant="outline">
+                  {isDeleting ? <Loader /> : <Trash2 className="h-4 w-4" />}
                 </Button>
               </Tooltip>
               <Tooltip side="bottom" text="Reply">
@@ -2759,43 +2767,70 @@ function InboxMessageModal({
           {isLoading ? <p className="text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           {detail ? (
-            <div className="space-y-5">
-              <div className="grid gap-2 text-sm text-zinc-600">
-                <p><span className="font-medium text-zinc-950">From:</span> {formatEmailTextForPrivacy(detail.from, privacyMode)}</p>
-                <p><span className="font-medium text-zinc-950">To:</span> {formatEmailTextForPrivacy(detail.to, privacyMode)}</p>
-                {detail.cc ? <p><span className="font-medium text-zinc-950">CC:</span> {formatEmailTextForPrivacy(detail.cc, privacyMode)}</p> : null}
-                <p><span className="font-medium text-zinc-950">Date:</span> {formatDateTime(detail.date)}</p>
-              </div>
-              <div className="rounded-xl border border-white/70 bg-white/80 p-4 shadow-sm">
-                {detail.bodyHtml ? (
-                  <iframe className="h-[460px] w-full rounded bg-white" sandbox="" srcDoc={detail.bodyHtml} title="Email body" />
-                ) : (
-                  <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-zinc-700">{detail.bodyText || "No body content."}</pre>
-                )}
-              </div>
-              <div>
-                <p className="text-sm font-medium text-zinc-950">Attachments</p>
-                {detail.attachments.length === 0 ? (
-                  <p className="mt-2 text-sm text-zinc-500">No attachments.</p>
-                ) : (
-                  <div className="mt-2 space-y-2">
-                    {detail.attachments.map((attachment, index) => (
-                      <div className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-white/70 px-3 py-2 text-sm" key={`${attachment.filename}-${index}`}>
-                        <div>
-                          <p className="font-medium text-zinc-950">{attachment.filename}</p>
-                          <p className="text-xs text-zinc-500">{attachment.type} {attachment.size ? ` / ${formatFileSize(attachment.size)}` : ""}</p>
-                        </div>
-                        <Button disabled type="button" variant="outline">Open</Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            <InboxThreadConversation detail={detail} privacyMode={privacyMode} />
           ) : null}
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function InboxThreadConversation({ detail, privacyMode }: { detail: InboxMessageDetail; privacyMode: boolean }) {
+  const messages: InboxThreadMessage[] = detail.threadMessages?.length
+    ? detail.threadMessages
+    : [{
+        id: detail.id,
+        threadId: detail.threadId,
+        accountId: detail.accountId,
+        accountEmail: detail.accountEmail,
+        provider: detail.provider,
+        from: detail.from,
+        to: detail.to,
+        cc: detail.cc,
+        subject: detail.subject,
+        date: detail.date,
+        bodyText: detail.bodyText,
+        bodyHtml: detail.bodyHtml,
+        attachments: detail.attachments,
+      }];
+
+  return (
+    <div className="space-y-4">
+      {messages.map((message, messageIndex) => (
+        <article className="overflow-hidden rounded-xl border border-white/80 bg-white/75 shadow-sm backdrop-blur-xl" key={message.id}>
+          <div className="grid gap-1.5 bg-white/70 px-4 py-3 text-xs text-zinc-600 sm:text-sm">
+            <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+              <p className="min-w-0 break-words">
+                <span className="font-medium text-zinc-950">From:</span> {formatEmailTextForPrivacy(message.from, privacyMode)}
+              </p>
+              <p className="shrink-0 text-zinc-500">{formatDateTime(message.date)}</p>
+            </div>
+            <p className="break-words"><span className="font-medium text-zinc-950">To:</span> {formatEmailTextForPrivacy(message.to, privacyMode)}</p>
+            {message.cc ? <p className="break-words"><span className="font-medium text-zinc-950">CC:</span> {formatEmailTextForPrivacy(message.cc, privacyMode)}</p> : null}
+          </div>
+          <div className="border-t border-zinc-200/80 bg-white/80 p-4">
+            {message.bodyHtml ? (
+              <AutoSizeEmailFrame html={message.bodyHtml} title={`Thread message ${messageIndex + 1}`} />
+            ) : (
+              <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-zinc-700">{message.bodyText || "No body content."}</pre>
+            )}
+          </div>
+          {message.attachments.length > 0 ? (
+            <div className="space-y-2 border-t border-zinc-200/80 bg-white/65 px-4 py-3">
+              {message.attachments.map((attachment, attachmentIndex) => (
+                <div className="flex items-center justify-between gap-3 rounded-md border border-zinc-200/80 bg-white/70 px-3 py-2 text-sm" key={`${message.id}-${attachment.filename}-${attachmentIndex}`}>
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-zinc-950">{attachment.filename}</p>
+                    <p className="text-xs text-zinc-500">{attachment.type} {attachment.size ? ` / ${formatFileSize(attachment.size)}` : ""}</p>
+                  </div>
+                  <Download className="h-4 w-4 shrink-0 text-zinc-500" />
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </article>
+      ))}
     </div>
   );
 }
@@ -3210,7 +3245,17 @@ function InboxComposeModal({
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId, to, cc, bcc, subject, bodyText, attachments }),
+        body: JSON.stringify({
+          accountId,
+          to,
+          cc,
+          bcc,
+          subject,
+          bodyText,
+          attachments,
+          replyToEmailId: replyContext?.emailId || "",
+          threadId: replyContext?.threadId || "",
+        }),
       });
       const data = await response.json();
       if (!response.ok) {
