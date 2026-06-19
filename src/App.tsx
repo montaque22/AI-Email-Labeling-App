@@ -4804,6 +4804,18 @@ function RuleReviewPage({
     }
   }, [rules, selectedRule, addRuleStep]);
 
+  useEffect(() => {
+    if (!selectedRule && addRuleStep !== "search") return;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, [selectedRule, addRuleStep]);
+
   async function loadRuleReviewData() {
     setIsLoading(true);
     setError(null);
@@ -5432,18 +5444,25 @@ function RuleReviewPage({
 
         {selectedRule ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
-        <Card className="max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
-          <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
-            <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+        <Card className="flex max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+          <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
+            <CardHeader className="shrink-0 gap-3 border-b border-white/60 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
               <div className="min-w-0">
-                <CardTitle>{addRuleStep === "review" ? "Create Rule" : "Edit Rule"}</CardTitle>
+                <div className="flex flex-wrap items-center gap-2">
+                  <CardTitle>{addRuleStep === "review" ? "Create Rule" : "Edit Rule"}</CardTitle>
+                  {addRuleStep === "review" ? null : (
+                    <Badge className={selectedRule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
+                      {selectedRule.isPending ? "Pending" : "Reviewed"}
+                    </Badge>
+                  )}
+                </div>
                 <CardDescription>Choose the single best label for this email.</CardDescription>
               </div>
-              <Button aria-label="Close rule details" onClick={() => (addRuleStep === "review" ? closeAddRuleModal() : selectRule(null))} size="icon" type="button" variant="outline">
+              <Button aria-label="Close rule details" className="shrink-0 bg-transparent shadow-none hover:bg-white/40" onClick={() => (addRuleStep === "review" ? closeAddRuleModal() : selectRule(null))} size="icon" type="button" variant="ghost">
                 <X className="h-4 w-4" />
               </Button>
             </CardHeader>
-          <CardContent className="max-h-[calc(92vh-128px)] overflow-y-auto overflow-x-hidden p-5">
+          <CardContent className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-5">
               {addRuleStep === "review" ? <StepProgress currentStep={2} steps={["Search", "Review"]} /> : null}
               <div className="space-y-5">
                 <div>
@@ -5454,9 +5473,6 @@ function RuleReviewPage({
                       <p className="truncate text-xs text-zinc-500">Account: {formatEmailForPrivacy(selectedRule.accountEmail || "Unknown account", privacyMode)}</p>
                       <p className="truncate text-xs text-zinc-500">Created: {formatDate(selectedRule.createdAt)}</p>
                     </div>
-                    <Badge className={selectedRule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
-                      {selectedRule.isPending ? "Pending" : "Reviewed"}
-                    </Badge>
                   </div>
                   <p className="mt-4 text-sm font-medium text-zinc-950">{selectedRule.subject}</p>
                   <p className="mt-2 text-sm leading-6 text-zinc-600">{selectedRule.snippet}</p>
@@ -5491,32 +5507,32 @@ function RuleReviewPage({
                   </label>
                 ) : null}
 
-                <div className="flex flex-wrap justify-end gap-2">
-                  {addRuleStep === "review" ? (
-                    <Button disabled={isSaving} onClick={goBackToAddRuleSearch} type="button" variant="outline">
-                      Previous
-                    </Button>
-                  ) : null}
-                  <Button disabled={isSaving} onClick={() => (addRuleStep === "review" ? closeAddRuleModal() : selectRule(selectedRule))} type="button" variant="outline">
-                    Cancel
-                  </Button>
-                  {addRuleStep === "review" ? null : (
-                  <Button disabled={isSaving} onClick={() => void deleteSelectedRule()} type="button" variant="outline">
-                    {ruleAction === "delete" ? <Loader /> : <Trash2 className="h-4 w-4" />}
-                    {ruleAction === "delete" ? "Deleting..." : "Delete"}
-                  </Button>
-                  )}
-                  <Tooltip text={selectedReviewReason ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
-                    <span>
-                      <Button className={cn(canReviewRule && reviewedButtonClass)} disabled={isSaving || !canReviewRule} onClick={() => void saveRuleReview()} type="button">
-                        {ruleAction === "review" ? <Loader /> : <Save className="h-4 w-4" />}
-                        {ruleAction === "review" ? "Reviewing..." : "Reviewed"}
-                      </Button>
-                    </span>
-                  </Tooltip>
-                </div>
               </div>
             </CardContent>
+            <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-white/60 bg-white/25 p-5">
+              {addRuleStep === "review" ? (
+                <Button disabled={isSaving} onClick={goBackToAddRuleSearch} type="button" variant="outline">
+                  Previous
+                </Button>
+              ) : null}
+              <Button disabled={isSaving} onClick={() => (addRuleStep === "review" ? closeAddRuleModal() : selectRule(null))} type="button" variant="outline">
+                Cancel
+              </Button>
+              {addRuleStep === "review" ? null : (
+              <Button disabled={isSaving} onClick={() => void deleteSelectedRule()} type="button" variant="outline">
+                {ruleAction === "delete" ? <Loader /> : <Trash2 className="h-4 w-4" />}
+                {ruleAction === "delete" ? "Deleting..." : "Delete"}
+              </Button>
+              )}
+              <Tooltip text={selectedReviewReason ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
+                <span>
+                  <Button className={cn(canReviewRule && reviewedButtonClass)} disabled={isSaving || !canReviewRule} onClick={() => void saveRuleReview()} type="button">
+                    {ruleAction === "review" ? <Loader /> : <Save className="h-4 w-4" />}
+                    {ruleAction === "review" ? "Reviewing..." : "Reviewed"}
+                  </Button>
+                </span>
+              </Tooltip>
+            </div>
           </div>
         </Card>
         </div>

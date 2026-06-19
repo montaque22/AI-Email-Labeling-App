@@ -1793,6 +1793,11 @@ export async function parseLabelClassificationInput(userId, body) {
   const stringFields = ["emailId", "threadId", "fromEmail", "fromName", "subject", "snippet"];
 
   for (const field of stringFields) {
+    if (field === "snippet" && typeof body[field] === "string") {
+      rule[field] = body[field].trim() || "No message preview available.";
+      continue;
+    }
+
     if (typeof body[field] !== "string" || body[field].trim().length === 0) {
       return { ok: false, error: `${field} must be a non-empty string` };
     }
@@ -2010,6 +2015,57 @@ async function getEmailRuleByEmailId(userId, emailId) {
   );
 
   return result.rows[0] ? mapEmailRuleRow(result.rows[0]) : null;
+}
+
+export async function findRelevantEmailRules(userId, email) {
+  const result = await dbPool.query(
+    `
+      select ${EMAIL_RULE_SELECT}
+      from email_rules
+      where user_id = $1
+      order by updated_at desc
+      limit 200
+    `,
+    [userId],
+  );
+  const targetFromEmail = normalizeRuleMatchText(email.fromEmail);
+  const targetFromName = normalizeRuleMatchText(email.fromName);
+  const targetSubject = normalizeRuleSubject(email.subject);
+  const targetTokens = new Set(targetSubject.split(" ").filter((token) => token.length > 2));
+
+  return result.rows
+    .map(mapEmailRuleRow)
+    .map((rule) => {
+      let matchScore = 0;
+      const ruleFromEmail = normalizeRuleMatchText(rule.fromEmail);
+      const ruleFromName = normalizeRuleMatchText(rule.fromName);
+      const ruleSubject = normalizeRuleSubject(rule.subject);
+      if (targetFromEmail && ruleFromEmail === targetFromEmail) matchScore += 0.5;
+      if (targetFromName && ruleFromName === targetFromName) matchScore += 0.15;
+      if (targetSubject && ruleSubject === targetSubject) {
+        matchScore += 0.65;
+      } else if (targetSubject && ruleSubject) {
+        const ruleTokens = new Set(ruleSubject.split(" ").filter((token) => token.length > 2));
+        const shared = [...targetTokens].filter((token) => ruleTokens.has(token)).length;
+        const total = new Set([...targetTokens, ...ruleTokens]).size;
+        matchScore += total > 0 ? (shared / total) * 0.45 : 0;
+      }
+      return { ...rule, matchScore: Math.min(matchScore, 1) };
+    })
+    .filter((rule) => rule.matchScore >= 0.4)
+    .sort((left, right) => right.matchScore - left.matchScore || Number(left.isPending) - Number(right.isPending))
+    .slice(0, 8);
+}
+
+function normalizeRuleMatchText(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizeRuleSubject(value) {
+  return normalizeRuleMatchText(value)
+    .replace(/^\s*((re|fw|fwd)\s*:\s*)+/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 async function getRecentRules(userId, limit) {

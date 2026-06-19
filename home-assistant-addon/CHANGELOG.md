@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.24
+
+- Improved the rule review modal with fixed actions, one scrollable content area, and background scroll locking.
+- Added existing-rule retrieval to AI labeling so matching rules guide classification without creating duplicates.
+- Added provider-native structured output schemas for AI label responses.
+- Normalized missing provider snippets so scheduled polling can continue processing messages.
+
 ## 0.1.23
 
 - Added an in-app Markdown documentation center with routed pages and a table of contents.
