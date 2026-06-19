@@ -4349,8 +4349,12 @@ function MetricsPage() {
   const [logCategory, setLogCategory] = useState("all");
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+  const [isExportingLogs, setIsExportingLogs] = useState(false);
+  const [isPurgingLogs, setIsPurgingLogs] = useState(false);
+  const [isLogPurgeConfirmOpen, setIsLogPurgeConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
+  const [logsNotice, setLogsNotice] = useState<string | null>(null);
 
   useEffect(() => {
     function handlePopState() {
@@ -4392,6 +4396,17 @@ function MetricsPage() {
     }
   }, [activeTab, logCategory]);
 
+  useEffect(() => {
+    if (!isLogPurgeConfirmOpen) {
+      return;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isLogPurgeConfirmOpen]);
+
   async function loadLogs() {
     setIsLoadingLogs(true);
     setLogsError(null);
@@ -4410,6 +4425,65 @@ function MetricsPage() {
       setLogsError("Could not load logs.");
     } finally {
       setIsLoadingLogs(false);
+    }
+  }
+
+  async function exportLogs() {
+    setIsExportingLogs(true);
+    setLogsError(null);
+    setLogsNotice(null);
+    try {
+      const response = await fetch(`/api/system-logs/export?category=${encodeURIComponent(logCategory)}`, {
+        credentials: "include",
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setLogsError(data.error ?? "Could not export logs.");
+        return;
+      }
+
+      const content = await serializeLogsInWorker({
+        category: logCategory,
+        exportedAt: new Date().toISOString(),
+        logs: data.logs ?? [],
+      });
+      const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `emailable-logs-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setLogsNotice("Log export is ready.");
+    } catch {
+      setLogsError("Could not export logs.");
+    } finally {
+      setIsExportingLogs(false);
+    }
+  }
+
+  async function purgeLogs() {
+    setIsPurgingLogs(true);
+    setLogsError(null);
+    setLogsNotice(null);
+    try {
+      const response = await fetch("/api/system-logs", {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setLogsError(data.error ?? "Could not delete logs.");
+        return;
+      }
+      setLogs([]);
+      setLogsNotice(`${data.deleted ?? 0} log${data.deleted === 1 ? "" : "s"} deleted.`);
+      setIsLogPurgeConfirmOpen(false);
+    } catch {
+      setLogsError("Could not delete logs.");
+    } finally {
+      setIsPurgingLogs(false);
     }
   }
 
@@ -4434,18 +4508,34 @@ function MetricsPage() {
             </CardDescription>
           </div>
           {activeTab === "logs" ? (
-            <select
-              className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
-              onChange={(event) => setLogCategory(event.target.value)}
-              value={logCategory}
-            >
-              <option value="all">All</option>
-              <option value="ai">AI</option>
-              <option value="email">Email</option>
-              <option value="endpoints">Endpoints</option>
-              <option value="webhook">Webhook Events</option>
-              <option value="mcp-server">MCP Server</option>
-            </select>
+            <div className="flex items-center gap-2">
+              <select
+                className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                onChange={(event) => setLogCategory(event.target.value)}
+                value={logCategory}
+              >
+                <option value="all">All</option>
+                <option value="ai">AI</option>
+                <option value="email">Email</option>
+                <option value="endpoints">Endpoints</option>
+                <option value="webhook">Webhook Events</option>
+                <option value="mcp-server">MCP Server</option>
+              </select>
+              <Tooltip text="Export logs">
+                <span>
+                  <Button aria-label="Export logs" disabled={isExportingLogs} onClick={() => void exportLogs()} size="icon" type="button" variant="outline">
+                    {isExportingLogs ? <Loader /> : <Download className="h-4 w-4" />}
+                  </Button>
+                </span>
+              </Tooltip>
+              <Tooltip text="Delete all logs">
+                <span>
+                  <Button aria-label="Delete all logs" disabled={isPurgingLogs} onClick={() => setIsLogPurgeConfirmOpen(true)} size="icon" type="button" variant="outline">
+                    <Trash2 className="h-4 w-4 text-red-600" />
+                  </Button>
+                </span>
+              </Tooltip>
+            </div>
           ) : null}
         </CardHeader>
         <CardContent>
@@ -4486,6 +4576,7 @@ function MetricsPage() {
       ) : (
         <Card>
           <CardContent className="space-y-3 pt-6">
+            {logsNotice ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{logsNotice}</p> : null}
             {logsError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{logsError}</p> : null}
             {isLoadingLogs ? (
               <p className="rounded-md border border-dashed border-zinc-200 px-4 py-8 text-center text-sm text-zinc-500">Loading logs...</p>
@@ -4519,6 +4610,24 @@ function MetricsPage() {
           </CardContent>
         </Card>
       )}
+      {isLogPurgeConfirmOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+          <button aria-label="Close delete logs confirmation" className="absolute inset-0 cursor-default" disabled={isPurgingLogs} onClick={() => setIsLogPurgeConfirmOpen(false)} type="button" />
+          <div className="relative w-full max-w-md rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+            <div className="rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60">
+              <h3 className="text-lg font-semibold text-zinc-950">Delete all logs?</h3>
+              <p className="mt-2 text-sm leading-6 text-zinc-600">This permanently deletes all logs for your Emailable account. This action cannot be undone.</p>
+              <div className="mt-5 flex justify-end gap-2">
+                <Button disabled={isPurgingLogs} onClick={() => setIsLogPurgeConfirmOpen(false)} type="button" variant="outline">Cancel</Button>
+                <Button className="bg-red-600 text-white hover:bg-red-700" disabled={isPurgingLogs} onClick={() => void purgeLogs()} type="button">
+                  {isPurgingLogs ? <Loader /> : <Trash2 className="h-4 w-4" />}
+                  {isPurgingLogs ? "Deleting..." : "Delete all"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -10074,6 +10183,40 @@ function EmailAccountStatusBadge({ account }: { account: EmailAccount }) {
   }
 
   return <Badge className="w-fit bg-zinc-100 text-zinc-600">Unchecked</Badge>;
+}
+
+function serializeLogsInWorker(payload: { category: string; exportedAt: string; logs: SystemLog[] }) {
+  return new Promise<string>((resolve, reject) => {
+    const workerSource = `
+      self.onmessage = (event) => {
+        try {
+          self.postMessage(JSON.stringify(event.data, null, 2));
+        } catch (error) {
+          self.postMessage({ __error: error instanceof Error ? error.message : "Could not serialize logs." });
+        }
+      };
+    `;
+    const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
+    const worker = new Worker(workerUrl);
+    const cleanup = () => {
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+    };
+    worker.onmessage = (event) => {
+      const result = event.data;
+      cleanup();
+      if (result && typeof result === "object" && result.__error) {
+        reject(new Error(result.__error));
+        return;
+      }
+      resolve(String(result));
+    };
+    worker.onerror = () => {
+      cleanup();
+      reject(new Error("Could not serialize logs."));
+    };
+    worker.postMessage(payload);
+  });
 }
 
 function logCategoryLabel(category: string) {

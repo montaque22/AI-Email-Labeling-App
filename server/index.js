@@ -13,7 +13,7 @@ import { ensureLabelsTable, registerLabelRoutes } from "./labels.js";
 import { ensureMcpTables, registerMcpRoutes } from "./mcp-server.js";
 import { ensurePollingSettings, registerPollingRoutes, startPollingWorker } from "./polling.js";
 import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
-import { ensureSystemLogsTable } from "./system-logs.js";
+import { ensureSystemLogsTable, startSystemLogRetentionWorker } from "./system-logs.js";
 import { resolveHomeAssistantIngressUser } from "./session.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -138,6 +138,7 @@ async function startServer() {
   app.listen(port, () => {
     console.log(`Server listening on port ${port}`);
     startPollingWorker();
+    startSystemLogRetentionWorker();
   });
 }
 

@@ -15,7 +15,7 @@ import {
 import { ensureLabelSyncedToAccount } from "./label-sync.js";
 import { getConfidenceThreshold } from "./settings.js";
 import { emitWebhookEvent } from "./webhooks.js";
-import { listSystemLogs, logSystemEvent } from "./system-logs.js";
+import { deleteAllSystemLogs, exportSystemLogs, listSystemLogs, logSystemEvent } from "./system-logs.js";
 
 const API_KEY_PREFIX = "n8n";
 const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
@@ -274,6 +274,26 @@ export function registerIntegrationRoutes(app) {
           limit: Number(req.query.limit ?? 100),
         }),
       });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/system-logs/export", requireSession, async (req, res) => {
+    try {
+      res.json({
+        logs: await exportSystemLogs(req.user.id, {
+          category: typeof req.query.category === "string" ? req.query.category : "all",
+        }),
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.delete("/api/system-logs", requireSession, async (req, res) => {
+    try {
+      res.json({ deleted: await deleteAllSystemLogs(req.user.id) });
     } catch (error) {
       handleError(res, error);
     }

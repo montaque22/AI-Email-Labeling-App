@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.22
+
+- Added seven-day system log retention on startup and daily cleanup.
+- Added background log export with automatic browser download.
+- Added confirmation-based deletion of all user logs.
+
 ## 0.1.21
 
 - Corrected Create Rule and Edit Rule modal titles.

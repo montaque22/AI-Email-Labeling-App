@@ -1,6 +1,9 @@
 import { dbPool } from "./db.js";
 import crypto from "node:crypto";
 
+const LOG_RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
+let retentionTimer = null;
+
 export async function ensureSystemLogsTable() {
   if (!dbPool) {
     return;
@@ -20,6 +23,26 @@ export async function ensureSystemLogsTable() {
   `);
   await dbPool.query("create index if not exists system_logs_user_id_idx on system_logs(user_id, created_at desc)");
   await dbPool.query("create index if not exists system_logs_category_idx on system_logs(user_id, category, created_at desc)");
+  await purgeExpiredSystemLogs();
+}
+
+export function startSystemLogRetentionWorker() {
+  if (!dbPool || retentionTimer) {
+    return;
+  }
+
+  retentionTimer = setInterval(() => {
+    void purgeExpiredSystemLogs().catch((error) => console.error("System log retention cleanup failed:", error));
+  }, LOG_RETENTION_INTERVAL_MS);
+  retentionTimer.unref?.();
+}
+
+export async function purgeExpiredSystemLogs() {
+  if (!dbPool) {
+    return 0;
+  }
+  const result = await dbPool.query("delete from system_logs where created_at < now() - interval '7 days'");
+  return result.rowCount ?? 0;
 }
 
 export async function logSystemEvent(userId, { category, eventName, status = "info", message, payload = {} }) {
@@ -72,6 +95,32 @@ export async function listSystemLogs(userId, { category = "all", limit = 100 } =
   );
 
   return result.rows;
+}
+
+export async function exportSystemLogs(userId, { category = "all" } = {}) {
+  const values = [userId];
+  const conditions = ["user_id = $1"];
+  const normalizedCategory = normalizeCategory(category);
+  if (normalizedCategory !== "all") {
+    values.push(normalizedCategory);
+    conditions.push(`category = $${values.length}`);
+  }
+
+  const result = await dbPool.query(
+    `
+      select id, category, event_name as "eventName", status, message, payload, created_at as "createdAt"
+      from system_logs
+      where ${conditions.join(" and ")}
+      order by created_at desc
+    `,
+    values,
+  );
+  return result.rows;
+}
+
+export async function deleteAllSystemLogs(userId) {
+  const result = await dbPool.query("delete from system_logs where user_id = $1", [userId]);
+  return result.rowCount ?? 0;
 }
 
 function normalizeCategory(category) {
