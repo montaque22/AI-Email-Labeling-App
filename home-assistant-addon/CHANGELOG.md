@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.21
+
+- Corrected Create Rule and Edit Rule modal titles.
+- Replaced rule label dropdowns and drag-and-drop controls with responsive full-width label rows.
+- Added glass checkboxes, single-label enforcement, and selected-row highlighting to rule editors.
+
 ## 0.1.20
 
 - Added manual polling with a cooldown, aggregate polling webhooks, and Email activity logs.

@@ -2594,11 +2594,13 @@ function InboxMessageRow({
 function GlassCheckbox({
   checked,
   className,
+  disabled = false,
   onChange,
   onClick,
 }: {
   checked: boolean;
   className?: string;
+  disabled?: boolean;
   onChange: () => void;
   onClick?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
@@ -2608,8 +2610,10 @@ function GlassCheckbox({
       className={cn(
         "group relative flex h-[26px] w-[26px] shrink-0 cursor-pointer items-center justify-center rounded-full border border-zinc-300/80 bg-gradient-to-br from-zinc-50/95 via-zinc-100/75 to-zinc-200/55 shadow-sm shadow-slate-900/15 backdrop-blur-xl transition duration-200 hover:border-zinc-400/70 hover:from-white hover:to-zinc-200/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/70",
         checked ? "border-blue-300/80 bg-none bg-blue-500/85 text-white shadow-blue-500/20" : "text-transparent",
+        disabled && "cursor-not-allowed opacity-45",
         className,
       )}
+      disabled={disabled}
       onClick={(event) => {
         onClick?.(event);
         onChange();
@@ -2625,6 +2629,57 @@ function GlassCheckbox({
       />
       <Check className={cn("relative h-4 w-4 transition duration-200", checked ? "scale-100 opacity-100" : "scale-50 opacity-0")} />
     </button>
+  );
+}
+
+function RuleLabelSelectionRows({
+  confidenceThreshold,
+  labels,
+  onToggle,
+  selectedLabels,
+}: {
+  confidenceThreshold: string;
+  labels: Label[];
+  onToggle: (labelName: string) => void;
+  selectedLabels: string[];
+}) {
+  return (
+    <div className="max-h-[min(46vh,420px)] space-y-2 overflow-y-auto pr-1">
+      {labels.map((label) => {
+        const isSelected = selectedLabels.includes(label.name);
+        const isDisabled = selectedLabels.length > 0 && !isSelected;
+
+        return (
+          <div
+            aria-disabled={isDisabled}
+            className={cn(
+              "flex w-full items-center gap-3 rounded-md border border-white/70 bg-white/45 px-3 py-3 text-left shadow-sm backdrop-blur-xl transition",
+              isDisabled ? "cursor-not-allowed opacity-45" : "cursor-pointer hover:border-zinc-300 hover:bg-white/70",
+              isSelected && "border-emerald-300/80 bg-emerald-50/65 shadow-[0_0_18px_rgba(16,185,129,0.18)] ring-1 ring-emerald-200/80",
+            )}
+            key={label.id}
+            onClick={() => {
+              if (!isDisabled) {
+                onToggle(label.name);
+              }
+            }}
+          >
+            <GlassCheckbox
+              checked={isSelected}
+              disabled={isDisabled}
+              onChange={() => onToggle(label.name)}
+              onClick={(event) => event.stopPropagation()}
+            />
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-zinc-950">{label.name}</p>
+              <p className="mt-1 text-sm leading-5 text-zinc-500">
+                {renderLabelDescription(label.description, confidenceThreshold)}
+              </p>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -3019,19 +3074,18 @@ function InboxRuleModal({
   summary: InboxMessage;
 }) {
   const [existingRule, setExistingRule] = useState<EmailRule | null>(null);
-  const [selectedLabel, setSelectedLabel] = useState("");
-  const [mobileSelectedLabels, setMobileSelectedLabels] = useState<string[]>([]);
-  const [isMobileLabelMenuOpen, setIsMobileLabelMenuOpen] = useState(false);
+  const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
   const [labelReason, setLabelReason] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isExistingRule = Boolean(existingRule);
+  const selectedLabel = selectedLabels.length === 1 ? selectedLabels[0] : "";
   const originalSelectedLabel = existingRule?.labelsApplied.length === 1 ? existingRule.labelsApplied[0] : "";
   const originalReason = originalSelectedLabel ? existingRule?.labelReasons?.[originalSelectedLabel] ?? "" : "";
   const hasChanges = selectedLabel !== originalSelectedLabel || labelReason.trim() !== originalReason.trim();
-  const mobileLabelError = mobileSelectedLabels.length > 1 ? "Choose one label before reviewing this rule." : "";
-  const canReview = Boolean(selectedLabel && !mobileLabelError && (!isExistingRule || existingRule?.isPending || hasChanges));
+  const labelSelectionError = selectedLabels.length > 1 ? "Choose one label before reviewing this rule." : "";
+  const canReview = Boolean(selectedLabel && !labelSelectionError && (!isExistingRule || existingRule?.isPending || hasChanges));
   const reviewedButtonClass = labelReason.trim()
     ? "bg-emerald-600 text-white hover:bg-emerald-700"
     : "bg-amber-500 text-white hover:bg-amber-600";
@@ -3047,8 +3101,7 @@ function InboxRuleModal({
 
         if (response.status === 404) {
           setExistingRule(null);
-          setSelectedLabel("");
-          setMobileSelectedLabels([]);
+          setSelectedLabels([]);
           setLabelReason("");
           return;
         }
@@ -3062,8 +3115,7 @@ function InboxRuleModal({
         const savedLabels = Array.isArray(rule.labelsApplied) ? rule.labelsApplied : [];
         const firstLabel = savedLabels.length === 1 ? savedLabels[0] : "";
         setExistingRule(rule);
-        setSelectedLabel(firstLabel);
-        setMobileSelectedLabels(savedLabels);
+        setSelectedLabels(savedLabels);
         setLabelReason(firstLabel ? rule.labelReasons?.[firstLabel] ?? "" : "");
       } catch {
         setError("Could not load email rule.");
@@ -3075,14 +3127,8 @@ function InboxRuleModal({
     void loadRule();
   }, [summary.id]);
 
-  function selectSingleLabel(labelName: string) {
-    setSelectedLabel(labelName);
-    setMobileSelectedLabels([labelName]);
-    setLabelReason(existingRule?.labelReasons?.[labelName] ?? "");
-  }
-
-  function toggleMobileSelectedLabel(labelName: string) {
-    setMobileSelectedLabels((current) => {
+  function toggleSelectedLabel(labelName: string) {
+    setSelectedLabels((current) => {
       const isSelected = current.includes(labelName);
       if (!isSelected && current.length > 0) {
         return current;
@@ -3090,13 +3136,9 @@ function InboxRuleModal({
 
       const next = isSelected ? current.filter((name) => name !== labelName) : [labelName];
       if (next.length === 1) {
-        setSelectedLabel(next[0]);
         setLabelReason(existingRule?.labelReasons?.[next[0]] ?? "");
       } else {
-        setSelectedLabel("");
-        if (next.length === 0) {
-          setLabelReason("");
-        }
+        setLabelReason("");
       }
       return next;
     });
@@ -3155,7 +3197,9 @@ function InboxRuleModal({
         <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
           <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
             <div className="min-w-0">
-              <h3 className="truncate text-lg font-semibold text-zinc-950">Edit Label</h3>
+              <h3 className="truncate text-lg font-semibold text-zinc-950">
+                {isLoading ? "Rule" : isExistingRule ? "Edit Rule" : "Create Rule"}
+              </h3>
               <p className="mt-1 truncate text-sm text-zinc-500">{messageDetail?.subject || summary.subject || "(no subject)"}</p>
             </div>
             <Button aria-label="Close rule editor" onClick={onClose} size="icon" type="button" variant="ghost">
@@ -3174,101 +3218,33 @@ function InboxRuleModal({
                     <p className="truncate text-sm text-zinc-500">{formatEmailTextForPrivacy(messageDetail?.from || summary.from || "", privacyMode)}</p>
                     <p className="mt-2 line-clamp-2 text-sm leading-6 text-zinc-600">{summary.snippet || "No preview available."}</p>
                   </div>
-                  <InboxRuleBadge rule={existingRule ? { emailId: existingRule.emailId, isPending: existingRule.isPending } : null} />
                 </div>
               </div>
 
-              <div className="grid min-w-0 gap-4 lg:grid-cols-2">
-                <div className="min-w-0">
-                  <p className="mb-2 text-xs font-medium uppercase text-zinc-500">Available labels</p>
-                  <div className="relative mb-2 block lg:hidden">
-                    <button
-                      className="flex h-10 w-full cursor-pointer items-center justify-between gap-3 rounded-md border border-white/70 bg-white/65 px-3 text-left text-sm text-zinc-700 shadow-sm backdrop-blur-xl"
-                      onClick={() => setIsMobileLabelMenuOpen((current) => !current)}
-                      type="button"
-                    >
-                      <span className="min-w-0 truncate">
-                        {mobileSelectedLabels.length > 0 ? mobileSelectedLabels.join(", ") : "Choose label"}
-                      </span>
-                      <ChevronRight className={cn("h-4 w-4 shrink-0 transition-transform", isMobileLabelMenuOpen && "rotate-90")} />
-                    </button>
-                    {mobileLabelError ? <p className="mt-2 text-xs text-red-600">{mobileLabelError}</p> : null}
-                    {isMobileLabelMenuOpen ? (
-                      <div className="absolute left-0 right-0 top-12 z-20 max-h-60 space-y-1 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-2 shadow-xl">
-                        {labels.map((label) => {
-                          const isChecked = mobileSelectedLabels.includes(label.name);
-                          const isDisabled = mobileSelectedLabels.length > 0 && !isChecked;
-
-                          return (
-                            <label
-                              className={cn(
-                                "flex items-start gap-2 rounded-md px-2 py-2 text-sm text-zinc-700 hover:bg-zinc-50",
-                                isDisabled ? "cursor-not-allowed opacity-45 hover:bg-transparent" : "cursor-pointer",
-                              )}
-                              key={label.id}
-                            >
-                              <input
-                                checked={isChecked}
-                                className="mt-0.5"
-                                disabled={isDisabled}
-                                onChange={() => toggleMobileSelectedLabel(label.name)}
-                                type="checkbox"
-                              />
-                              <span className="min-w-0">
-                                <span className="block font-medium text-zinc-950">{label.name}</span>
-                                <span className="mt-1 block text-xs leading-5 text-zinc-500">{renderLabelDescription(label.description, "0.90")}</span>
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="hidden max-h-72 space-y-2 overflow-auto rounded-md border border-zinc-200 p-2 lg:block">
-                    {labels.map((label) => (
-                      <button
-                        className={cn(
-                          "w-full glass-panel rounded-md border px-3 py-2 text-left text-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50",
-                          selectedLabel === label.name && "border-emerald-200 bg-emerald-50 text-emerald-900 hover:border-emerald-200 hover:bg-emerald-50",
-                        )}
-                        key={label.id}
-                        onClick={() => selectSingleLabel(label.name)}
-                        type="button"
-                      >
-                        <span className="block font-medium text-zinc-950">{label.name}</span>
-                        <span className="mt-1 block text-xs leading-5 text-zinc-500">{renderLabelDescription(label.description, "0.90")}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="min-w-0">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <p className="text-xs font-medium uppercase text-zinc-500">Selected label</p>
-                  </div>
-                  <div className="lg:min-h-72 lg:rounded-md lg:border lg:border-dashed lg:border-zinc-300 lg:p-3">
-                    {selectedLabel ? (
-                      <div className="text-sm">
-                        <div className="border-b border-zinc-200 pb-2 lg:rounded-md lg:border-b-0 lg:bg-zinc-100 lg:p-3">
-                          <p className="font-medium text-zinc-950">{selectedLabel}</p>
-                        </div>
-                        <label className="mt-3 block">
-                          <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">When to use this label</span>
-                          <textarea
-                            className="min-h-28 w-full glass-panel rounded-md border px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
-                            maxLength={200}
-                            onChange={(event) => setLabelReason(event.target.value)}
-                            placeholder="Explain when the AI should choose this label."
-                            value={labelReason}
-                          />
-                          <span className="mt-1 block text-right text-xs text-zinc-500">{labelReason.length}/200</span>
-                        </label>
-                      </div>
-                    ) : (
-                      <p className="p-3 text-sm text-zinc-500">Choose the single best label for this email.</p>
-                    )}
-                  </div>
-                </div>
+              <div className="min-w-0">
+                <p className="mb-2 text-xs font-medium uppercase text-zinc-500">Available labels</p>
+                {labelSelectionError ? <p className="mb-2 text-xs text-red-600">{labelSelectionError}</p> : null}
+                <RuleLabelSelectionRows
+                  confidenceThreshold="0.90"
+                  labels={labels}
+                  onToggle={toggleSelectedLabel}
+                  selectedLabels={selectedLabels}
+                />
               </div>
+
+              {selectedLabel ? (
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">When to use {selectedLabel}</span>
+                  <textarea
+                    className="min-h-28 w-full glass-panel rounded-md border px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
+                    maxLength={200}
+                    onChange={(event) => setLabelReason(event.target.value)}
+                    placeholder="Explain when the AI should choose this label."
+                    value={labelReason}
+                  />
+                  <span className="mt-1 block text-right text-xs text-zinc-500">{labelReason.length}/200</span>
+                </label>
+              ) : null}
 
               <div className="flex justify-end gap-2">
                 <Button disabled={isSaving} onClick={onClose} type="button" variant="outline">
@@ -4571,8 +4547,6 @@ function RuleReviewPage({
   const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
   const [draftLabels, setDraftLabels] = useState<string[]>([]);
   const [draftLabelReasons, setDraftLabelReasons] = useState<Record<string, string>>({});
-  const [draggingLabel, setDraggingLabel] = useState<string | null>(null);
-  const [isLabelDropActive, setIsLabelDropActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [ruleAction, setRuleAction] = useState<"review" | "delete" | null>(null);
@@ -4683,17 +4657,16 @@ function RuleReviewPage({
     setError(null);
   }
 
-  function addDraftLabel(labelName: string) {
-    setDraftLabels([labelName]);
-    setDraftLabelReasons((current) => ({ ...current, [labelName]: current[labelName] ?? "" }));
-  }
-
-  function removeDraftLabel(labelName: string) {
-    setDraftLabels((current) => current.filter((label) => label !== labelName));
-    setDraftLabelReasons((current) => {
-      const next = { ...current };
-      delete next[labelName];
-      return next;
+  function toggleDraftLabel(labelName: string) {
+    setDraftLabels((current) => {
+      if (current.includes(labelName)) {
+        return current.filter((label) => label !== labelName);
+      }
+      if (current.length > 0) {
+        return current;
+      }
+      setDraftLabelReasons((reasons) => ({ ...reasons, [labelName]: reasons[labelName] ?? "" }));
+      return [labelName];
     });
   }
 
@@ -5254,7 +5227,7 @@ function RuleReviewPage({
           <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
             <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
               <div className="min-w-0">
-                <CardTitle>Rule Details</CardTitle>
+                <CardTitle>{addRuleStep === "review" ? "Create Rule" : "Edit Rule"}</CardTitle>
                 <CardDescription>Choose the single best label for this email.</CardDescription>
               </div>
               <Button aria-label="Close rule details" onClick={() => (addRuleStep === "review" ? closeAddRuleModal() : selectRule(null))} size="icon" type="button" variant="outline">
@@ -5280,109 +5253,34 @@ function RuleReviewPage({
                   <p className="mt-2 text-sm leading-6 text-zinc-600">{selectedRule.snippet}</p>
                 </div>
 
-                <div className="grid min-w-0 gap-4 lg:grid-cols-2">
-                  <div className="min-w-0">
-                    <p className="mb-2 text-xs font-medium uppercase text-zinc-500">Available labels</p>
-                    <div
-                      className={cn(
-                        "max-h-72 space-y-2 overflow-auto rounded-md border border-zinc-200 p-2 transition-colors",
-                        draggingLabel && "border-blue-200 bg-blue-50/40",
-                      )}
-                    >
-                      {availableLabels.map((label) => (
-                        <button
-                          className={cn(
-                            "w-full glass-panel rounded-md border px-3 py-2 text-left text-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50",
-                            draftLabels.includes(label.name)
-                              ? "cursor-not-allowed border-emerald-200 bg-emerald-50 text-emerald-900 hover:border-emerald-200 hover:bg-emerald-50"
-                              : "cursor-grab active:cursor-grabbing",
-                            draggingLabel === label.name && "border-blue-300 bg-blue-50 opacity-70",
-                          )}
-                          disabled={draftLabels.includes(label.name)}
-                          draggable={!draftLabels.includes(label.name)}
-                          key={label.id}
-                          onClick={() => addDraftLabel(label.name)}
-                          onDragEnd={() => {
-                            setDraggingLabel(null);
-                            setIsLabelDropActive(false);
-                          }}
-                          onDragStart={(event) => {
-                            if (draftLabels.includes(label.name)) {
-                              event.preventDefault();
-                              return;
-                            }
-
-                            event.dataTransfer.setData("text/plain", label.name);
-                            setDraggingLabel(label.name);
-                          }}
-                          type="button"
-                        >
-                          <span className="block font-medium text-zinc-950">{label.name}</span>
-                          <span className="mt-1 block text-xs leading-5 text-zinc-500">
-                            {renderLabelDescription(label.description, confidenceThreshold.toFixed(2))}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="min-w-0">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <p className="text-xs font-medium uppercase text-zinc-500">Selected label</p>
-                      <span className="text-xs text-zinc-500">{draftLabels.length === 1 ? "Ready" : "Choose one"}</span>
-                    </div>
-                    <div
-                      className={cn(
-                        "min-h-72 space-y-2 rounded-md border border-dashed border-zinc-300 p-2 transition-colors",
-                        draggingLabel && "border-blue-300 bg-blue-50/40",
-                        isLabelDropActive && "border-emerald-400 bg-emerald-50",
-                      )}
-                      onDragEnter={() => setIsLabelDropActive(true)}
-                      onDragLeave={(event) => {
-                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                          setIsLabelDropActive(false);
-                        }
-                      }}
-                      onDragOver={(event) => {
-                        event.preventDefault();
-                        setIsLabelDropActive(true);
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        addDraftLabel(event.dataTransfer.getData("text/plain"));
-                        setDraggingLabel(null);
-                        setIsLabelDropActive(false);
-                      }}
-                    >
-                      {draftLabels.length === 0 ? (
-                        <p className="p-3 text-sm text-zinc-500">Drop labels here.</p>
-                      ) : (
-                        draftLabels.map((label) => (
-                          <div className="min-w-0 rounded-md bg-zinc-100 p-3 text-sm" key={label}>
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="min-w-0 truncate font-medium text-zinc-950">{label}</span>
-                              <button className="cursor-pointer text-zinc-500 hover:text-zinc-950" onClick={() => removeDraftLabel(label)} type="button">
-                                <X className="h-4 w-4" />
-                              </button>
-                            </div>
-                            <label className="mt-2 block">
-                              <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">When to use this label</span>
-                              <textarea
-                                className="min-h-20 w-full glass-panel rounded-md border px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
-                                maxLength={200}
-                                onChange={(event) => updateDraftLabelReason(label, event.target.value)}
-                                placeholder="Explain when the AI should choose this label."
-                                value={draftLabelReasons[label] ?? ""}
-                              />
-                              <span className="mt-1 block text-right text-xs text-zinc-500">
-                                {(draftLabelReasons[label] ?? "").length}/200
-                              </span>
-                            </label>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
+                <div className="min-w-0">
+                  <p className="mb-2 text-xs font-medium uppercase text-zinc-500">Available labels</p>
+                  {draftLabels.length > 1 ? (
+                    <p className="mb-2 text-xs text-red-600">Choose one label before reviewing this rule.</p>
+                  ) : null}
+                  <RuleLabelSelectionRows
+                    confidenceThreshold={confidenceThreshold.toFixed(2)}
+                    labels={availableLabels}
+                    onToggle={toggleDraftLabel}
+                    selectedLabels={draftLabels}
+                  />
                 </div>
+
+                {draftLabels.length === 1 ? (
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium uppercase text-zinc-500">When to use {draftLabels[0]}</span>
+                    <textarea
+                      className="min-h-28 w-full glass-panel rounded-md border px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
+                      maxLength={200}
+                      onChange={(event) => updateDraftLabelReason(draftLabels[0], event.target.value)}
+                      placeholder="Explain when the AI should choose this label."
+                      value={draftLabelReasons[draftLabels[0]] ?? ""}
+                    />
+                    <span className="mt-1 block text-right text-xs text-zinc-500">
+                      {(draftLabelReasons[draftLabels[0]] ?? "").length}/200
+                    </span>
+                  </label>
+                ) : null}
 
                 <div className="flex flex-wrap justify-end gap-2">
                   {addRuleStep === "review" ? (
