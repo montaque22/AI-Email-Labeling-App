@@ -292,7 +292,13 @@ async function createDraftReplyTool(userId, payload) {
 }
 
 async function addLabelsOnEmailTool(userId, payload) {
-  const input = await parseLabelClassificationInput(userId, payload);
+  const normalizedPayload = {
+    ...payload,
+    snippet: typeof payload?.snippet === "string" && payload.snippet.trim()
+      ? payload.snippet
+      : "No message preview available.",
+  };
+  const input = await parseLabelClassificationInput(userId, normalizedPayload);
   if (!input.ok) {
     throw new Error(input.error);
   }
