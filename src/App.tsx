@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import {
   BarChart3,
+  BookOpen,
   ArrowDown,
   ArrowUp,
   Check,
@@ -57,6 +58,7 @@ type Page =
   | "labels"
   | "rules"
   | "metrics"
+  | "documentation"
   | "ai-prompts"
   | "ai-byoai"
   | "ai-prompt-library"
@@ -449,6 +451,22 @@ const LABEL_NAME_MAX_LENGTH = 25;
 const LABEL_DESCRIPTION_MAX_LENGTH = 200;
 const LABEL_NAME_PATTERN = /^[A-Za-z0-9 _-]+$/;
 const CONFIDENCE_THRESHOLD_TEMPLATE = "{confidenceThreshold}";
+
+type DocumentationEntry = {
+  content: string;
+  order: number;
+  slug: string;
+  title: string;
+};
+
+const documentationModules = import.meta.glob("../documentation/*.md", {
+  eager: true,
+  import: "default",
+  query: "?raw",
+}) as Record<string, string>;
+const documentationEntries = Object.entries(documentationModules)
+  .map(([path, markdown]) => parseDocumentationEntry(path, markdown))
+  .sort((left, right) => left.order - right.order || left.title.localeCompare(right.title));
 
 const navItems = [
   { id: "overview" as const, label: "Overview", icon: Gauge },
@@ -955,6 +973,19 @@ function AuthenticatedLayout({
           })}
         </nav>
         <div className={cn("relative space-y-2 border-t border-zinc-200 p-3", sidebarCollapsed && "px-2")}>
+          <button
+            className={cn(
+              "flex min-h-10 w-full items-center rounded-md text-sm font-medium text-zinc-600 transition-colors hover:bg-white/55 hover:text-zinc-950",
+              sidebarCollapsed ? "justify-center px-0" : "gap-2 px-3 text-left",
+              activePage === "documentation" && "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl",
+            )}
+            onClick={() => onNavigate("documentation")}
+            title={sidebarCollapsed ? "Documentation" : undefined}
+            type="button"
+          >
+            <BookOpen className="h-4 w-4 shrink-0" />
+            {!sidebarCollapsed ? "Documentation" : null}
+          </button>
           <label className={cn("flex min-h-10 cursor-pointer items-center rounded-md text-sm font-medium text-zinc-600 hover:bg-zinc-50", sidebarCollapsed ? "justify-center" : "justify-between gap-3 px-3")}>
             {!sidebarCollapsed ? (
               <span className="flex items-center gap-2">
@@ -1090,6 +1121,17 @@ function AuthenticatedLayout({
                 })}
               </nav>
               <div className="space-y-2 border-t border-zinc-200 p-3">
+                <button
+                  className={cn(
+                    "flex min-h-10 w-full items-center gap-2 rounded-md px-3 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-white/55 hover:text-zinc-950",
+                    activePage === "documentation" && "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl",
+                  )}
+                  onClick={() => navigateFromMobileMenu("documentation")}
+                  type="button"
+                >
+                  <BookOpen className="h-4 w-4" />
+                  Documentation
+                </button>
                 <label className="flex min-h-10 cursor-pointer items-center justify-between gap-3 rounded-md px-3 text-sm font-medium text-zinc-600 hover:bg-zinc-50">
                   <span className="flex items-center gap-2">
                     <ShieldCheck className={cn("h-4 w-4", privacyMode && "text-emerald-600")} />
@@ -1130,6 +1172,7 @@ function AuthenticatedLayout({
           {activePage === "labels" && <LabelsPage privacyMode={privacyMode} />}
           {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} privacyMode={privacyMode} />}
           {activePage === "metrics" && <MetricsPage />}
+          {activePage === "documentation" && <DocumentationPage />}
           {activePage === "ai-prompts" && <AiPromptsPage onNavigate={onNavigate} />}
           {activePage === "ai-byoai" && <ByoAiPage />}
           {activePage === "ai-prompt-library" && <AiPromptLibraryPage privacyMode={privacyMode} />}
@@ -1265,6 +1308,63 @@ function OverviewPage({
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function DocumentationPage() {
+  const [activeSlug, setActiveSlug] = useState(() => documentationSlugFromPath(window.location.pathname));
+  const activeEntry = documentationEntries.find((entry) => entry.slug === activeSlug) ?? documentationEntries[0];
+
+  useEffect(() => {
+    function handlePopState() {
+      setActiveSlug(documentationSlugFromPath(window.location.pathname));
+    }
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  function selectEntry(entry: DocumentationEntry) {
+    setActiveSlug(entry.slug);
+    const nextPath = entry.slug === documentationEntries[0]?.slug
+      ? "/documentation"
+      : `/documentation/${entry.slug}`;
+    window.history.pushState({}, "", getRuntimeUrl(nextPath));
+  }
+
+  if (!activeEntry) {
+    return <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">No documentation is available yet.</p>;
+  }
+
+  return (
+    <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
+      <article className="min-w-0 rounded-lg border border-white/70 bg-white/55 p-5 shadow-sm backdrop-blur-xl sm:p-7 lg:p-9">
+        <div
+          className="max-w-none text-zinc-700 [&_a]:font-medium [&_a]:text-blue-700 [&_a]:underline [&_a]:underline-offset-4 [&_a:hover]:text-blue-900 [&_code]:rounded [&_code]:bg-zinc-100 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:text-sm [&_h1]:mb-5 [&_h1]:text-3xl [&_h1]:font-semibold [&_h1]:text-zinc-950 [&_h2]:mb-3 [&_h2]:mt-8 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:text-zinc-950 [&_h3]:mb-2 [&_h3]:mt-6 [&_h3]:text-lg [&_h3]:font-semibold [&_h3]:text-zinc-950 [&_li]:mb-1.5 [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-4 [&_p]:leading-7 [&_pre]:my-4 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-zinc-950 [&_pre]:p-4 [&_pre]:text-sm [&_pre]:text-white [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:my-5 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-zinc-200 [&_td]:p-2 [&_th]:border [&_th]:border-zinc-200 [&_th]:bg-zinc-50 [&_th]:p-2 [&_th]:text-left [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6"
+          dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(activeEntry.content) }}
+        />
+      </article>
+
+      <aside className="min-w-0 lg:order-2">
+        <div className="rounded-lg border border-white/70 bg-white/55 p-4 shadow-sm backdrop-blur-xl lg:sticky lg:top-24">
+          <p className="mb-3 text-xs font-semibold uppercase text-zinc-500">Table of contents</p>
+          <nav className="space-y-1">
+            {documentationEntries.map((entry) => (
+              <button
+                className={cn(
+                  "flex min-h-10 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-white/70 hover:text-zinc-950",
+                  activeEntry.slug === entry.slug && "border border-white/80 bg-white/80 text-zinc-950 shadow-sm",
+                )}
+                key={entry.slug}
+                onClick={() => selectEntry(entry)}
+                type="button"
+              >
+                {entry.title}
+              </button>
+            ))}
+          </nav>
+        </div>
+      </aside>
     </div>
   );
 }
@@ -9737,6 +9837,8 @@ function renderMarkdownHtml(markdown: string) {
   const html: string[] = [];
   let paragraph: string[] = [];
   let listItems: string[] = [];
+  let listType: "ol" | "ul" = "ul";
+  let orderedListStart = 1;
 
   function flushParagraph() {
     if (paragraph.length > 0) {
@@ -9747,8 +9849,10 @@ function renderMarkdownHtml(markdown: string) {
 
   function flushList() {
     if (listItems.length > 0) {
-      html.push(`<ul>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+      const startAttribute = listType === "ol" && orderedListStart !== 1 ? ` start="${orderedListStart}"` : "";
+      html.push(`<${listType}${startAttribute}>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${listType}>`);
       listItems = [];
+      orderedListStart = 1;
     }
   }
 
@@ -9762,6 +9866,20 @@ function renderMarkdownHtml(markdown: string) {
       continue;
     }
 
+    if (trimmed.startsWith("```")) {
+      flushParagraph();
+      flushList();
+      const language = trimmed.slice(3).trim().replace(/[^a-zA-Z0-9_-]/g, "");
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      html.push(`<pre><code${language ? ` class="language-${language}"` : ""}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
     if (isMarkdownTableAt(lines, index)) {
       flushParagraph();
       flushList();
@@ -9771,7 +9889,7 @@ function renderMarkdownHtml(markdown: string) {
       continue;
     }
 
-    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
       flushParagraph();
       flushList();
@@ -9783,7 +9901,32 @@ function renderMarkdownHtml(markdown: string) {
     const listItem = trimmed.match(/^[-*]\s+(.+)$/);
     if (listItem) {
       flushParagraph();
+      if (listItems.length > 0 && listType !== "ul") {
+        flushList();
+      }
+      listType = "ul";
       listItems.push(listItem[1]);
+      continue;
+    }
+
+    const orderedListItem = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
+    if (orderedListItem) {
+      flushParagraph();
+      if (listItems.length > 0 && listType !== "ol") {
+        flushList();
+      }
+      listType = "ol";
+      if (listItems.length === 0) {
+        orderedListStart = Number(orderedListItem[1]) || 1;
+      }
+      listItems.push(orderedListItem[2]);
+      continue;
+    }
+
+    if (/^---+$/.test(trimmed)) {
+      flushParagraph();
+      flushList();
+      html.push("<hr>");
       continue;
     }
 
@@ -9800,7 +9943,14 @@ function renderInlineMarkdown(value: string) {
   return escapeHtml(value)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/_([^_]+)_/g, "<em>$1</em>");
+    .replace(/_([^_]+)_/g, "<em>$1</em>")
+    .replace(/\[([^\]]+)]\(([^)\s]+)\)/g, (_match, label, href) => renderMarkdownLink(label, href));
+}
+
+function renderMarkdownLink(label: string, href: string) {
+  const safeHref = /^(https?:\/\/|\/|\.\/|\.\.\/|#)/i.test(href) || /^[a-z0-9][a-z0-9/_-]*$/i.test(href) ? href : "#";
+  const external = /^https?:\/\//i.test(safeHref);
+  return `<a href="${safeHref}"${external ? ' target="_blank" rel="noreferrer"' : ""}>${label}</a>`;
 }
 
 function isMarkdownTableAt(lines: string[], index: number) {
@@ -9877,6 +10027,7 @@ const pagePaths: Record<Page, string> = {
   labels: "/labels",
   rules: "/rule-review",
   metrics: "/metrics",
+  documentation: "/documentation",
   "ai-prompts": "/ai-prompts",
   "ai-byoai": "/ai/byoai",
   "ai-prompt-library": "/ai/prompts",
@@ -9901,6 +10052,10 @@ function pageFromPath(pathname: string): Page {
     return "metrics";
   }
 
+  if (normalizedPath.startsWith("/documentation")) {
+    return "documentation";
+  }
+
   if (normalizedPath.startsWith("/ai/prompts")) {
     return "ai-prompt-library";
   }
@@ -9923,7 +10078,37 @@ function promptTabFromPath(pathname: string): "email-label" | "draft-reply" {
   return stripRuntimeBasePath(pathname) === "/ai/prompts/draft-reply" ? "draft-reply" : "email-label";
 }
 
+function documentationSlugFromPath(pathname: string) {
+  const normalizedPath = stripRuntimeBasePath(pathname);
+  const slug = normalizedPath.replace(/^\/documentation\/?/, "").split("/")[0];
+  return slug || documentationEntries[0]?.slug || "home";
+}
+
+function parseDocumentationEntry(path: string, markdown: string): DocumentationEntry {
+  const filename = path.split("/").pop()?.replace(/\.md$/i, "") || "documentation";
+  const frontmatterMatch = markdown.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+  const metadata = Object.fromEntries(
+    (frontmatterMatch?.[1] ?? "")
+      .split("\n")
+      .map((line) => line.match(/^([A-Za-z][A-Za-z0-9_-]*):\s*(.+)$/))
+      .filter((match): match is RegExpMatchArray => Boolean(match))
+      .map((match) => [match[1], match[2].trim().replace(/^['"]|['"]$/g, "")]),
+  );
+  const filenameWithoutOrder = filename.replace(/^\d+[-_]?/, "");
+  const title = metadata.title || filenameWithoutOrder.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const parsedOrder = Number(metadata.order ?? filename.match(/^\d+/)?.[0] ?? 999);
+  return {
+    content: frontmatterMatch ? markdown.slice(frontmatterMatch[0].length) : markdown,
+    order: Number.isFinite(parsedOrder) ? parsedOrder : 999,
+    slug: metadata.slug || filenameWithoutOrder.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+    title,
+  };
+}
+
 function getPageTitle(page: Page) {
+  if (page === "documentation") {
+    return "Documentation";
+  }
   if (page === "ai-prompts") {
     return "Artificial Intelligence";
   }

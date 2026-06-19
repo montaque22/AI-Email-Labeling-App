@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.23
+
+- Added an in-app Markdown documentation center with routed pages and a table of contents.
+- Added Home and Installation documentation.
+- Simplified the repository README and added the Emailable video overview.
+
 ## 0.1.22
 
 - Added seven-day system log retention on startup and daily cleanup.
