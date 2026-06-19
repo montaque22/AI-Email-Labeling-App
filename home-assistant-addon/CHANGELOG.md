@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.18
+
+- Fixed Google authentication from Home Assistant by opening OAuth in the top-level browser instead of the ingress iframe.
+- Return users to the active Home Assistant ingress page after authentication.
+
 ## 0.1.17
 
 - Switched Home Assistant installs and updates to prebuilt GHCR images.

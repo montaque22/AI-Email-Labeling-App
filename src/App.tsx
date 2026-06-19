@@ -635,12 +635,39 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
       return;
     }
 
-    await authClient.signIn.social({
-      provider: "google",
-      callbackURL: "/",
-      errorCallbackURL: "/",
-      newUserCallbackURL: "/",
-    });
+    setIsSubmitting(true);
+    try {
+      const callbackURL = getAbsoluteRuntimeUrl("/");
+      const result = await authClient.signIn.social({
+        provider: "google",
+        callbackURL,
+        errorCallbackURL: callbackURL,
+        newUserCallbackURL: callbackURL,
+        disableRedirect: true,
+      });
+
+      if (result.error) {
+        setError(result.error.message ?? "Could not start Google authentication.");
+        setIsSubmitting(false);
+        return;
+      }
+
+      const authorizationUrl = result.data?.url;
+      if (!authorizationUrl) {
+        setError("Google did not return an authentication URL.");
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (window.top && window.top !== window) {
+        window.top.location.href = authorizationUrl;
+      } else {
+        window.location.href = authorizationUrl;
+      }
+    } catch {
+      setError("Could not start Google authentication.");
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -683,7 +710,8 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
           </button>
         </div>
 
-        <Button className="w-full" disabled={!authConfig.googleOAuthEnabled} onClick={handleGoogleLogin} type="button">
+        <Button className="w-full" disabled={!authConfig.googleOAuthEnabled || isSubmitting} onClick={handleGoogleLogin} type="button">
+          {isSubmitting ? <Loader /> : null}
           Login with Google
           <ChevronRight className="h-4 w-4" />
         </Button>
