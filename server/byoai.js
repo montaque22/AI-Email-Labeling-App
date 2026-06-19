@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { auth } from "./auth.js";
+import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
 import { getRenderedAiPromptBundle } from "./ai-prompts.js";
 import { getValidEmailAccountAccessToken } from "./email-accounts.js";
@@ -595,7 +595,7 @@ async function generateAiReply(userId, request) {
   };
 }
 
-async function generateAiLabel(userId, request) {
+export async function generateAiLabel(userId, request) {
   await assertAiEnabled(userId);
   const target = await findEmailTarget(userId, request);
   const bundle = await getRenderedAiPromptBundle(userId);
@@ -723,6 +723,12 @@ async function assertAiEnabled(userId) {
     error.status = 403;
     throw error;
   }
+}
+
+export async function isAiActiveForUser(userId) {
+  const settings = await getAiSettings(userId);
+  const platforms = await listAiPlatforms(userId);
+  return Boolean(settings.aiEnabled && platforms.some((platform) => platform.status === "connected"));
 }
 
 async function callBestAvailableAi(userId, prompt) {
@@ -1122,10 +1128,12 @@ async function getAiSettings(userId) {
 async function updateAiEnabled(userId, enabled) {
   const result = await dbPool.query(
     `
-      insert into user_settings (user_id, confidence_threshold, ai_enabled)
-      values ($1, 0.9, $2)
+      insert into user_settings (user_id, confidence_threshold, ai_enabled, polling_enabled)
+      values ($1, 0.9, $2, false)
       on conflict (user_id) do update
-      set ai_enabled = excluded.ai_enabled
+      set ai_enabled = excluded.ai_enabled,
+          polling_enabled = case when excluded.ai_enabled then user_settings.polling_enabled else false end,
+          updated_at = now()
       returning ai_enabled as "aiEnabled"
     `,
     [userId, enabled],
@@ -1952,16 +1960,13 @@ function htmlToText(value) {
 }
 
 async function requireSession(req, res, next) {
-  const session = await auth.api.getSession({
-    headers: toWebHeaders(req.headers),
-  });
-
-  if (!session?.user) {
+  const user = await resolveRequestUser(req);
+  if (!user) {
     res.status(401).json({ error: "Authentication required" });
     return;
   }
 
-  req.user = session.user;
+  req.user = user;
   next();
 }
 

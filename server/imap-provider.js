@@ -5,15 +5,16 @@ const DEFAULT_IMAP_MAILBOX = "INBOX";
 const DEFAULT_DRAFTS_MAILBOX = "Drafts";
 const DEFAULT_SENT_MAILBOX = "Sent";
 
-export async function withImapClient(account, fn) {
+export async function withImapClient(account, fn, oauthAccessToken = "") {
   const metadata = account.metadata ?? {};
+  const isYahoo = account.provider === "yahoo";
   const client = new ImapFlow({
-    host: metadata.imapHost,
+    host: metadata.imapHost || (isYahoo ? "imap.mail.yahoo.com" : ""),
     port: Number(metadata.imapPort ?? 993),
     secure: metadata.imapSecure !== false,
     auth: {
       user: metadata.imapUsername || account.email,
-      pass: decryptToken(account.access_token),
+      ...(isYahoo ? { accessToken: oauthAccessToken } : { pass: decryptToken(account.access_token) }),
     },
     logger: false,
   });
@@ -71,7 +72,7 @@ function normalizeImapConnectionError(error) {
   return new Error(error?.message || "Could not connect to the IMAP server.");
 }
 
-export async function syncImapFolder({ action, account, label, providerLabelId }) {
+export async function syncImapFolder({ action, account, label, providerLabelId, accessToken = "" }) {
   return withImapClient(account, async (client) => {
     if (action === "delete") {
       if (!providerLabelId) {
@@ -107,10 +108,10 @@ export async function syncImapFolder({ action, account, label, providerLabelId }
     }
 
     throw new Error(`Unsupported IMAP folder sync action: ${action}`);
-  });
+  }, accessToken);
 }
 
-export async function getImapFolder(account, providerLabelId) {
+export async function getImapFolder(account, providerLabelId, accessToken = "") {
   if (!providerLabelId) {
     return null;
   }
@@ -118,10 +119,16 @@ export async function getImapFolder(account, providerLabelId) {
   return withImapClient(account, async (client) => {
     const folder = await findImapMailbox(client, providerLabelId);
     return folder ? { id: folder.path, name: folder.name || folder.path } : null;
-  });
+  }, accessToken);
 }
 
-export async function moveImapMessageToFolders({ account, emailId, addFolders = [], removeFolders = [] }) {
+export async function moveImapMessageToFolders({
+  account,
+  emailId,
+  addFolders = [],
+  removeFolders = [],
+  accessToken = "",
+}) {
   return withImapClient(account, async (client, metadata) => {
     const sourceMailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
     const found = await findImapMessage(client, sourceMailbox, emailId);
@@ -148,7 +155,7 @@ export async function moveImapMessageToFolders({ account, emailId, addFolders = 
     }
 
     return { uid: found.uid, mailbox: found.mailbox };
-  });
+  }, accessToken);
 }
 
 export async function moveImapInboxMessageToFolder({ account, emailId, sourceMailbox, targetFolder }) {
@@ -341,7 +348,7 @@ export async function searchImapSentEmailContexts(account, filters, limit) {
   });
 }
 
-export async function searchImapEmailContexts(account, filters, limit) {
+export async function searchImapEmailContexts(account, filters, limit, accessToken = "") {
   return withImapClient(account, async (client, metadata) => {
     const mailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
     await client.mailboxOpen(mailbox);
@@ -372,10 +379,56 @@ export async function searchImapEmailContexts(account, filters, limit) {
     }
 
     return results;
-  });
+  }, accessToken);
 }
 
-export async function findImapMessageAccountMatch(account, emailId, subject) {
+export async function searchRecentImapEmailContexts(
+  account,
+  { since, limit = 100, folder = "", accessToken = "" },
+) {
+  return withImapClient(account, async (client, metadata) => {
+    const mailbox = folder || metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
+    await client.mailboxOpen(mailbox);
+    const uids = (await client.search({ since }, { uid: true })) || [];
+    const latest = uids.slice(-Math.min(Math.max(limit, 1), 100)).reverse();
+    const results = [];
+
+    for (const uid of latest) {
+      const message = await client.fetchOne(String(uid), {
+        uid: true,
+        envelope: true,
+        source: true,
+        internalDate: true,
+      }, { uid: true });
+      if (!message) {
+        continue;
+      }
+
+      const messageDate = message.internalDate ?? message.envelope?.date ?? new Date(0);
+      if (messageDate < since) {
+        continue;
+      }
+      const bodyText = extractTextFromRawMessage(message.source?.toString() ?? "");
+      results.push({
+        emailId: String(message.uid),
+        threadId: String(message.uid),
+        accountEmail: account.email,
+        provider: account.provider,
+        fromEmail: (message.envelope?.from ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+        fromName: (message.envelope?.from ?? []).map((address) => address?.name).filter(Boolean).join(", "),
+        to: (message.envelope?.to ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+        subject: message.envelope?.subject ?? "",
+        snippet: bodyText.slice(0, 300),
+        bodyText,
+        date: messageDate.toISOString(),
+      });
+    }
+
+    return results;
+  }, accessToken);
+}
+
+export async function findImapMessageAccountMatch(account, emailId, subject, accessToken = "") {
   return withImapClient(account, async (client, metadata) => {
     const mailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
     const found = await findImapMessage(client, mailbox, emailId);
@@ -388,10 +441,10 @@ export async function findImapMessageAccountMatch(account, emailId, subject) {
     }
 
     return { subject: found.subject, message: found };
-  });
+  }, accessToken);
 }
 
-export async function fetchImapEmailContextById(account, emailId, subject = "") {
+export async function fetchImapEmailContextById(account, emailId, subject = "", accessToken = "") {
   return withImapClient(account, async (client, metadata) => {
     const mailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
     const found = await findImapMessage(client, mailbox, emailId);
@@ -422,7 +475,7 @@ export async function fetchImapEmailContextById(account, emailId, subject = "") 
       snippet: bodyText.slice(0, 300),
       bodyText,
     };
-  });
+  }, accessToken);
 }
 
 async function ensureImapMailbox(client, name) {

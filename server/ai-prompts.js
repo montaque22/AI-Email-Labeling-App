@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { auth } from "./auth.js";
+import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
 import { getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
 import { searchImapSentEmailContexts } from "./imap-provider.js";
@@ -136,16 +136,13 @@ export function registerAiPromptRoutes(app) {
 }
 
 async function requireSession(req, res, next) {
-  const session = await auth.api.getSession({
-    headers: toWebHeaders(req.headers),
-  });
-
-  if (!session?.user) {
+  const user = await resolveRequestUser(req);
+  if (!user) {
     res.status(401).json({ error: "Authentication required" });
     return;
   }
 
-  req.user = session.user;
+  req.user = user;
   next();
 }
 

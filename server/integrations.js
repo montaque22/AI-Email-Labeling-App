@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { getRenderedAiPromptBundle } from "./ai-prompts.js";
 import { ensureUnemailableSystemLabel, UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
-import { auth } from "./auth.js";
+import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
 import { ensureSsoEmailAccount, getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
 import {
@@ -9,6 +9,7 @@ import {
   fetchImapEmailContextById,
   findImapMessageAccountMatch,
   searchImapEmailContexts,
+  searchRecentImapEmailContexts,
   moveImapMessageToFolders,
 } from "./imap-provider.js";
 import { ensureLabelSyncedToAccount } from "./label-sync.js";
@@ -658,7 +659,7 @@ async function modifyMessageLabels(req, res, action) {
       return;
     }
 
-    if (!["gmail", "imap"].includes(account.provider)) {
+    if (!["gmail", "imap", "yahoo"].includes(account.provider)) {
       res.status(501).json({ error: `${account.provider} message labels are not implemented yet` });
       return;
     }
@@ -678,11 +679,15 @@ async function modifyMessageLabels(req, res, action) {
         removeLabelIds: action === "remove" ? labels.labels.map((label) => label.providerLabelId) : [],
       });
     } else {
+      const accessToken = account.provider === "yahoo"
+        ? await getValidEmailAccountAccessToken(account)
+        : "";
       await moveImapMessageToFolders({
         account,
         emailId: input.emailId,
         addFolders: action === "add" ? labels.labels.map((label) => label.providerLabelId) : [],
         removeFolders: action === "remove" ? labels.labels.map((label) => label.providerLabelId) : [],
+        accessToken,
       });
     }
 
@@ -730,7 +735,7 @@ export async function classifyEmailWithLabelCandidates(userId, rule, { source = 
     throw error;
   }
 
-  if (!["gmail", "imap"].includes(target.account.provider)) {
+  if (!["gmail", "imap", "yahoo"].includes(target.account.provider)) {
     const error = new Error(`${target.account.provider} message labels are not implemented yet`);
     error.status = 501;
     throw error;
@@ -848,7 +853,7 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
     throw error;
   }
 
-  if (!["gmail", "imap"].includes(messageTarget.account.provider)) {
+  if (!["gmail", "imap", "yahoo"].includes(messageTarget.account.provider)) {
     const error = new Error(`${messageTarget.account.provider} message labels are not implemented yet`);
     error.status = 501;
     throw error;
@@ -874,11 +879,15 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
       removeLabelIds: syncedLabelsToRemove.map((label) => label.providerLabelId),
     });
   } else {
+    const accessToken = messageTarget.account.provider === "yahoo"
+      ? await getValidEmailAccountAccessToken(messageTarget.account)
+      : "";
     await moveImapMessageToFolders({
       account: messageTarget.account,
       emailId,
       addFolders: labels.labels.map((label) => label.providerLabelId),
       removeFolders: syncedLabelsToRemove.map((label) => label.providerLabelId),
+      accessToken,
     });
   }
 
@@ -933,6 +942,103 @@ function simplifyWebhookEmailBody(value) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 8000);
 }
 
+export async function searchPollingCandidates(userId, lookbackHours) {
+  const accounts = await getConnectedEmailAccounts(userId);
+  const syncResult = await dbPool.query(
+    `
+      select las.email_account_id as "emailAccountId",
+             las.provider_label_id as "providerLabelId",
+             l.system_key as "systemKey"
+      from label_account_syncs las
+      join labels l on l.id = las.label_id
+      where l.user_id = $1
+        and las.provider_label_id is not null
+    `,
+    [userId],
+  );
+  const ignoredProviderLabels = new Map();
+  const retryFolders = new Map();
+  for (const row of syncResult.rows) {
+    if (row.systemKey === "unemailable") {
+      retryFolders.set(row.emailAccountId, row.providerLabelId);
+      continue;
+    }
+    if (row.systemKey) {
+      continue;
+    }
+    const labels = ignoredProviderLabels.get(row.emailAccountId) ?? new Set();
+    labels.add(row.providerLabelId);
+    ignoredProviderLabels.set(row.emailAccountId, labels);
+  }
+
+  const since = new Date(Date.now() - lookbackHours * 60 * 60 * 1000);
+  const candidates = [];
+  for (const account of accounts) {
+    try {
+      if (account.provider === "gmail") {
+        assertGmailAccountHasRequiredScopes(account);
+        const accessToken = await getValidEmailAccountAccessToken(account);
+        const ignoredLabelIds = ignoredProviderLabels.get(account.id) ?? new Set();
+        const messages = await searchRecentGmailPollingMessages(accessToken, account, since, ignoredLabelIds);
+        candidates.push(...messages);
+      } else if (["imap", "yahoo"].includes(account.provider)) {
+        const accessToken = account.provider === "yahoo"
+          ? await getValidEmailAccountAccessToken(account)
+          : "";
+        const messages = await searchRecentImapEmailContexts(account, { since, limit: 100, accessToken });
+        const retryFolder = retryFolders.get(account.id);
+        if (retryFolder) {
+          try {
+            messages.push(...await searchRecentImapEmailContexts(account, {
+              since,
+              limit: 100,
+              folder: retryFolder,
+              accessToken,
+            }));
+          } catch (error) {
+            console.warn(`Polling retry-folder search failed for ${account.email}:`, error.message);
+          }
+        }
+        candidates.push(...messages.map((email) => ({ account, email })));
+      }
+    } catch (error) {
+      console.warn(`Polling search failed for ${account.provider} ${account.email}:`, error.message);
+    }
+  }
+
+  return candidates;
+}
+
+async function searchRecentGmailPollingMessages(accessToken, account, since, ignoredLabelIds) {
+  const results = [];
+  let pageToken = "";
+  let pageCount = 0;
+
+  do {
+    const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+    url.searchParams.set("q", `in:inbox after:${Math.floor(since.getTime() / 1000)} -in:sent -in:drafts`);
+    url.searchParams.set("maxResults", "100");
+    if (pageToken) {
+      url.searchParams.set("pageToken", pageToken);
+    }
+    const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+    const data = await response.json();
+
+    for (const item of data.messages ?? []) {
+      const message = await fetchGmailMessageFull(accessToken, item.id);
+      if ((message.labelIds ?? []).some((labelId) => ignoredLabelIds.has(labelId))) {
+        continue;
+      }
+      results.push({ account, email: gmailMessageToRuleSearchResult(message, item.id) });
+    }
+
+    pageToken = data.nextPageToken ?? "";
+    pageCount += 1;
+  } while (pageToken && pageCount < 5);
+
+  return results;
+}
+
 async function searchConnectedEmailsForRules(userId, { query, accountEmail, fromEmail = "" }) {
   const accounts = await getConnectedEmailAccounts(userId);
   const results = [];
@@ -951,7 +1057,7 @@ async function searchConnectedEmailsForRules(userId, { query, accountEmail, from
       break;
     }
 
-    if (!["gmail", "imap"].includes(account.provider)) {
+    if (!["gmail", "imap", "yahoo"].includes(account.provider)) {
       continue;
     }
 
@@ -961,7 +1067,15 @@ async function searchConnectedEmailsForRules(userId, { query, accountEmail, from
         const emails = await searchGmailEmailsForRules(accessToken, { query, fromEmail }, 10 - results.length);
         results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
       } else {
-        const emails = await searchImapEmailContexts(account, { subject: query }, 10 - results.length);
+        const accessToken = account.provider === "yahoo"
+          ? await getValidEmailAccountAccessToken(account)
+          : "";
+        const emails = await searchImapEmailContexts(
+          account,
+          { subject: query },
+          10 - results.length,
+          accessToken,
+        );
         results.push(...emails
           .filter((email) => !fromEmail || emailMatchesFrom(email, fromEmail))
           .map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
@@ -1147,7 +1261,7 @@ async function findConnectedMessageById(userId, emailId, subject) {
   const matches = [];
 
   for (const account of accounts) {
-    if (!["gmail", "imap"].includes(account.provider)) {
+    if (!["gmail", "imap", "yahoo"].includes(account.provider)) {
       continue;
     }
 
@@ -1175,9 +1289,12 @@ async function findConnectedMessageById(userId, emailId, subject) {
           },
         });
       } else {
-        const match = await findImapMessageAccountMatch(account, emailId, subject);
+        const accessToken = account.provider === "yahoo"
+          ? await getValidEmailAccountAccessToken(account)
+          : "";
+        const match = await findImapMessageAccountMatch(account, emailId, subject, accessToken);
         if (match) {
-          const email = await fetchImapEmailContextById(account, emailId, subject);
+          const email = await fetchImapEmailContextById(account, emailId, subject, accessToken);
           matches.push({ account, subject: match.subject, email: email ?? { subject: match.subject } });
         }
       }
@@ -1215,7 +1332,7 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
   }
 
   for (const account of selectedAccounts) {
-    if (!["gmail", "imap"].includes(account.provider)) {
+    if (!["gmail", "imap", "yahoo"].includes(account.provider)) {
       continue;
     }
 
@@ -1242,7 +1359,10 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
           },
         });
       } else {
-        const email = await fetchImapEmailContextById(account, emailId, subject);
+        const accessToken = account.provider === "yahoo"
+          ? await getValidEmailAccountAccessToken(account)
+          : "";
+        const email = await fetchImapEmailContextById(account, emailId, subject, accessToken);
         if (email) {
           matches.push({ account, email });
         }
@@ -1305,16 +1425,13 @@ function assertGmailAccountHasRequiredScopes(account) {
 }
 
 async function requireSession(req, res, next) {
-  const session = await auth.api.getSession({
-    headers: toWebHeaders(req.headers),
-  });
-
-  if (!session?.user) {
+  const user = await resolveRequestUser(req);
+  if (!user) {
     res.status(401).json({ error: "Authentication required" });
     return;
   }
 
-  req.user = session.user;
+  req.user = user;
   next();
 }
 

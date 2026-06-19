@@ -1,5 +1,5 @@
-import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
+import { requireSession } from "./session.js";
 
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.9;
 
@@ -73,36 +73,6 @@ export function registerSettingsRoutes(app) {
       handleDbError(res, error);
     }
   });
-}
-
-async function requireSession(req, res, next) {
-  const session = await auth.api.getSession({
-    headers: toWebHeaders(req.headers),
-  });
-
-  if (!session?.user) {
-    res.status(401).json({ error: "Authentication required" });
-    return;
-  }
-
-  req.user = session.user;
-  next();
-}
-
-function toWebHeaders(headers) {
-  const webHeaders = new Headers();
-
-  for (const [key, value] of Object.entries(headers)) {
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        webHeaders.append(key, item);
-      }
-    } else if (value !== undefined) {
-      webHeaders.set(key, value);
-    }
-  }
-
-  return webHeaders;
 }
 
 function parseThreshold(value) {

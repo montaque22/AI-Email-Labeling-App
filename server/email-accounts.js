@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
-import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
 import { testImapConnection, withImapClient } from "./imap-provider.js";
+import { requireSession } from "./session.js";
 
 export const EMAIL_ACCOUNT_PROVIDERS = {
   gmail: {
@@ -107,7 +107,7 @@ export function registerEmailAccountRoutes(app) {
     }
 
     const redirectUri = getRedirectUri(req, providerId);
-    const state = createState(req.user.id, providerId);
+    const state = createState(req.user.id, providerId, getOAuthReturnUrl(req));
     const authUrl = new URL(provider.authUrl);
 
     authUrl.searchParams.set("client_id", provider.clientId);
@@ -123,18 +123,18 @@ export function registerEmailAccountRoutes(app) {
     res.redirect(authUrl.toString());
   });
 
-  app.get("/api/email-accounts/callback/:provider", requireSession, async (req, res) => {
+  app.get("/api/email-accounts/callback/:provider", async (req, res) => {
     const providerId = req.params.provider;
     const provider = EMAIL_ACCOUNT_PROVIDERS[providerId];
     const state = verifyState(req.query.state);
 
-    if (!provider || !provider.clientId || !provider.clientSecret || !state || state.userId !== req.user.id) {
-      res.redirect("/?emailAccountStatus=failed");
+    if (!provider || !provider.clientId || !provider.clientSecret || !state) {
+      redirectEmailAccountResult(res, state, "failed");
       return;
     }
 
     if (typeof req.query.code !== "string") {
-      res.redirect("/?emailAccountStatus=failed");
+      redirectEmailAccountResult(res, state, "failed");
       return;
     }
 
@@ -143,13 +143,13 @@ export function registerEmailAccountRoutes(app) {
       const tokenSet = await exchangeCodeForTokens(provider, req.query.code, redirectUri);
       const profile = await fetchProviderProfile(provider, tokenSet.access_token);
 
-      const account = await upsertEmailAccount(req.user.id, providerId, profile, tokenSet);
+      const account = await upsertEmailAccount(state.userId, providerId, profile, tokenSet);
       const { syncAllLabelsToEmailAccount } = await import("./label-sync.js");
-      await syncAllLabelsToEmailAccount(req.user.id, account.id);
-      res.redirect("/?emailAccountStatus=connected");
+      await syncAllLabelsToEmailAccount(state.userId, account.id);
+      redirectEmailAccountResult(res, state, "connected");
     } catch (error) {
       console.error("Email account OAuth callback failed:", error);
-      res.redirect("/?emailAccountStatus=failed");
+      redirectEmailAccountResult(res, state, "failed");
     }
   });
 
@@ -184,36 +184,6 @@ export function registerEmailAccountRoutes(app) {
       handleDbError(res, error);
     }
   });
-}
-
-async function requireSession(req, res, next) {
-  const session = await auth.api.getSession({
-    headers: toWebHeaders(req.headers),
-  });
-
-  if (!session?.user) {
-    res.status(401).json({ error: "Authentication required" });
-    return;
-  }
-
-  req.user = session.user;
-  next();
-}
-
-function toWebHeaders(headers) {
-  const webHeaders = new Headers();
-
-  for (const [key, value] of Object.entries(headers)) {
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        webHeaders.append(key, item);
-      }
-    } else if (value !== undefined) {
-      webHeaders.set(key, value);
-    }
-  }
-
-  return webHeaders;
 }
 
 async function listEmailAccounts(user) {
@@ -258,6 +228,9 @@ async function checkEmailAccountStatuses(userId) {
     try {
       if (account.provider === "imap") {
         await withImapClient(account, async () => true);
+      } else if (account.provider === "yahoo") {
+        const accessToken = await getValidEmailAccountAccessToken(account);
+        await withImapClient(account, async () => true, accessToken);
       } else {
         assertEmailAccountHasRequiredScopes(account);
         await getValidEmailAccountAccessToken(account);
@@ -561,17 +534,43 @@ function getRedirectUri(req, providerId) {
   return `${origin}${TEMPLATE_CALLBACK_PATH}/${providerId}`;
 }
 
-function createState(userId, provider) {
+function createState(userId, provider, returnUrl = "") {
   const payload = Buffer.from(
     JSON.stringify({
       userId,
       provider,
+      returnUrl,
       nonce: crypto.randomUUID(),
       issuedAt: Date.now(),
     }),
   ).toString("base64url");
   const signature = sign(payload);
   return `${payload}.${signature}`;
+}
+
+function getOAuthReturnUrl(req) {
+  const referer = req.get("referer");
+  const requestOrigin = req.get("origin");
+  try {
+    const url = new URL(referer || "");
+    if (url.pathname.includes("/api/hassio_ingress/") && (!requestOrigin || url.origin === requestOrigin)) {
+      return url.toString();
+    }
+  } catch {
+    // Direct app access falls back to the app root.
+  }
+  return "";
+}
+
+function redirectEmailAccountResult(res, state, status) {
+  const fallback = "/";
+  try {
+    const target = state?.returnUrl ? new URL(state.returnUrl) : new URL(fallback, process.env.APP_URL || process.env.BETTER_AUTH_URL || "http://127.0.0.1:3000");
+    target.searchParams.set("emailAccountStatus", status);
+    res.redirect(target.toString());
+  } catch {
+    res.redirect(`${fallback}?emailAccountStatus=${status}`);
+  }
 }
 
 function verifyState(state) {

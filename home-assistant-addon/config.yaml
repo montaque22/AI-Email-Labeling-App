@@ -1,5 +1,5 @@
 name: Emailable
-version: "0.1.18"
+version: "0.1.19"
 slug: emailable
 description: Email labeling assistant with API and MCP tools.
 url: "https://github.com/montaque22/AI-Email-Labeling-App"
@@ -15,6 +15,7 @@ ingress: true
 ingress_port: 3000
 panel_icon: mdi:email-edit-outline
 panel_title: Emailable
+panel_admin: false
 ports:
   3000/tcp: null
 ports_description:

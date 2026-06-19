@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.19
+
+- Added automatic per-user Emailable accounts for authenticated Home Assistant Ingress users.
+- Added configurable AI email polling with interval and lookback validation.
+- Added polling support for Gmail labels, Yahoo OAuth/IMAP folders, generic IMAP folders, and retrying Unemailable messages.
+
 ## 0.1.18
 
 - Fixed Google authentication from Home Assistant by opening OAuth in the top-level browser instead of the ingress iframe.

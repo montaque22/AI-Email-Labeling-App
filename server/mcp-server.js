@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod/v4";
-import { auth } from "./auth.js";
+import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
 import { getValidEmailAccountAccessToken } from "./email-accounts.js";
 import {
@@ -387,16 +387,13 @@ async function isMcpClientEnabled(userId) {
 }
 
 async function requireSession(req, res, next) {
-  const session = await auth.api.getSession({
-    headers: toWebHeaders(req.headers),
-  });
-
-  if (!session?.user) {
+  const user = await resolveRequestUser(req);
+  if (!user) {
     res.status(401).json({ error: "Authentication required" });
     return;
   }
 
-  req.user = session.user;
+  req.user = user;
   next();
 }
 

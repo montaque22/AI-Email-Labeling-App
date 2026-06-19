@@ -11,8 +11,10 @@ import { registerInboxRoutes } from "./inbox.js";
 import { ensureIntegrationTables, registerIntegrationRoutes } from "./integrations.js";
 import { ensureLabelsTable, registerLabelRoutes } from "./labels.js";
 import { ensureMcpTables, registerMcpRoutes } from "./mcp-server.js";
+import { ensurePollingSettings, registerPollingRoutes, startPollingWorker } from "./polling.js";
 import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
 import { ensureSystemLogsTable } from "./system-logs.js";
+import { resolveHomeAssistantIngressUser } from "./session.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +30,20 @@ app.get("/api/auth-settings", (_req, res) => {
     googleOAuthEnabled,
     emailAndPasswordEnabled: true,
   });
+});
+
+app.get("/api/home-assistant-session", async (req, res) => {
+  try {
+    const user = await resolveHomeAssistantIngressUser(req);
+    if (!user) {
+      res.status(401).json({ error: "Home Assistant ingress authentication is unavailable" });
+      return;
+    }
+    res.json({ user });
+  } catch (error) {
+    console.error("Home Assistant user provisioning failed:", error);
+    res.status(500).json({ error: "Could not create the Home Assistant user" });
+  }
 });
 
 app.all("/api/auth/*splat", toNodeHandler(auth));
@@ -73,6 +89,7 @@ registerIntegrationRoutes(app);
 registerAiPromptRoutes(app);
 registerByoAiRoutes(app);
 registerMcpRoutes(app);
+registerPollingRoutes(app);
 
 app.use(express.static(distDir));
 
@@ -113,12 +130,14 @@ async function startServer() {
     await ensureAiPromptsTable();
     await ensureByoAiTables();
     await ensureMcpTables();
+    await ensurePollingSettings();
   } catch (error) {
     console.error("Failed to initialize database tables:", error);
   }
 
   app.listen(port, () => {
     console.log(`Server listening on port ${port}`);
+    startPollingWorker();
   });
 }
 

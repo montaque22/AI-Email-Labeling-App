@@ -258,8 +258,8 @@ async function runProviderAction({ account, action, accessToken, label, provider
     return syncGmailLabel({ action, accessToken, label, providerLabelId });
   }
 
-  if (account.provider === "imap") {
-    return syncImapFolder({ action, account, label, providerLabelId });
+  if (["imap", "yahoo"].includes(account.provider)) {
+    return syncImapFolder({ action, account, label, providerLabelId, accessToken });
   }
 
   throw new Error(`${account.provider} label sync is not implemented yet`);
@@ -270,8 +270,8 @@ async function getProviderLabel({ account, accessToken, providerLabelId }) {
     return getGmailLabel({ accessToken, providerLabelId });
   }
 
-  if (account.provider === "imap") {
-    return getImapFolder(account, providerLabelId);
+  if (["imap", "yahoo"].includes(account.provider)) {
+    return getImapFolder(account, providerLabelId, accessToken);
   }
 
   throw new Error(`${account.provider} label validation is not implemented yet`);

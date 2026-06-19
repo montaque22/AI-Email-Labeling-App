@@ -74,6 +74,7 @@ type AuthUser = {
   email: string;
   name: string;
   picture?: string | null;
+  homeAssistant?: boolean;
 };
 
 type AuthConfig = {
@@ -119,6 +120,15 @@ type EmailProvider = {
   label: string;
   configured: boolean;
   manual?: boolean;
+};
+
+type PollingSettings = {
+  enabled: boolean;
+  aiActive: boolean;
+  intervalMinutes: number;
+  lookbackValue: number;
+  lookbackUnit: "hours" | "days";
+  lastRunAt?: string | null;
 };
 
 type IntegrationApiKey = {
@@ -460,10 +470,33 @@ const settingsSubItems = [
 
 export function App() {
   const session = authClient.useSession();
+  const [homeAssistantUser, setHomeAssistantUser] = useState<AuthUser | null>(null);
+  const [isHomeAssistantSessionPending, setIsHomeAssistantSessionPending] = useState(true);
   const [activePage, setActivePage] = useState<Page>(() => pageFromPath(window.location.pathname));
   const [ruleToOpen, setRuleToOpen] = useState<string | null>(null);
   const [ruleInitialFilter, setRuleInitialFilter] = useState<RulePendingFilter | null>(null);
-  const user = session.data?.user ? mapAuthUser(session.data.user) : null;
+  const user = homeAssistantUser ?? (session.data?.user ? mapAuthUser(session.data.user) : null);
+
+  useEffect(() => {
+    async function loadHomeAssistantSession() {
+      try {
+        const response = await fetch("/api/home-assistant-session", { credentials: "include" });
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (data.user) {
+          setHomeAssistantUser(mapAuthUser(data.user));
+        }
+      } catch {
+        // Direct deployments continue using Better Auth.
+      } finally {
+        setIsHomeAssistantSessionPending(false);
+      }
+    }
+
+    void loadHomeAssistantSession();
+  }, []);
 
   useEffect(() => {
     function handlePopState() {
@@ -506,7 +539,7 @@ export function App() {
     }
   }
 
-  if (session.isPending) {
+  if (session.isPending || isHomeAssistantSessionPending) {
     return <LoadingScreen />;
   }
 
@@ -517,6 +550,9 @@ export function App() {
       onOpenRuleReview={openRuleReview}
       onOpenPendingRuleReview={openPendingRuleReview}
       onSignOut={async () => {
+        if (homeAssistantUser) {
+          return;
+        }
         await authClient.signOut();
         await session.refetch();
         navigate("overview");
@@ -937,10 +973,12 @@ function AuthenticatedLayout({
               </span>
             ) : null}
           </label>
-          <Button className={cn("w-full", sidebarCollapsed ? "justify-center px-0" : "justify-start")} variant="ghost" onClick={onSignOut} title={sidebarCollapsed ? "Sign out" : undefined}>
-            <LogOut className="h-4 w-4" />
-            {!sidebarCollapsed ? "Sign out" : null}
-          </Button>
+          {!user.homeAssistant ? (
+            <Button className={cn("w-full", sidebarCollapsed ? "justify-center px-0" : "justify-start")} variant="ghost" onClick={onSignOut} title={sidebarCollapsed ? "Sign out" : undefined}>
+              <LogOut className="h-4 w-4" />
+              {!sidebarCollapsed ? "Sign out" : null}
+            </Button>
+          ) : null}
         </div>
       </aside>
 
@@ -959,7 +997,7 @@ function AuthenticatedLayout({
             <UserAvatar className="h-8 w-8" user={user} />
             <div className="min-w-0 text-right">
               <p className="truncate text-sm font-medium">{formatEmailTextForPrivacy(user.name, privacyMode)}</p>
-              <p className="truncate text-xs text-zinc-500">{formatEmailForPrivacy(user.email, privacyMode)}</p>
+              <p className="truncate text-xs text-zinc-500">{user.homeAssistant ? "Home Assistant account" : formatEmailForPrivacy(user.email, privacyMode)}</p>
             </div>
           </div>
         </header>
@@ -1063,10 +1101,12 @@ function AuthenticatedLayout({
                     <span className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform" />
                   </span>
                 </label>
-                <Button className="w-full justify-start" variant="ghost" onClick={onSignOut}>
-                  <LogOut className="h-4 w-4" />
-                  Sign out
-                </Button>
+                {!user.homeAssistant ? (
+                  <Button className="w-full justify-start" variant="ghost" onClick={onSignOut}>
+                    <LogOut className="h-4 w-4" />
+                    Sign out
+                  </Button>
+                ) : null}
               </div>
             </div>
           </div>
@@ -7457,9 +7497,33 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
   const [showImapModal, setShowImapModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [imapError, setImapError] = useState<string | null>(null);
+  const [polling, setPolling] = useState<PollingSettings>({
+    enabled: false,
+    aiActive: false,
+    intervalMinutes: 15,
+    lookbackValue: 24,
+    lookbackUnit: "hours",
+  });
+  const [isSavingPolling, setIsSavingPolling] = useState(false);
+  const [pollingError, setPollingError] = useState<string | null>(null);
+  const [pollingNotice, setPollingNotice] = useState<string | null>(null);
 
   useEffect(() => {
     void loadEmailAccounts();
+  }, []);
+
+  useEffect(() => {
+    function refreshPollingWhenVisible() {
+      if (document.visibilityState === "visible") {
+        void loadPollingSettings();
+      }
+    }
+    document.addEventListener("visibilitychange", refreshPollingWhenVisible);
+    window.addEventListener("focus", refreshPollingWhenVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshPollingWhenVisible);
+      window.removeEventListener("focus", refreshPollingWhenVisible);
+    };
   }, []);
 
   useEffect(() => {
@@ -7473,12 +7537,14 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
     setError(null);
 
     try {
-      const [accountsResponse, providersResponse] = await Promise.all([
+      const [accountsResponse, providersResponse, pollingResponse] = await Promise.all([
         fetch("/api/email-accounts", { credentials: "include" }),
         fetch("/api/email-accounts/providers", { credentials: "include" }),
+        fetch("/api/email-accounts/polling", { credentials: "include" }),
       ]);
       const accountsData = await accountsResponse.json();
       const providersData = await providersResponse.json();
+      const pollingData = await pollingResponse.json().catch(() => null);
 
       if (!accountsResponse.ok) {
         setError(accountsData.error ?? "Could not load email accounts.");
@@ -7487,10 +7553,59 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
 
       setAccounts(accountsData.accounts ?? []);
       setProviders(providersData.providers ?? []);
+      if (pollingResponse.ok && pollingData) {
+        setPolling(pollingData);
+      } else if (pollingData?.error) {
+        setPollingError(pollingData.error);
+      }
     } catch {
       setError("Could not load email accounts.");
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function loadPollingSettings() {
+    try {
+      const response = await fetch("/api/email-accounts/polling", { credentials: "include" });
+      const data = await response.json();
+      if (response.ok) {
+        setPolling(data);
+        setPollingError(null);
+      }
+    } catch {
+      // Keep the last known settings while the page remains open.
+    }
+  }
+
+  async function savePollingSettings(enabled = polling.enabled) {
+    const validationError = validatePollingSettings(polling);
+    if (validationError) {
+      setPollingError(validationError);
+      return;
+    }
+
+    setIsSavingPolling(true);
+    setPollingError(null);
+    setPollingNotice(null);
+    try {
+      const response = await fetch("/api/email-accounts/polling", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...polling, enabled }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setPollingError(data.error ?? "Could not save polling settings.");
+        return;
+      }
+      setPolling(data);
+      setPollingNotice(enabled ? "Polling is active." : polling.enabled ? "Polling was deactivated." : "Polling settings saved.");
+    } catch {
+      setPollingError("Could not save polling settings.");
+    } finally {
+      setIsSavingPolling(false);
     }
   }
 
@@ -7536,7 +7651,12 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
       return;
     }
 
-    window.location.href = getRuntimeUrl(`/api/email-accounts/connect/${providerId}`);
+    const connectUrl = getAbsoluteRuntimeUrl(`/api/email-accounts/connect/${providerId}`);
+    if (window.top && window.top !== window) {
+      window.top.location.href = connectUrl;
+    } else {
+      window.location.href = connectUrl;
+    }
   }
 
   function refreshAccount(account: EmailAccount) {
@@ -7748,6 +7868,87 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+          <div>
+            <CardTitle>Polling</CardTitle>
+            <CardDescription>
+              When active, Emailable periodically checks connected accounts for new mail and sends eligible messages
+              through AI labeling. When disabled, send email data through Endpoints or connect to Emailable&apos;s MCP server.
+            </CardDescription>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            <Button disabled={isSavingPolling || Boolean(validatePollingSettings(polling))} onClick={() => void savePollingSettings()} type="button" variant="outline">
+              {isSavingPolling ? <Loader /> : <Save className="h-4 w-4" />}
+              Save
+            </Button>
+            <AiEnableSwitch
+              canEnable={polling.aiActive}
+              disabled={isSavingPolling || Boolean(validatePollingSettings(polling))}
+              enabled={polling.enabled}
+              label="Activate"
+              onChange={(enabled) => void savePollingSettings(enabled)}
+              unavailableTooltip="Activate AI and connect a working AI platform before enabling polling."
+            />
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {pollingNotice ? <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{pollingNotice}</p> : null}
+          {pollingError ? <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{pollingError}</p> : null}
+          <div className="grid gap-5 md:grid-cols-2">
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-zinc-700">Check for new mail every</span>
+              <div className="grid grid-cols-[minmax(0,1fr)_120px]">
+                <input
+                  className="h-10 rounded-l-md border border-r-0 border-zinc-200 bg-white/70 px-3 text-sm outline-none focus:border-zinc-400"
+                  max={720}
+                  min={10}
+                  onChange={(event) => setPolling((current) => ({ ...current, intervalMinutes: Number(event.target.value) }))}
+                  step={1}
+                  type="number"
+                  value={polling.intervalMinutes}
+                />
+                <select className="h-10 rounded-r-md border border-zinc-200 bg-zinc-100 px-3 text-sm text-zinc-500" disabled value="minutes">
+                  <option value="minutes">minutes</option>
+                </select>
+              </div>
+              <span className="mt-1 block text-xs text-zinc-500">Between 10 and 720 minutes.</span>
+            </label>
+
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-zinc-700">Search for email received within</span>
+              <div className="grid grid-cols-[minmax(0,1fr)_120px]">
+                <input
+                  className="h-10 rounded-l-md border border-r-0 border-zinc-200 bg-white/70 px-3 text-sm outline-none focus:border-zinc-400"
+                  max={polling.lookbackUnit === "days" ? 7 : 168}
+                  min={1}
+                  onChange={(event) => setPolling((current) => ({ ...current, lookbackValue: Number(event.target.value) }))}
+                  step={1}
+                  type="number"
+                  value={polling.lookbackValue}
+                />
+                <select
+                  className="h-10 rounded-r-md border border-zinc-200 bg-white/80 px-3 text-sm outline-none focus:border-zinc-400"
+                  onChange={(event) => {
+                    const lookbackUnit = event.target.value as PollingSettings["lookbackUnit"];
+                    setPolling((current) => ({
+                      ...current,
+                      lookbackUnit,
+                      lookbackValue: Math.min(current.lookbackValue, lookbackUnit === "days" ? 7 : 168),
+                    }));
+                  }}
+                  value={polling.lookbackUnit}
+                >
+                  <option value="hours">hours</option>
+                  <option value="days">days</option>
+                </select>
+              </div>
+              <span className="mt-1 block text-xs text-zinc-500">From 1 hour up to 7 days.</span>
+            </label>
+          </div>
+        </CardContent>
+      </Card>
+
       {showImapModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
@@ -7850,6 +8051,20 @@ function getImapConnectionErrorMessage(data: unknown, status: number) {
   return message || "The IMAP account could not be connected. Check the account settings and try again.";
 }
 
+function validatePollingSettings(settings: PollingSettings) {
+  if (!Number.isInteger(settings.intervalMinutes) || settings.intervalMinutes < 10 || settings.intervalMinutes > 720) {
+    return "Polling interval must be a whole number from 10 to 720 minutes.";
+  }
+  if (!Number.isInteger(settings.lookbackValue) || settings.lookbackValue < 1) {
+    return "Search lookback must be a whole number of at least 1.";
+  }
+  const lookbackHours = settings.lookbackUnit === "days" ? settings.lookbackValue * 24 : settings.lookbackValue;
+  if (lookbackHours > 168) {
+    return "Search lookback cannot exceed 7 days or 168 hours.";
+  }
+  return "";
+}
+
 function InputField({
   disabled = false,
   label,
@@ -7886,12 +8101,14 @@ function AiEnableSwitch({
   enabled,
   label = "Enable AI",
   onChange,
+  unavailableTooltip = "Add and save a working AI platform before enabling AI.",
 }: {
   canEnable: boolean;
   disabled?: boolean;
   enabled: boolean;
   label?: string;
   onChange: (enabled: boolean) => void;
+  unavailableTooltip?: string;
 }) {
   const switchControl = (
     <label className={cn("inline-flex items-center gap-3 text-sm", !canEnable || disabled ? "cursor-not-allowed opacity-70" : "cursor-pointer")}>
@@ -7921,7 +8138,7 @@ function AiEnableSwitch({
 
   if (!canEnable) {
     return (
-      <Tooltip text="Add and save a working AI platform before enabling AI.">
+      <Tooltip text={unavailableTooltip}>
         <span>{switchControl}</span>
       </Tooltip>
     );
@@ -9186,11 +9403,12 @@ function extractEmailForSearch(value = "") {
   return extractEmailAddressFromText(value).replace(/"/g, "");
 }
 
-function mapAuthUser(user: { email?: string | null; name?: string | null; image?: string | null }): AuthUser {
+function mapAuthUser(user: { email?: string | null; name?: string | null; image?: string | null; homeAssistant?: boolean }): AuthUser {
   return {
     email: user.email ?? "Signed-in user",
     name: user.name || user.email || "Signed-in user",
     picture: user.image,
+    homeAssistant: Boolean(user.homeAssistant),
   };
 }
 

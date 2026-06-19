@@ -169,6 +169,7 @@ The add-on:
 
 - Runs the same Node app on port `3000`
 - Enables Home Assistant Ingress
+- Automatically creates a separate Emailable account for each authenticated Home Assistant user
 - Shows Emailable in the Home Assistant sidebar
 - Provides add-on configuration fields for the app environment variables
 - Pulls prebuilt images from GitHub Container Registry when available, so Home Assistant does not need to compile the app locally
@@ -212,6 +213,8 @@ BETTER_AUTH_URL=<the same externally reachable app URL>
 ```
 
 Home Assistant Ingress serves the frontend behind an internal base path. The frontend includes a runtime helper that rewrites `/api/...` and `/mcp` calls to the correct Ingress path when the app is opened from the sidebar.
+
+When opened through Ingress, Emailable trusts the user identity supplied by Home Assistant and skips its own login screen. Each Home Assistant user receives a separate Emailable data scope for connected accounts, labels, rules, API keys, and settings. Direct access to port `3000` continues to use Emailable login.
 
 The add-on configuration is grouped into two sections:
 
