@@ -76,7 +76,7 @@ export async function listSystemLogs(userId, { category = "all", limit = 100 } =
 
 function normalizeCategory(category) {
   const value = String(category || "all").toLowerCase();
-  if (["ai", "endpoints", "webhook", "mcp-server", "all"].includes(value)) {
+  if (["ai", "email", "endpoints", "webhook", "mcp-server", "all"].includes(value)) {
     return value;
   }
   if (value === "webhook events") {

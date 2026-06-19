@@ -8,9 +8,11 @@ import {
   moveImapInboxMessageToFolder,
   moveImapInboxMessageToTrash,
   searchImapInboxMessages,
+  updateImapComposeDraft,
 } from "./imap-provider.js";
 import { modifyGmailMessageLabels } from "./integrations.js";
 import { emitWebhookEvent } from "./webhooks.js";
+import { logSystemEvent } from "./system-logs.js";
 
 const INBOX_PAGE_SIZE = 10;
 
@@ -85,6 +87,20 @@ export function registerInboxRoutes(app) {
 
       const draft = await createInboxDraft(req.user.id, input.compose);
       res.status(201).json({ draft });
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.put("/api/inbox/drafts/:draftId", requireSession, async (req, res) => {
+    try {
+      const input = parseComposeInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+      const draft = await updateInboxDraft(req.user.id, req.params.draftId, input.compose, req.body?.mailbox);
+      res.json({ draft });
     } catch (error) {
       handleProviderError(res, error);
     }
@@ -187,14 +203,21 @@ async function listSpecialMailboxMessages(userId, query, options) {
     try {
       if (account.provider === "gmail") {
         const accessToken = await getValidEmailAccountAccessToken(account);
-        const result = await listGmailSystemLabelMessages({
+        const result = options.gmailLabelId === "DRAFT"
+          ? await listGmailDraftMessages({
+              accessToken,
+              account,
+              pageToken: pageToken[account.id] ?? "",
+              query: query.search,
+            })
+          : await listGmailSystemLabelMessages({
           accessToken,
           account,
           labelId: options.gmailLabelId,
           labelName: options.labelName,
           pageToken: pageToken[account.id] ?? "",
           query: query.search,
-        });
+            });
         nextPageState[account.id] = result.nextPageToken;
         providerResults.push(...result.messages);
       } else {
@@ -206,7 +229,11 @@ async function listSpecialMailboxMessages(userId, query, options) {
           query: query.search,
         });
         nextPageState[account.id] = result.nextPageToken;
-        providerResults.push(...result.messages.map((message) => ({ ...message, labels: [options.labelName] })));
+        providerResults.push(...result.messages.map((message) => ({
+          ...message,
+          labels: [options.labelName],
+          ...(options.gmailLabelId === "DRAFT" ? { draftId: message.id } : {}),
+        })));
       }
     } catch (error) {
       skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: error.message });
@@ -437,6 +464,37 @@ async function createInboxDraft(userId, compose) {
   };
 }
 
+async function updateInboxDraft(userId, draftId, compose, mailbox = "") {
+  const accounts = await getInboxAccounts(userId, [compose.accountId]);
+  const account = accounts[0];
+  if (!account) {
+    const error = new Error("Email account not found");
+    error.status = 404;
+    throw error;
+  }
+
+  let draft;
+  if (account.provider === "gmail") {
+    const accessToken = await getValidEmailAccountAccessToken(account);
+    draft = await updateGmailComposeDraft(accessToken, account, draftId, compose);
+  } else if (account.provider === "imap") {
+    draft = await updateImapComposeDraft({ account, draftId, mailbox, input: compose });
+  } else {
+    const error = new Error(`${account.provider} draft updates are not implemented yet`);
+    error.status = 501;
+    throw error;
+  }
+
+  await logSystemEvent(userId, {
+    category: "email",
+    eventName: "email.draft_updated",
+    status: "success",
+    message: `Draft updated for ${account.email}.`,
+    payload: { accountEmail: account.email, provider: account.provider, draftId: draft?.id ?? draftId, subject: compose.subject },
+  });
+  return { id: draft?.id ?? draftId, mailbox: draft?.mailbox ?? mailbox, accountEmail: account.email, provider: account.provider };
+}
+
 async function sendInboxEmail(userId, compose) {
   const accounts = await getInboxAccounts(userId, [compose.accountId]);
   const account = accounts[0];
@@ -465,6 +523,13 @@ async function sendInboxEmail(userId, compose) {
     messageId: sent?.id ?? null,
     threadId: sent?.threadId ?? null,
     provider: account.provider,
+  });
+  await logSystemEvent(userId, {
+    category: "email",
+    eventName: "email.sent",
+    status: "success",
+    message: `Email sent from ${account.email}.`,
+    payload: { accountEmail: account.email, provider: account.provider, messageId: sent?.id ?? null, subject: compose.subject },
   });
 
   return {
@@ -680,9 +745,19 @@ async function deleteInboxMessages(userId, messages) {
     }
   }
 
+  const deleted = results.filter((result) => result.ok).length;
+  const failed = results.filter((result) => !result.ok);
+  await logSystemEvent(userId, {
+    category: "email",
+    eventName: "email.deleted",
+    status: failed.length > 0 ? (deleted > 0 ? "warning" : "error") : "success",
+    message: `${deleted} email${deleted === 1 ? "" : "s"} deleted${failed.length ? `; ${failed.length} failed` : ""}.`,
+    payload: { deleted, failed, messages },
+  });
+
   return {
-    deleted: results.filter((result) => result.ok).length,
-    failed: results.filter((result) => !result.ok),
+    deleted,
+    failed,
     results,
   };
 }
@@ -788,6 +863,7 @@ async function fetchGmailInboxMessage(accessToken, account, emailId) {
     from: headers.from || "",
     to: headers.to || "",
     cc: headers.cc || "",
+    bcc: headers.bcc || "",
     subject: headers.subject || "",
     date: new Date(Number(message.internalDate || Date.parse(headers.date) || Date.now())).toISOString(),
     bodyText: body.text,
@@ -856,6 +932,61 @@ async function createGmailComposeDraft(accessToken, account, compose) {
   });
 
   return response.json();
+}
+
+async function updateGmailComposeDraft(accessToken, account, draftId, compose) {
+  const raw = buildGmailComposeMessage(account.email, compose);
+  const response = await providerFetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(draftId)}`,
+    accessToken,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        id: draftId,
+        message: {
+          raw,
+          ...(compose.threadId ? { threadId: compose.threadId } : {}),
+        },
+      }),
+    },
+  );
+  return response.json();
+}
+
+async function listGmailDraftMessages({ accessToken, account, pageToken, query }) {
+  const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/drafts");
+  url.searchParams.set("maxResults", String(INBOX_PAGE_SIZE));
+  if (pageToken) {
+    url.searchParams.set("pageToken", pageToken);
+  }
+  if (query) {
+    url.searchParams.set("q", query);
+  }
+
+  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+  const data = await response.json();
+  const messages = [];
+  for (const draftSummary of data.drafts ?? []) {
+    if (!draftSummary.id) {
+      continue;
+    }
+    const draftUrl = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(draftSummary.id)}`);
+    draftUrl.searchParams.set("format", "metadata");
+    for (const header of ["From", "To", "Cc", "Subject", "Date"]) {
+      draftUrl.searchParams.append("metadataHeaders", header);
+    }
+    const draftResponse = await providerFetch(draftUrl.toString(), accessToken, { method: "GET" });
+    const draft = await draftResponse.json();
+    if (!draft.message?.id) {
+      continue;
+    }
+    messages.push({
+      ...await gmailMessageToInboxListItem(draft.message, account, { name: "Draft" }),
+      draftId: draft.id,
+    });
+  }
+
+  return { messages, nextPageToken: data.nextPageToken ?? null };
 }
 
 async function listGmailSystemLabelMessages({ accessToken, account, labelId, labelName, pageToken, query }) {

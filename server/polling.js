@@ -2,6 +2,8 @@ import { generateAiLabel, isAiActiveForUser } from "./byoai.js";
 import { dbPool } from "./db.js";
 import { searchPollingCandidates } from "./integrations.js";
 import { requireSession } from "./session.js";
+import { logSystemEvent } from "./system-logs.js";
+import { emitWebhookEvent } from "./webhooks.js";
 
 const POLLING_WORKER_INTERVAL_MS = 60_000;
 const activePollingUsers = new Set();
@@ -17,6 +19,7 @@ export async function ensurePollingSettings() {
   await dbPool.query("alter table user_settings add column if not exists polling_lookback_value integer not null default 24");
   await dbPool.query("alter table user_settings add column if not exists polling_lookback_unit text not null default 'hours'");
   await dbPool.query("alter table user_settings add column if not exists polling_last_run_at timestamptz");
+  await dbPool.query("alter table user_settings add column if not exists polling_last_manual_run_at timestamptz");
   await dbPool.query(`
     do $$
     begin
@@ -62,10 +65,64 @@ export function registerPollingRoutes(app) {
       handlePollingError(res, error);
     }
   });
+
+  app.post("/api/email-accounts/polling/run", requireSession, async (req, res) => {
+    try {
+      if (!await isAiActiveForUser(req.user.id)) {
+        res.status(400).json({ error: "Activate AI with a connected platform before polling." });
+        return;
+      }
+      if (activePollingUsers.has(req.user.id)) {
+        res.status(409).json({ error: "Polling is already running for this account." });
+        return;
+      }
+
+      const claimed = await dbPool.query(
+        `
+          update user_settings
+          set polling_last_manual_run_at = now(),
+              polling_last_run_at = now()
+          where user_id = $1
+            and (
+              polling_last_manual_run_at is null
+              or polling_last_manual_run_at <= now() - interval '10 seconds'
+            )
+          returning polling_lookback_value as "lookbackValue",
+                    polling_lookback_unit as "lookbackUnit"
+        `,
+        [req.user.id],
+      );
+      if (!claimed.rows[0]) {
+        res.status(429).json({ error: "Wait 10 seconds before polling again.", retryAfter: 10 });
+        return;
+      }
+
+      activePollingUsers.add(req.user.id);
+      try {
+        try {
+          const result = await pollUser({ userId: req.user.id, ...claimed.rows[0] }, "manual");
+          res.json(result);
+        } catch (error) {
+          await logSystemEvent(req.user.id, {
+            category: "email",
+            eventName: "email.polling_failed",
+            status: "error",
+            message: `Manual polling failed: ${error.message}`,
+            payload: { trigger: "manual", error: error.message },
+          });
+          throw error;
+        }
+      } finally {
+        activePollingUsers.delete(req.user.id);
+      }
+    } catch (error) {
+      handlePollingError(res, error);
+    }
+  });
 }
 
 export function startPollingWorker() {
-  if (!dbPool || pollingTimer) {
+  if (!dbPool || pollingTimer || process.env.DISABLE_POLLING_WORKER === "true") {
     return;
   }
 
@@ -149,37 +206,91 @@ async function pollDueUsers() {
     activePollingUsers.add(settings.userId);
     try {
       await dbPool.query("update user_settings set polling_last_run_at = now() where user_id = $1", [settings.userId]);
-      await pollUser(settings);
+      await pollUser(settings, "scheduled");
+    } catch (error) {
+      await logSystemEvent(settings.userId, {
+        category: "email",
+        eventName: "email.polling_failed",
+        status: "error",
+        message: `Polling failed: ${error.message}`,
+        payload: { trigger: "scheduled", error: error.message },
+      });
+      console.error(`Polling failed for ${settings.userId}:`, error);
     } finally {
       activePollingUsers.delete(settings.userId);
     }
   }
 }
 
-async function pollUser(settings) {
+async function pollUser(settings, trigger) {
   if (!await isAiActiveForUser(settings.userId)) {
     await dbPool.query("update user_settings set polling_enabled = false where user_id = $1", [settings.userId]);
-    return;
+    return { fetched: 0, processed: 0, failed: 0, trigger };
   }
 
   const lookbackHours = settings.lookbackUnit === "days" ? settings.lookbackValue * 24 : settings.lookbackValue;
   const candidates = await searchPollingCandidates(settings.userId, lookbackHours);
   const seen = new Set();
+  const uniqueCandidates = [];
   for (const candidate of candidates) {
     const key = `${candidate.account.id}:${candidate.email.emailId}`;
-    if (seen.has(key)) {
-      continue;
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueCandidates.push(candidate);
     }
-    seen.add(key);
+  }
+
+  if (uniqueCandidates.length > 0) {
+    await emitWebhookEvent(settings.userId, "email.received", {
+      emails: uniqueCandidates.map(({ account, email }) => ({
+        accountEmail: account.email,
+        to: email.to || account.email,
+        from: email.fromEmail || "",
+        subject: email.subject || "",
+        emailId: email.emailId,
+        body: simplifyPollingBody(email.bodyText || email.snippet || ""),
+      })),
+    });
+  }
+
+  let processed = 0;
+  const failures = [];
+  for (const candidate of uniqueCandidates) {
     try {
       await generateAiLabel(settings.userId, {
         emailId: candidate.email.emailId,
         accountEmail: candidate.account.email,
       });
+      processed += 1;
     } catch (error) {
       console.warn(`Polling could not process ${candidate.account.email}/${candidate.email.emailId}:`, error.message);
+      failures.push({
+        accountEmail: candidate.account.email,
+        emailId: candidate.email.emailId,
+        error: error.message,
+      });
     }
   }
+
+  const result = {
+    trigger,
+    fetched: uniqueCandidates.length,
+    processed,
+    failed: failures.length,
+    failures,
+  };
+  await logSystemEvent(settings.userId, {
+    category: "email",
+    eventName: "email.polling_completed",
+    status: failures.length > 0 ? (processed > 0 ? "warning" : "error") : "success",
+    message: `Polling fetched ${result.fetched}, processed ${result.processed}, and failed ${result.failed} emails.`,
+    payload: result,
+  });
+  return result;
+}
+
+function simplifyPollingBody(value) {
+  return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 8000);
 }
 
 function parsePollingSettings(body) {

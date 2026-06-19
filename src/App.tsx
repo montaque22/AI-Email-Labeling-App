@@ -356,6 +356,7 @@ type InboxRuleStatus = {
 
 type InboxMessage = {
   id: string;
+  draftId?: string;
   threadId: string;
   accountId: string;
   accountEmail: string;
@@ -382,6 +383,7 @@ type InboxMessageDetail = {
   from: string;
   to: string;
   cc?: string;
+  bcc?: string;
   subject: string;
   date: string;
   bodyText: string;
@@ -418,6 +420,9 @@ type InboxAttachment = {
 
 type InboxComposeDraft = {
   accountId: string;
+  draftId?: string;
+  mailbox?: string;
+  threadId?: string;
   to: string;
   cc: string;
   bcc: string;
@@ -1524,7 +1529,9 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
   }
 
   async function openMessage(message: InboxMessage) {
-    setSelectedMessage(message);
+    if (inboxMode !== "drafts") {
+      setSelectedMessage(message);
+    }
     setMessageDetail(null);
     setDetailError(null);
     setIsDetailLoading(true);
@@ -1541,13 +1548,29 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
       const response = await fetch(`/api/inbox/message?${params.toString()}`, { credentials: "include" });
       const data = await response.json();
       if (!response.ok) {
-        setDetailError(data.error ?? "Could not load email.");
+        const messageError = data.error ?? "Could not load email.";
+        inboxMode === "drafts" ? setError(messageError) : setDetailError(messageError);
         return;
       }
 
-      setMessageDetail(data.message);
+      if (inboxMode === "drafts") {
+        setComposeInitial({
+          accountId: message.accountId,
+          draftId: message.draftId || message.id,
+          mailbox: message.mailbox || "",
+          threadId: data.message.threadId || message.threadId,
+          to: data.message.to || "",
+          cc: data.message.cc || "",
+          bcc: data.message.bcc || "",
+          subject: data.message.subject || "",
+          bodyText: data.message.bodyText || "",
+        });
+        setIsComposeOpen(true);
+      } else {
+        setMessageDetail(data.message);
+      }
     } catch {
-      setDetailError("Could not load email.");
+      inboxMode === "drafts" ? setError("Could not load draft.") : setDetailError("Could not load email.");
     } finally {
       setIsDetailLoading(false);
     }
@@ -2202,6 +2225,10 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
                 setIsComposeOpen(false);
                 setComposeInitial(null);
               }}
+              onSaved={(kind) => {
+                showInboxToast(kind === "draft" ? "Draft saved." : "Email sent.");
+                void loadMessages({ reset: true });
+              }}
               privacyMode={privacyMode}
               variant="push"
             />
@@ -2214,6 +2241,10 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
               onClose={() => {
                 setIsComposeOpen(false);
                 setComposeInitial(null);
+              }}
+              onSaved={(kind) => {
+                showInboxToast(kind === "draft" ? "Draft saved." : "Email sent.");
+                void loadMessages({ reset: true });
               }}
               privacyMode={privacyMode}
             />
@@ -2470,7 +2501,7 @@ function InboxMessageRow({
     <div
       aria-busy={isDeleting}
       className={cn(
-        "relative border-b border-zinc-200 bg-white/45 transition last:border-b-0 hover:bg-white/80",
+        "relative select-none border-b border-zinc-200 bg-white/45 transition last:border-b-0 hover:bg-white/80",
         isDeleting ? "pointer-events-none opacity-60" : null,
       )}
     >
@@ -3266,6 +3297,7 @@ function InboxComposeModal({
   initial,
   isByoAiActive,
   onClose,
+  onSaved,
   privacyMode,
   variant = "modal",
 }: {
@@ -3273,6 +3305,7 @@ function InboxComposeModal({
   initial: Partial<InboxComposeDraft> | null;
   isByoAiActive: boolean;
   onClose: () => void;
+  onSaved?: (kind: "draft" | "sent") => void;
   privacyMode: boolean;
   variant?: "modal" | "push";
 }) {
@@ -3293,6 +3326,7 @@ function InboxComposeModal({
   const [aiError, setAiError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const replyContext = initial?.replyContext ?? null;
+  const isExistingDraft = Boolean(initial?.draftId);
   const isPush = variant === "push";
   const composeFormId = `inbox-compose-form-${variant}`;
 
@@ -3302,15 +3336,17 @@ function InboxComposeModal({
     }
   }, [isByoAiActive]);
 
-  async function sendEmail(event: FormEvent<HTMLFormElement>) {
+  async function submitEmail(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSaving(true);
     setError(null);
     setSaved(false);
 
     try {
-      const response = await fetch("/api/inbox/send", {
-        method: "POST",
+      const response = await fetch(
+        isExistingDraft ? `/api/inbox/drafts/${encodeURIComponent(initial?.draftId || "")}` : "/api/inbox/send",
+        {
+        method: isExistingDraft ? "PUT" : "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3322,18 +3358,20 @@ function InboxComposeModal({
           bodyText,
           attachments,
           replyToEmailId: replyContext?.emailId || "",
-          threadId: replyContext?.threadId || "",
+          threadId: replyContext?.threadId || initial?.threadId || "",
+          mailbox: initial?.mailbox || "",
         }),
       });
       const data = await response.json();
       if (!response.ok) {
-        setError(data.error ?? "Could not send email.");
+        setError(data.error ?? (isExistingDraft ? "Could not save draft." : "Could not send email."));
         return;
       }
       setSaved(true);
+      onSaved?.(isExistingDraft ? "draft" : "sent");
       onClose();
     } catch {
-      setError("Could not send email.");
+      setError(isExistingDraft ? "Could not save draft." : "Could not send email.");
     } finally {
       setIsSaving(false);
     }
@@ -3389,7 +3427,7 @@ function InboxComposeModal({
               <span className="w-10" />
             )}
             <h3 className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-zinc-950">
-              {isAiDraftOpen ? "AI Draft" : replyContext ? "Reply" : "New email"}
+              {isAiDraftOpen ? "AI Draft" : isExistingDraft ? "Edit draft" : replyContext ? "Reply" : "New email"}
             </h3>
             {isPush ? (
               <div className="flex items-center gap-1">
@@ -3398,8 +3436,8 @@ function InboxComposeModal({
                     <Sparkles className="h-4 w-4" />
                   </Button>
                 ) : null}
-                <Button aria-label="Send email" disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} form={composeFormId} size="icon" type="submit" variant="ghost">
-                  {isSaving ? <Loader /> : <Send className="h-4 w-4" />}
+                <Button aria-label={isExistingDraft ? "Save draft" : "Send email"} disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} form={composeFormId} size="icon" type="submit" variant="ghost">
+                  {isSaving ? <Loader /> : isExistingDraft ? <Save className="h-4 w-4" /> : <Send className="h-4 w-4" />}
                 </Button>
               </div>
             ) : (
@@ -3458,9 +3496,9 @@ function InboxComposeModal({
             </div>
           </div>
         ) : (
-        <form className="space-y-4" id={composeFormId} onSubmit={sendEmail}>
+        <form className="space-y-4" id={composeFormId} onSubmit={submitEmail}>
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-          {saved ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">Email sent.</p> : null}
+          {saved ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{isExistingDraft ? "Draft saved." : "Email sent."}</p> : null}
           {replyContext ? (
             <div className="rounded-xl border border-zinc-200 bg-white/60 p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-zinc-200 pb-3">
@@ -3578,7 +3616,7 @@ function InboxComposeModal({
               </Button>
             ) : null}
             <Button disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} type="submit">
-              {isSaving ? "Sending..." : "Send email"}
+              {isSaving ? (isExistingDraft ? "Saving..." : "Sending...") : (isExistingDraft ? "Save draft" : "Send email")}
             </Button>
           </div>
         </form>
@@ -4416,7 +4454,7 @@ function MetricsPage() {
             <CardDescription>
               {activeTab === "metrics"
                 ? "Track rule volume, review status, labeled emails, and draft creation."
-                : "Review simplified system activity across AI, endpoints, webhooks, and MCP server usage."}
+                : "Review simplified system activity across email, AI, endpoints, webhooks, and MCP server usage."}
             </CardDescription>
           </div>
           {activeTab === "logs" ? (
@@ -4427,6 +4465,7 @@ function MetricsPage() {
             >
               <option value="all">All</option>
               <option value="ai">AI</option>
+              <option value="email">Email</option>
               <option value="endpoints">Endpoints</option>
               <option value="webhook">Webhook Events</option>
               <option value="mcp-server">MCP Server</option>
@@ -7505,12 +7544,22 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
     lookbackUnit: "hours",
   });
   const [isSavingPolling, setIsSavingPolling] = useState(false);
+  const [isPollingNow, setIsPollingNow] = useState(false);
+  const [pollCooldown, setPollCooldown] = useState(0);
   const [pollingError, setPollingError] = useState<string | null>(null);
   const [pollingNotice, setPollingNotice] = useState<string | null>(null);
 
   useEffect(() => {
     void loadEmailAccounts();
   }, []);
+
+  useEffect(() => {
+    if (pollCooldown <= 0) {
+      return;
+    }
+    const timer = window.setInterval(() => setPollCooldown((current) => Math.max(0, current - 1)), 1000);
+    return () => window.clearInterval(timer);
+  }, [pollCooldown]);
 
   useEffect(() => {
     function refreshPollingWhenVisible() {
@@ -7606,6 +7655,33 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
       setPollingError("Could not save polling settings.");
     } finally {
       setIsSavingPolling(false);
+    }
+  }
+
+  async function runPollingNow() {
+    if (!polling.aiActive || isPollingNow || pollCooldown > 0) {
+      return;
+    }
+    setIsPollingNow(true);
+    setPollCooldown(10);
+    setPollingError(null);
+    setPollingNotice(null);
+    try {
+      const response = await fetch("/api/email-accounts/polling/run", {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setPollingError(data.error ?? "Could not run polling.");
+        return;
+      }
+      setPollingNotice(`Polling finished: ${data.processed} processed, ${data.failed} failed.`);
+      await loadPollingSettings();
+    } catch {
+      setPollingError("Could not run polling.");
+    } finally {
+      setIsPollingNow(false);
     }
   }
 
@@ -7878,9 +7954,9 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
             </CardDescription>
           </div>
           <div className="flex shrink-0 items-center gap-3">
-            <Button disabled={isSavingPolling || Boolean(validatePollingSettings(polling))} onClick={() => void savePollingSettings()} type="button" variant="outline">
-              {isSavingPolling ? <Loader /> : <Save className="h-4 w-4" />}
-              Save
+            <Button disabled={!polling.aiActive || isPollingNow || pollCooldown > 0} onClick={() => void runPollingNow()} type="button" variant="outline">
+              {isPollingNow ? <Loader /> : null}
+              {pollCooldown > 0 ? `Poll now (${pollCooldown})` : "Poll now"}
             </Button>
             <AiEnableSwitch
               canEnable={polling.aiActive}
@@ -7945,6 +8021,12 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
               </div>
               <span className="mt-1 block text-xs text-zinc-500">From 1 hour up to 7 days.</span>
             </label>
+          </div>
+          <div className="flex justify-end border-t border-zinc-200 pt-4">
+            <Button disabled={isSavingPolling || Boolean(validatePollingSettings(polling))} onClick={() => void savePollingSettings()} type="button" variant="outline">
+              {isSavingPolling ? <Loader /> : <Save className="h-4 w-4" />}
+              Save
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -10099,6 +10181,9 @@ function EmailAccountStatusBadge({ account }: { account: EmailAccount }) {
 function logCategoryLabel(category: string) {
   if (category === "ai") {
     return "AI";
+  }
+  if (category === "email") {
+    return "Email";
   }
   if (category === "endpoints") {
     return "Endpoints";

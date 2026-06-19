@@ -188,7 +188,7 @@ function createMcpServer(userId) {
       inputSchema: {
         accountEmail: z.string().email().describe("Connected email account that owns the message."),
         emailId: z.string().min(1).describe("Provider email/message id to reply to."),
-        bodyText: z.string().optional().describe("Plain text body for the draft reply."),
+        bodyText: z.string().trim().min(1).describe("Non-empty plain text body for the draft reply."),
         bodyHtml: z.string().optional().describe("HTML body for the draft reply."),
         replyAll: z.boolean().optional().describe("Whether to reply all instead of replying only to the sender."),
       },

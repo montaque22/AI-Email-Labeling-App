@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.20
+
+- Added manual polling with a cooldown, aggregate polling webhooks, and Email activity logs.
+- Added editable Gmail and IMAP drafts and rejected empty provider drafts.
+- Improved Inbox row interaction and moved Polling Save to the section footer.
+
 ## 0.1.19
 
 - Added automatic per-user Emailable accounts for authenticated Home Assistant Ingress users.

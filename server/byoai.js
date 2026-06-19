@@ -64,7 +64,7 @@ const SYSTEM_MCP_TOOLS = [
         bodyHtml: { type: "string", description: "HTML body for the draft reply." },
         replyAll: { type: "boolean", description: "Whether to reply all instead of replying only to the sender." },
       },
-      required: ["accountEmail", "emailId"],
+      required: ["accountEmail", "emailId", "bodyText"],
       additionalProperties: false,
     },
   },
@@ -653,15 +653,17 @@ export async function generateAiLabel(userId, request) {
 }
 
 function buildAiLabelClassificationPayload(target, labelsApplied) {
+  const accountEmail = target.account.email || "unknown@connected-account.local";
+  const fromEmail = target.email.fromEmail || "unknown@sender.local";
   return {
     emailId: target.email.emailId,
-    threadId: target.email.threadId,
-    fromEmail: target.email.fromEmail,
-    fromName: target.email.fromName || target.email.fromEmail,
+    threadId: target.email.threadId || target.email.emailId,
+    fromEmail,
+    fromName: target.email.fromName || fromEmail,
     subject: target.email.subject || "(no subject)",
-    snippet: target.email.snippet || simplifyBody(target.email.bodyText).slice(0, 300),
+    snippet: target.email.snippet || simplifyBody(target.email.bodyText).slice(0, 300) || "No message preview available.",
     labelsApplied,
-    accountEmail: target.account.email,
+    accountEmail,
   };
 }
 

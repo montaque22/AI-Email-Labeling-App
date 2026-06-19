@@ -2496,6 +2496,12 @@ export async function modifyGmailMessageLabels({ accessToken, emailId, addLabelI
 }
 
 export async function createProviderReplyDraft({ accessToken, account, input }) {
+  if (!String(input?.bodyText || "").trim() && !String(input?.bodyHtml || "").trim()) {
+    const error = new Error("Draft body cannot be empty");
+    error.status = 400;
+    throw error;
+  }
+
   if (account.provider === "gmail") {
     return createGmailReplyDraft({ accessToken, account, input });
   }

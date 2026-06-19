@@ -216,6 +216,34 @@ export async function createImapComposeDraft({ account, input }) {
   });
 }
 
+export async function updateImapComposeDraft({ account, draftId, mailbox, input }) {
+  return withImapClient(account, async (client, metadata) => {
+    const draftsMailbox = mailbox || metadata.draftsMailbox || DEFAULT_DRAFTS_MAILBOX;
+    const existingMailbox = await findImapMailbox(client, draftsMailbox);
+    if (!existingMailbox) {
+      throw providerNotFoundError("IMAP drafts mailbox was not found");
+    }
+
+    await client.mailboxOpen(existingMailbox.path);
+    const existing = await client.fetchOne(String(draftId), { uid: true }, { uid: true });
+    if (!existing) {
+      throw providerNotFoundError("IMAP draft was not found");
+    }
+
+    const raw = buildComposeMessage(account.email, input);
+    const result = await client.append(existingMailbox.path, raw, ["\\Draft"], new Date());
+    await client.mailboxOpen(existingMailbox.path);
+    await client.messageDelete([existing.uid], { uid: true });
+
+    return {
+      id: result?.uid ? String(result.uid) : cryptoRandomId(),
+      mailbox: existingMailbox.path,
+      subject: input.subject || "",
+      toRecipients: parseAddressList(input.to || ""),
+    };
+  });
+}
+
 export async function searchImapInboxMessages(account, { folder, limit, pageToken = "", query = "" }) {
   return withImapClient(account, async (client) => {
     const mailbox = await findImapMailbox(client, folder);
@@ -300,6 +328,7 @@ export async function fetchImapInboxMessage(account, { emailId, mailbox }) {
       from: (message.envelope?.from ?? []).map(formatImapAddress).filter(Boolean).join(", "),
       to: (message.envelope?.to ?? []).map(formatImapAddress).filter(Boolean).join(", "),
       cc: (message.envelope?.cc ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+      bcc: (message.envelope?.bcc ?? []).map(formatImapAddress).filter(Boolean).join(", "),
       subject: message.envelope?.subject ?? "",
       date: (message.internalDate ?? message.envelope?.date ?? new Date()).toISOString(),
       bodyText,
