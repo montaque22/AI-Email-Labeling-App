@@ -22,6 +22,7 @@ Create `.env.local` for local development or configure the same values in your d
 
 ```bash
 DATABASE_URL=<postgres-connection-string>
+PORT=3000
 APP_URL=http://127.0.0.1:3000
 BETTER_AUTH_URL=http://127.0.0.1:3000
 BETTER_AUTH_SECRET=replace-with-a-strong-random-secret
@@ -91,6 +92,14 @@ npm run start
 
 Open `http://127.0.0.1:3000`.
 
+To use another port outside Home Assistant, set `PORT` and update `APP_URL` and `BETTER_AUTH_URL` to the same origin. For example:
+
+```bash
+PORT=8080
+APP_URL=http://127.0.0.1:8080
+BETTER_AUTH_URL=http://127.0.0.1:8080
+```
+
 Useful local commands:
 
 ```bash
@@ -112,6 +121,8 @@ Run it with an environment file:
 ```bash
 docker run --env-file .env.local -p 3000:3000 emailable
 ```
+
+When overriding the container listener, publish the same port, for example `PORT=8080` with `-p 8080:8080`.
 
 If you also need local PostgreSQL:
 
@@ -305,4 +316,3 @@ If the response says `DATABASE_URL` is not configured, check `.env.local`, the D
 - Never commit `.env`, `.env.local`, OAuth secrets, database URLs containing passwords, or API tokens.
 - Run Better Auth migrations when the authentication schema changes.
 - Both Docker and npm production paths serve the built `dist/` frontend through the Node server.
-

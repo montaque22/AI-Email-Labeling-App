@@ -820,6 +820,7 @@ export async function classifyEmailWithLabelCandidates(userId, rule, { source = 
       threshold,
       accountEmail: target.account.email,
       labelReasons: Object.fromEntries(rule.labelCandidates.map((candidate) => [candidate.labelName, candidate.reason])),
+      labelConfidences: Object.fromEntries(rule.labelCandidates.map((candidate) => [candidate.labelName, candidate.confidence])),
     },
   });
   await emitEmailRuleUpsertWebhook(userId, previousRule, pendingRule, rule);

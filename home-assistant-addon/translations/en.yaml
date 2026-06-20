@@ -35,4 +35,4 @@ configuration:
         name: Node Environment
         description: Runtime mode for the Node app. Use production unless you are developing the add-on.
 network:
-  3000/tcp: Optional direct web/API access. Home Assistant Ingress is used for the sidebar.
+  3000/tcp: Direct web/API port. You can change this host port; Home Assistant Ingress continues using the internal port automatically.

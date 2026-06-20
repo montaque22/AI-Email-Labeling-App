@@ -30,7 +30,9 @@ export YAHOO_CLIENT_ID="$(read_grouped_option optional.yahoo_client_id yahoo_cli
 export YAHOO_CLIENT_SECRET="$(read_grouped_option optional.yahoo_client_secret yahoo_client_secret)"
 export NODE_ENV="$(read_grouped_option optional.node_env node_env)"
 export NODE_ENV="${NODE_ENV:-production}"
-export PORT="${PORT:-3000}"
+# Home Assistant Ingress targets this fixed container port. Users can choose a
+# different host-facing port in the add-on Network configuration.
+export PORT="3000"
 
 derive_home_assistant_origin() {
   node -e "const value=process.argv[1]; if (!value) process.exit(0); try { const url=new URL(value); if (url.port === '3000') { url.port='8123'; process.stdout.write(url.origin); } } catch {}" "$1"

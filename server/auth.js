@@ -1,7 +1,8 @@
 import { betterAuth } from "better-auth";
 import { dbPool } from "./db.js";
 
-const defaultLocalUrl = "http://127.0.0.1:3000";
+const localPort = process.env.PORT || "3000";
+const defaultLocalUrl = `http://127.0.0.1:${localPort}`;
 const baseURL = process.env.BETTER_AUTH_URL || process.env.APP_URL || defaultLocalUrl;
 const isProduction = process.env.NODE_ENV === "production";
 const authSecret = process.env.BETTER_AUTH_SECRET || (isProduction ? undefined : "local-dev-better-auth-secret");
@@ -14,8 +15,8 @@ const staticTrustedOrigins = [
   ...getHomeAssistantUiOrigins(process.env.APP_URL),
   "http://*:8123",
   "https://*:8123",
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
+  `http://localhost:${localPort}`,
+  `http://127.0.0.1:${localPort}`,
   "http://localhost:5173",
   "http://127.0.0.1:5173",
 ].filter(Boolean);

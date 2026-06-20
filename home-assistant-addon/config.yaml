@@ -1,5 +1,5 @@
 name: Emailable
-version: "0.1.24"
+version: "0.1.34"
 slug: emailable
 description: Email labeling assistant with API and MCP tools.
 url: "https://github.com/montaque22/AI-Email-Labeling-App"
@@ -17,9 +17,9 @@ panel_icon: mdi:email-edit-outline
 panel_title: Emailable
 panel_admin: false
 ports:
-  3000/tcp: null
+  3000/tcp: 3000
 ports_description:
-  3000/tcp: Optional direct web/API access. Ingress is used for the Home Assistant sidebar.
+  3000/tcp: Direct web/API access. Change the host port in Network settings without changing the internal ingress port.
 map:
   - addon_config:rw
 options:

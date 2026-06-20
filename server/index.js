@@ -23,7 +23,15 @@ const distDir = path.join(rootDir, "dist");
 const indexHtmlPath = path.join(distDir, "index.html");
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = resolveServerPort(process.env.PORT);
+
+function resolveServerPort(value) {
+  const portNumber = value === undefined || value === "" ? 3000 : Number(value);
+  if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+    throw new Error("PORT must be an integer between 1 and 65535");
+  }
+  return portNumber;
+}
 
 app.get("/api/auth-settings", (_req, res) => {
   res.json({

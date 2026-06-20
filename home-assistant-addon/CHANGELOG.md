@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.1.34
+
+- Made the desktop documentation table of contents sticky, viewport-bounded, and independently scrollable.
+- Added a mobile header control and right-side documentation table-of-contents drawer.
+
+## 0.1.33
+
+- Added Labels documentation covering cross-provider behavior, synchronization, validation, imports, and lifecycle effects.
+- Added Rules documentation covering confidence, pending suggestions, single-label review, and runtime rule learning.
+
+## 0.1.32
+
+- Added Bring Your Own AI documentation covering providers, fallbacks, prompts, polling, AI endpoints, drafting, privacy, cost, and reliability.
+- Clarified which Emailable features remain available without BYOAI.
+
+## 0.1.31
+
+- Added MCP Client documentation covering BYOAI tool expansion, setup, provider caveats, token usage, and security.
+- Documented how MCP Client activation disables the external MCP Server and revokes its keys.
+
+## 0.1.30
+
+- Added in-app documentation for configuring, securing, and using the Emailable MCP Server.
+- Added MCP tool payload examples, Home Assistant networking guidance, and troubleshooting steps.
+
+## 0.1.29
+
+- Added validated `PORT` environment-variable support for standalone Node installations.
+- Exposed the Home Assistant host-facing port in Network configuration while preserving the fixed ingress listener.
+
+## 0.1.28
+
+- Keep rule review action tooltips within the modal and viewport bounds.
+
+## 0.1.27
+
+- Changed rule label selection to radio-style switching while retaining glass checkbox visuals.
+- Added a Suggested tag to pending rules and automatic selection of the highest-confidence suggestion.
+
+## 0.1.26
+
+- Close the rule review modal automatically after a successful review.
+
+## 0.1.25
+
+- Removed the nested scrollbar and fixed height from available-label lists in rule editors.
+
 ## 0.1.24
 
 - Improved the rule review modal with fixed actions, one scrollable content area, and background scroll locking.

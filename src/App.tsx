@@ -26,6 +26,7 @@ import {
   GripVertical,
   Inbox,
   LogOut,
+  List,
   MailCheck,
   Menu,
   MoreVertical,
@@ -153,6 +154,7 @@ type EmailRule = {
   confidence: number;
   labelsApplied: string[];
   labelReasons?: Record<string, string>;
+  labelConfidences?: Record<string, number>;
   isPending: boolean;
   createdAt: string;
   updatedAt: string;
@@ -873,6 +875,7 @@ function AuthenticatedLayout({
   const [privacyMode, setPrivacyMode] = useState(() => localStorage.getItem("emailable-privacy-mode") === "true");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("emailable-sidebar-collapsed") === "true");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [documentationTocOpen, setDocumentationTocOpen] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("emailable-privacy-mode", String(privacyMode));
@@ -881,6 +884,12 @@ function AuthenticatedLayout({
   useEffect(() => {
     localStorage.setItem("emailable-sidebar-collapsed", String(sidebarCollapsed));
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (activePage !== "documentation") {
+      setDocumentationTocOpen(false);
+    }
+  }, [activePage]);
 
   function navigateFromMobileMenu(page: Page) {
     onNavigate(page);
@@ -1029,12 +1038,19 @@ function AuthenticatedLayout({
               <h2 className="truncate text-xl font-semibold">{title}</h2>
             </div>
           </div>
-          <div className="hidden min-w-0 items-center gap-3 md:flex">
-            <UserAvatar className="h-8 w-8" user={user} />
-            <div className="min-w-0 text-right">
-              <p className="truncate text-sm font-medium">{formatEmailTextForPrivacy(user.name, privacyMode)}</p>
-              <p className="truncate text-xs text-zinc-500">{user.homeAssistant ? "Home Assistant account" : formatEmailForPrivacy(user.email, privacyMode)}</p>
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="hidden min-w-0 items-center gap-3 md:flex">
+              <UserAvatar className="h-8 w-8" user={user} />
+              <div className="min-w-0 text-right">
+                <p className="truncate text-sm font-medium">{formatEmailTextForPrivacy(user.name, privacyMode)}</p>
+                <p className="truncate text-xs text-zinc-500">{user.homeAssistant ? "Home Assistant account" : formatEmailForPrivacy(user.email, privacyMode)}</p>
+              </div>
             </div>
+            {activePage === "documentation" ? (
+              <Button aria-label="Open documentation table of contents" className="shrink-0 lg:hidden" onClick={() => setDocumentationTocOpen(true)} size="icon" type="button" variant="ghost">
+                <List className="h-5 w-5" />
+              </Button>
+            ) : null}
           </div>
         </header>
 
@@ -1172,7 +1188,12 @@ function AuthenticatedLayout({
           {activePage === "labels" && <LabelsPage privacyMode={privacyMode} />}
           {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} privacyMode={privacyMode} />}
           {activePage === "metrics" && <MetricsPage />}
-          {activePage === "documentation" && <DocumentationPage />}
+          {activePage === "documentation" && (
+            <DocumentationPage
+              mobileTocOpen={documentationTocOpen}
+              onCloseMobileToc={() => setDocumentationTocOpen(false)}
+            />
+          )}
           {activePage === "ai-prompts" && <AiPromptsPage onNavigate={onNavigate} />}
           {activePage === "ai-byoai" && <ByoAiPage />}
           {activePage === "ai-prompt-library" && <AiPromptLibraryPage privacyMode={privacyMode} />}
@@ -1312,7 +1333,13 @@ function OverviewPage({
   );
 }
 
-function DocumentationPage() {
+function DocumentationPage({
+  mobileTocOpen,
+  onCloseMobileToc,
+}: {
+  mobileTocOpen: boolean;
+  onCloseMobileToc: () => void;
+}) {
   const [activeSlug, setActiveSlug] = useState(() => documentationSlugFromPath(window.location.pathname));
   const activeEntry = documentationEntries.find((entry) => entry.slug === activeSlug) ?? documentationEntries[0];
 
@@ -1324,12 +1351,22 @@ function DocumentationPage() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
+  useEffect(() => {
+    if (!mobileTocOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [mobileTocOpen]);
+
   function selectEntry(entry: DocumentationEntry) {
     setActiveSlug(entry.slug);
     const nextPath = entry.slug === documentationEntries[0]?.slug
       ? "/documentation"
       : `/documentation/${entry.slug}`;
     window.history.pushState({}, "", getRuntimeUrl(nextPath));
+    onCloseMobileToc();
   }
 
   if (!activeEntry) {
@@ -1345,10 +1382,10 @@ function DocumentationPage() {
         />
       </article>
 
-      <aside className="min-w-0 lg:order-2">
-        <div className="rounded-lg border border-white/70 bg-white/55 p-4 shadow-sm backdrop-blur-xl lg:sticky lg:top-24">
-          <p className="mb-3 text-xs font-semibold uppercase text-zinc-500">Table of contents</p>
-          <nav className="space-y-1">
+      <aside className="hidden min-w-0 lg:order-2 lg:block">
+        <div className="sticky top-20 flex max-h-[calc(100vh-6rem)] flex-col overflow-hidden rounded-lg border border-white/70 bg-white/55 p-4 shadow-sm backdrop-blur-xl">
+          <p className="mb-3 shrink-0 text-xs font-semibold uppercase text-zinc-500">Table of contents</p>
+          <nav className="min-h-0 space-y-1 overflow-y-auto pr-1">
             {documentationEntries.map((entry) => (
               <button
                 className={cn(
@@ -1365,6 +1402,43 @@ function DocumentationPage() {
           </nav>
         </div>
       </aside>
+
+      {mobileTocOpen ? (
+        <div className="fixed inset-0 z-[60] lg:hidden">
+          <button
+            aria-label="Close documentation table of contents"
+            className="absolute inset-0 cursor-default bg-slate-950/25"
+            onClick={onCloseMobileToc}
+            type="button"
+          />
+          <aside className="absolute inset-y-0 right-0 flex w-[min(86vw,340px)] flex-col border-l border-white/70 bg-white/90 shadow-2xl backdrop-blur-xl">
+            <div className="flex h-16 shrink-0 items-center justify-between border-b border-zinc-200 px-4">
+              <div className="flex items-center gap-2">
+                <List className="h-4 w-4 text-zinc-500" />
+                <p className="font-semibold text-zinc-950">Table of contents</p>
+              </div>
+              <Button aria-label="Close documentation table of contents" onClick={onCloseMobileToc} size="icon" type="button" variant="ghost">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-4">
+              {documentationEntries.map((entry) => (
+                <button
+                  className={cn(
+                    "flex min-h-11 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-white/80 hover:text-zinc-950",
+                    activeEntry.slug === entry.slug && "border border-white/80 bg-white text-zinc-950 shadow-sm",
+                  )}
+                  key={entry.slug}
+                  onClick={() => selectEntry(entry)}
+                  type="button"
+                >
+                  {entry.title}
+                </button>
+              ))}
+            </nav>
+          </aside>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2737,41 +2811,41 @@ function RuleLabelSelectionRows({
   labels,
   onToggle,
   selectedLabels,
+  suggestedLabel,
 }: {
   confidenceThreshold: string;
   labels: Label[];
   onToggle: (labelName: string) => void;
   selectedLabels: string[];
+  suggestedLabel?: string;
 }) {
   return (
-    <div className="max-h-[min(46vh,420px)] space-y-2 overflow-y-auto pr-1">
+    <div className="space-y-2">
       {labels.map((label) => {
         const isSelected = selectedLabels.includes(label.name);
-        const isDisabled = selectedLabels.length > 0 && !isSelected;
 
         return (
           <div
-            aria-disabled={isDisabled}
             className={cn(
               "flex w-full items-center gap-3 rounded-md border border-white/70 bg-white/45 px-3 py-3 text-left shadow-sm backdrop-blur-xl transition",
-              isDisabled ? "cursor-not-allowed opacity-45" : "cursor-pointer hover:border-zinc-300 hover:bg-white/70",
+              "cursor-pointer hover:border-zinc-300 hover:bg-white/70",
               isSelected && "border-emerald-300/80 bg-emerald-50/65 shadow-[0_0_18px_rgba(16,185,129,0.18)] ring-1 ring-emerald-200/80",
             )}
             key={label.id}
-            onClick={() => {
-              if (!isDisabled) {
-                onToggle(label.name);
-              }
-            }}
+            onClick={() => onToggle(label.name)}
           >
             <GlassCheckbox
               checked={isSelected}
-              disabled={isDisabled}
               onChange={() => onToggle(label.name)}
               onClick={(event) => event.stopPropagation()}
             />
             <div className="min-w-0 flex-1">
-              <p className="font-semibold text-zinc-950">{label.name}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="font-semibold text-zinc-950">{label.name}</p>
+                {suggestedLabel === label.name ? (
+                  <span className="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">Suggested</span>
+                ) : null}
+              </div>
               <p className="mt-1 text-sm leading-5 text-zinc-500">
                 {renderLabelDescription(label.description, confidenceThreshold)}
               </p>
@@ -3213,9 +3287,9 @@ function InboxRuleModal({
 
         const rule = data.rule as EmailRule;
         const savedLabels = Array.isArray(rule.labelsApplied) ? rule.labelsApplied : [];
-        const firstLabel = savedLabels.length === 1 ? savedLabels[0] : "";
+        const firstLabel = getSuggestedRuleLabel(rule);
         setExistingRule(rule);
-        setSelectedLabels(savedLabels);
+        setSelectedLabels(firstLabel ? [firstLabel] : []);
         setLabelReason(firstLabel ? rule.labelReasons?.[firstLabel] ?? "" : "");
       } catch {
         setError("Could not load email rule.");
@@ -3228,20 +3302,8 @@ function InboxRuleModal({
   }, [summary.id]);
 
   function toggleSelectedLabel(labelName: string) {
-    setSelectedLabels((current) => {
-      const isSelected = current.includes(labelName);
-      if (!isSelected && current.length > 0) {
-        return current;
-      }
-
-      const next = isSelected ? current.filter((name) => name !== labelName) : [labelName];
-      if (next.length === 1) {
-        setLabelReason(existingRule?.labelReasons?.[next[0]] ?? "");
-      } else {
-        setLabelReason("");
-      }
-      return next;
-    });
+    setSelectedLabels([labelName]);
+    setLabelReason(existingRule?.labelReasons?.[labelName] ?? "");
   }
 
   async function saveRule() {
@@ -3329,6 +3391,7 @@ function InboxRuleModal({
                   labels={labels}
                   onToggle={toggleSelectedLabel}
                   selectedLabels={selectedLabels}
+                  suggestedLabel={existingRule?.isPending ? getSuggestedRuleLabel(existingRule) : undefined}
                 />
               </div>
 
@@ -3350,7 +3413,7 @@ function InboxRuleModal({
                 <Button disabled={isSaving} onClick={onClose} type="button" variant="outline">
                   Cancel
                 </Button>
-                <Tooltip text={labelReason.trim() ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
+                <Tooltip align="end" text={labelReason.trim() ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
                   <span>
                     <Button className={cn(canReview && reviewedButtonClass)} disabled={isSaving || !canReview} onClick={() => void saveRule()} type="button">
                       <Save className="h-4 w-4" />
@@ -4872,23 +4935,16 @@ function RuleReviewPage({
   }
 
   function selectRule(rule: EmailRule | null) {
+    const suggestedLabel = rule ? getSuggestedRuleLabel(rule) : "";
     setSelectedRule(rule);
-    setDraftLabels(rule?.labelsApplied ?? []);
+    setDraftLabels(suggestedLabel ? [suggestedLabel] : []);
     setDraftLabelReasons(rule?.labelReasons ?? {});
     setError(null);
   }
 
   function toggleDraftLabel(labelName: string) {
-    setDraftLabels((current) => {
-      if (current.includes(labelName)) {
-        return current.filter((label) => label !== labelName);
-      }
-      if (current.length > 0) {
-        return current;
-      }
-      setDraftLabelReasons((reasons) => ({ ...reasons, [labelName]: reasons[labelName] ?? "" }));
-      return [labelName];
-    });
+    setDraftLabels([labelName]);
+    setDraftLabelReasons((reasons) => ({ ...reasons, [labelName]: reasons[labelName] ?? "" }));
   }
 
   function updateDraftLabelReason(labelName: string, reason: string) {
@@ -5044,9 +5100,9 @@ function RuleReviewPage({
       });
       if (isNewRuleReview) {
         setTotal((current) => current + 1);
-        setAddRuleStep(null);
       }
-      selectRule(data.rule);
+      setAddRuleStep(null);
+      selectRule(null);
     } catch {
       setError("Could not save rule.");
     } finally {
@@ -5488,6 +5544,7 @@ function RuleReviewPage({
                     labels={availableLabels}
                     onToggle={toggleDraftLabel}
                     selectedLabels={draftLabels}
+                    suggestedLabel={selectedRule.isPending ? getSuggestedRuleLabel(selectedRule) : undefined}
                   />
                 </div>
 
@@ -5524,7 +5581,7 @@ function RuleReviewPage({
                 {ruleAction === "delete" ? "Deleting..." : "Delete"}
               </Button>
               )}
-              <Tooltip text={selectedReviewReason ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
+              <Tooltip align="end" text={selectedReviewReason ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
                 <span>
                   <Button className={cn(canReviewRule && reviewedButtonClass)} disabled={isSaving || !canReviewRule} onClick={() => void saveRuleReview()} type="button">
                     {ruleAction === "review" ? <Loader /> : <Save className="h-4 w-4" />}
@@ -9481,7 +9538,7 @@ function Tooltip({
   side = "top",
   text,
 }: {
-  align?: "center" | "start";
+  align?: "center" | "start" | "end";
   children: ReactNode;
   side?: "top" | "bottom";
   text: string;
@@ -9492,7 +9549,7 @@ function Tooltip({
       <span
         className={cn(
           "pointer-events-none absolute z-20 w-max max-w-64 whitespace-normal rounded-md border border-white/70 bg-white/65 px-3 py-2 text-left text-xs font-medium leading-5 text-zinc-800 opacity-0 shadow-xl shadow-slate-900/10 ring-1 ring-zinc-200/40 backdrop-blur-md transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
-          align === "start" ? "left-0" : "left-1/2 -translate-x-1/2",
+          align === "start" ? "left-0" : align === "end" ? "right-0" : "left-1/2 -translate-x-1/2",
           side === "bottom" ? "top-full mt-2" : "bottom-full mb-2",
         )}
       >
@@ -9732,6 +9789,20 @@ function pickLabelReasons(labels: string[], reasons: Record<string, string>) {
     selectedReasons[label] = reasons[label]?.trim() ?? "";
     return selectedReasons;
   }, {});
+}
+
+function getSuggestedRuleLabel(rule: EmailRule) {
+  const suggestions = Array.isArray(rule.labelsApplied) ? rule.labelsApplied.filter(Boolean) : [];
+  if (suggestions.length === 0) return "";
+
+  const confidences = rule.labelConfidences ?? {};
+  return suggestions.reduce((bestLabel, label) => {
+    const bestConfidence = Number(confidences[bestLabel]);
+    const candidateConfidence = Number(confidences[label]);
+    if (!Number.isFinite(candidateConfidence)) return bestLabel;
+    if (!Number.isFinite(bestConfidence) || candidateConfidence > bestConfidence) return label;
+    return bestLabel;
+  }, suggestions[0]);
 }
 
 function formatRuleLabelReasons(rule: EmailRule) {
