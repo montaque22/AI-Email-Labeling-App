@@ -353,6 +353,9 @@ function ensureSystemMcpClient(clients: AiMcpClientConfig[]): AiMcpClientConfig[
 type InboxSort = "newest" | "oldest" | "sender" | "subject";
 type InboxMode = "inbox" | "drafts" | "sent";
 
+const INBOX_ALL_LABEL_ID = "__all__";
+const INBOX_PAGE_DONE = "__done__";
+
 type InboxRuleStatus = {
   emailId: string;
   isPending: boolean;
@@ -1383,7 +1386,7 @@ function DocumentationPage({
       </article>
 
       <aside className="hidden min-w-0 lg:order-2 lg:block">
-        <div className="sticky top-20 flex max-h-[calc(100vh-6rem)] flex-col overflow-hidden rounded-lg border border-white/70 bg-white/55 p-4 shadow-sm backdrop-blur-xl">
+        <div className="fixed bottom-8 right-8 top-20 flex w-[260px] flex-col overflow-hidden rounded-lg border border-white/70 bg-white/55 p-4 shadow-sm backdrop-blur-xl">
           <p className="mb-3 shrink-0 text-xs font-semibold uppercase text-zinc-500">Table of contents</p>
           <nav className="min-h-0 space-y-1 overflow-y-auto pr-1">
             {documentationEntries.map((entry) => (
@@ -1447,7 +1450,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
   const [labels, setLabels] = useState<Label[]>([]);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [inboxMode, setInboxMode] = useState<InboxMode>("inbox");
-  const [selectedLabelId, setSelectedLabelId] = useState("");
+  const [selectedLabelId, setSelectedLabelId] = useState(INBOX_ALL_LABEL_ID);
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   const [labelCounts, setLabelCounts] = useState<Record<string, number | null>>({});
   const [messages, setMessages] = useState<InboxMessage[]>([]);
@@ -1476,6 +1479,9 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const [isMobileLabelPickerOpen, setIsMobileLabelPickerOpen] = useState(false);
   const [isMobileEditMode, setIsMobileEditMode] = useState(false);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreInFlightRef = useRef(false);
+  const messageRequestIdRef = useRef(0);
 
   useEffect(() => {
     async function loadBootstrap() {
@@ -1506,7 +1512,6 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
         setLabels(loadedLabels);
         setAccounts(loadedAccounts);
         setSelectedAccountIds(loadedAccounts.map((account: EmailAccount) => account.id));
-        setSelectedLabelId((current) => current || loadedLabels[0]?.id || "");
         setIsByoAiActive(Boolean(byoAiResponse.ok && byoAiData.aiEnabled));
       } catch {
         setError("Could not load Inbox setup.");
@@ -1581,6 +1586,31 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
   }, [toast]);
 
   useEffect(() => {
+    const sentinel = loadMoreSentinelRef.current;
+    if (
+      !sentinel ||
+      !nextPageToken ||
+      isLoading ||
+      isLoadingMore ||
+      selectedMessage ||
+      ruleEditorMessage ||
+      isComposeOpen
+    ) {
+      return;
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        observer.disconnect();
+        void loadMessages({ reset: false });
+      }
+    }, { rootMargin: "320px 0px" });
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [nextPageToken, isLoading, isLoadingMore, selectedMessage, ruleEditorMessage, isComposeOpen]);
+
+  useEffect(() => {
     const shouldLockScroll = Boolean(
       selectedMessage ||
         ruleEditorMessage ||
@@ -1606,98 +1636,136 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
 
   const filteredMessages = messages;
   const selectedLabel = labels.find((label) => label.id === selectedLabelId) ?? null;
+  const allLabelCount = getInboxAllLabelCount(labels, labelCounts);
 
   async function loadMessages({ reset }: { reset: boolean }) {
     if (selectedAccountIds.length === 0 || (inboxMode === "inbox" && !selectedLabelId)) {
       return;
     }
 
+    if (!reset && (loadMoreInFlightRef.current || !nextPageToken)) {
+      return;
+    }
+
+    const requestId = reset ? messageRequestIdRef.current + 1 : messageRequestIdRef.current;
+    if (reset) {
+      messageRequestIdRef.current = requestId;
+      loadMoreInFlightRef.current = false;
+      setIsLoadingMore(false);
+    } else {
+      loadMoreInFlightRef.current = true;
+    }
+
     reset ? setIsLoading(true) : setIsLoadingMore(true);
     if (reset) {
       setMessages([]);
-      setMessageLoadProgress({ completed: 0, total: selectedAccountIds.length });
     }
     setError(null);
 
     try {
       const endpoint = inboxMode === "drafts" ? "/api/inbox/drafts" : inboxMode === "sent" ? "/api/inbox/sent" : "/api/inbox/messages";
+      const isAllLabels = inboxMode === "inbox" && selectedLabelId === INBOX_ALL_LABEL_ID;
+      const currentPageState = reset ? {} : decodeInboxPageToken(nextPageToken);
+      const targets = reset
+        ? selectedAccountIds.flatMap((accountId) => {
+            const labelIds = isAllLabels ? labels.map((label) => label.id) : [selectedLabelId];
+            return labelIds.map((labelId) => ({
+              accountId,
+              labelId,
+              pageStateKey: getInboxPageStateKey(accountId, isAllLabels ? labelId : ""),
+              providerPageToken: "",
+            }));
+          })
+        : Object.entries(currentPageState)
+            .filter(([, providerPageToken]) => providerPageToken && providerPageToken !== INBOX_PAGE_DONE)
+            .map(([pageStateKey, providerPageToken]) => {
+              const parsedKey = parseInboxPageStateKey(pageStateKey);
+              return {
+                accountId: parsedKey.accountId,
+                labelId: isAllLabels ? parsedKey.labelId : selectedLabelId,
+                pageStateKey,
+                providerPageToken,
+              };
+            })
+            .filter((target) => target.accountId && (inboxMode !== "inbox" || target.labelId));
+
       if (reset) {
-        const messagesByAccount: InboxMessage[] = [];
-        const nextPageState: Record<string, string> = {};
-        const failures: string[] = [];
+        setMessageLoadProgress({ completed: 0, total: targets.length });
+      }
 
-        await Promise.all(selectedAccountIds.map(async (accountId) => {
-          const params = buildInboxMessageParams({
-            accountIds: [accountId],
-            inboxMode,
-            labelId: selectedLabelId,
-            search: sentSearch,
-            sort,
-          });
+      const loadedMessages: InboxMessage[] = [];
+      const nextPageState: Record<string, string> = { ...currentPageState };
+      const failures: string[] = [];
 
-          try {
-            const response = await fetch(`${endpoint}?${params.toString()}`, { credentials: "include" });
-            const data = await response.json();
+      await Promise.all(targets.map(async (target) => {
+        const params = buildInboxMessageParams({
+          accountIds: [target.accountId],
+          inboxMode,
+          labelId: target.labelId,
+          pageToken: target.providerPageToken
+            ? encodeInboxPageToken({ [target.accountId]: target.providerPageToken })
+            : null,
+          search: sentSearch,
+          sort,
+        });
 
-            if (!response.ok) {
-              failures.push(data.error ?? `Could not load ${getInboxModeDescription(inboxMode)}.`);
-              return;
-            }
+        try {
+          const response = await fetch(`${endpoint}?${params.toString()}`, { credentials: "include" });
+          const data = await response.json();
 
-            messagesByAccount.push(...(data.messages ?? []));
-            Object.assign(nextPageState, decodeInboxPageToken(data.nextPageToken));
-          } catch {
-            failures.push(`Could not load ${getInboxModeDescription(inboxMode)}.`);
-          } finally {
+          if (!response.ok) {
+            failures.push(data.error ?? `Could not load ${getInboxModeDescription(inboxMode)}.`);
+            nextPageState[target.pageStateKey] = INBOX_PAGE_DONE;
+            return;
+          }
+
+          loadedMessages.push(...(data.messages ?? []));
+          const providerState = decodeInboxPageToken(data.nextPageToken);
+          nextPageState[target.pageStateKey] = providerState[target.accountId] || INBOX_PAGE_DONE;
+        } catch {
+          failures.push(`Could not load ${getInboxModeDescription(inboxMode)}.`);
+          nextPageState[target.pageStateKey] = INBOX_PAGE_DONE;
+        } finally {
+          if (reset && messageRequestIdRef.current === requestId) {
             setMessageLoadProgress((current) => ({
               ...current,
               completed: Math.min(current.total, current.completed + 1),
             }));
           }
-        }));
-
-        setMessages(sortInboxMessagesForClient(messagesByAccount, sort));
-        setNextPageToken(encodeInboxPageToken(nextPageState));
-        setSelectedMessageKeys([]);
-        if (messagesByAccount.length === 0 && failures.length > 0) {
-          setError(failures[0]);
         }
+      }));
+
+      if (messageRequestIdRef.current !== requestId) {
         return;
       }
 
-      const params = new URLSearchParams({
-        accounts: selectedAccountIds.join(","),
+      setMessages((current) => sortInboxMessagesForClient(
+        mergeInboxMessages(reset ? [] : current, loadedMessages),
         sort,
-      });
-      if (inboxMode === "inbox") {
-        params.set("labelId", selectedLabelId);
-      }
-      if (inboxMode === "sent" && sentSearch) {
-        params.set("search", sentSearch);
-      }
-      if (!reset && nextPageToken) {
-        params.set("pageToken", nextPageToken);
-      }
-
-      const response = await fetch(`${endpoint}?${params.toString()}`, { credentials: "include" });
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data.error ?? `Could not load ${inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "inbox messages"}.`);
-        return;
-      }
-
-      setMessages((current) => (reset ? data.messages ?? [] : [...current, ...(data.messages ?? [])]));
-      setNextPageToken(data.nextPageToken ?? null);
+      ));
+      setNextPageToken(encodeInboxPageToken(nextPageState));
       if (reset) {
         setSelectedMessageKeys([]);
+      }
+      if (loadedMessages.length === 0 && failures.length > 0) {
+        setError(failures[0]);
       }
     } catch {
-      setError(`Could not load ${inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "inbox messages"}.`);
+      if (messageRequestIdRef.current === requestId) {
+        setError(`Could not load ${inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "inbox messages"}.`);
+        if (!reset) {
+          setNextPageToken(null);
+        }
+      }
     } finally {
-      reset ? setIsLoading(false) : setIsLoadingMore(false);
-      if (reset) {
-        setMessageLoadProgress((current) => ({ ...current, completed: current.total }));
+      if (!reset) {
+        loadMoreInFlightRef.current = false;
+      }
+      if (messageRequestIdRef.current === requestId) {
+        reset ? setIsLoading(false) : setIsLoadingMore(false);
+        if (reset) {
+          setMessageLoadProgress((current) => ({ ...current, completed: current.total }));
+        }
       }
     }
   }
@@ -2060,7 +2128,9 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
               onClick={() => setIsMobileLabelPickerOpen(true)}
               type="button"
             >
-              {inboxMode === "inbox" ? selectedLabel?.name || "Choose label" : inboxMode === "drafts" ? "Drafts" : "Sent"}
+              {inboxMode === "inbox"
+                ? selectedLabelId === INBOX_ALL_LABEL_ID ? "All" : selectedLabel?.name || "Choose label"
+                : inboxMode === "drafts" ? "Drafts" : "Sent"}
             </button>
             <Button aria-label="Open inbox filters" className="shrink-0 rounded-full border-white/70 bg-white/60 shadow-sm backdrop-blur-xl" onClick={() => setIsMobileFilterOpen(true)} size="icon" type="button" variant="outline">
               <SlidersHorizontal className="h-4 w-4" />
@@ -2105,10 +2175,22 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
               <CardDescription>Choose a label or folder.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
+              <button
+                className={cn(
+                  "flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-white/60 hover:text-zinc-950",
+                  selectedLabelId === INBOX_ALL_LABEL_ID && "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl",
+                )}
+                onClick={() => setSelectedLabelId(INBOX_ALL_LABEL_ID)}
+                type="button"
+              >
+                <span className="truncate">All</span>
+                <span className="flex min-w-5 justify-end text-xs text-zinc-500">
+                  {isCountsLoading ? <Loader /> : allLabelCount ?? "-"}
+                </span>
+              </button>
               {labels.length === 0 ? (
                 <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">No labels yet.</p>
-              ) : (
-                labels.map((label) => (
+              ) : labels.map((label) => (
                   <button
                     className={cn(
                       "flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-white/60 hover:text-zinc-950",
@@ -2123,8 +2205,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
                       {isCountsLoading ? <Loader /> : labelCounts[label.id] ?? "-"}
                     </span>
                   </button>
-                ))
-              )}
+                ))}
             </CardContent>
           </Card>
         </div>
@@ -2143,16 +2224,17 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
                     onChange={(event) => setSelectedLabelId(event.target.value)}
                     value={selectedLabelId}
                   >
-                    {labels.length === 0 ? (
-                      <option value="">No labels</option>
-                    ) : (
+                    <option value={INBOX_ALL_LABEL_ID}>
+                      All{typeof allLabelCount === "number" ? ` (${allLabelCount})` : ""}
+                    </option>
+                    {labels.length > 0 ? (
                       labels.map((label) => (
                         <option key={label.id} value={label.id}>
                           {label.name}
                           {typeof labelCounts[label.id] === "number" ? ` (${labelCounts[label.id]})` : ""}
                         </option>
                       ))
-                    )}
+                    ) : null}
                   </select>
                 </label>
                 ) : null}
@@ -2271,9 +2353,9 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
                 ))
               )}
               {nextPageToken ? (
-                <Button disabled={isLoadingMore} onClick={() => void loadMessages({ reset: false })} type="button" variant="outline">
-                  {isLoadingMore ? "Loading..." : "Load more"}
-                </Button>
+                <div aria-live="polite" className="min-h-px" ref={loadMoreSentinelRef}>
+                  {isLoadingMore ? <InboxMessageSkeletonRow /> : <span className="sr-only">More messages load as you scroll.</span>}
+                </div>
               ) : null}
             </CardContent>
           </Card>
@@ -2296,6 +2378,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
 
       {isMobileLabelPickerOpen ? (
         <InboxMobileLabelPicker
+          allLabelCount={allLabelCount}
           isCountsLoading={isCountsLoading}
           labelCounts={labelCounts}
           labels={labels}
@@ -2543,6 +2626,7 @@ function InboxMobileFilterDrawer({
 }
 
 function InboxMobileLabelPicker({
+  allLabelCount,
   isCountsLoading,
   labelCounts,
   labels,
@@ -2550,6 +2634,7 @@ function InboxMobileLabelPicker({
   onSelect,
   selectedLabelId,
 }: {
+  allLabelCount: number | null;
   isCountsLoading: boolean;
   labelCounts: Record<string, number | null>;
   labels: Label[];
@@ -2571,6 +2656,17 @@ function InboxMobileLabelPicker({
           </Button>
         </div>
         <div className="max-h-[60vh] space-y-2 overflow-y-auto">
+          <button
+            className={cn(
+              "flex w-full items-center justify-between gap-3 rounded-md border border-white/60 bg-white/45 px-3 py-2 text-left text-sm text-zinc-700 shadow-sm backdrop-blur-xl",
+              selectedLabelId === INBOX_ALL_LABEL_ID && "border-blue-100 bg-blue-50/80 text-blue-800",
+            )}
+            onClick={() => onSelect(INBOX_ALL_LABEL_ID)}
+            type="button"
+          >
+            <span className="truncate font-medium">All</span>
+            <span className="text-xs text-zinc-500">{isCountsLoading ? <Loader /> : allLabelCount ?? "-"}</span>
+          </button>
           {labels.map((label) => (
             <button
               className={cn(
@@ -2968,6 +3064,21 @@ function InboxLoadingProgress({ completed, total }: { completed: number; total: 
           style={{ width: `${progress}%` }}
         />
       </div>
+    </div>
+  );
+}
+
+function InboxMessageSkeletonRow() {
+  return (
+    <div aria-label="Loading more messages" className="grid animate-pulse grid-cols-[auto_minmax(0,1fr)] items-center gap-3 border-b border-zinc-200 bg-white/35 px-3 py-3 md:grid-cols-[auto_auto_minmax(110px,180px)_minmax(0,1fr)_auto]" role="status">
+      <div className="h-5 w-5 rounded-full bg-zinc-200/90" />
+      <div className="hidden h-7 w-7 rounded-full bg-zinc-200/90 md:block" />
+      <div className="hidden h-4 w-28 rounded bg-zinc-200/90 md:block" />
+      <div className="min-w-0 space-y-2">
+        <div className="h-4 w-3/5 rounded bg-zinc-200/90" />
+        <div className="h-3 w-4/5 rounded bg-zinc-100" />
+      </div>
+      <div className="hidden h-3 w-16 rounded bg-zinc-200/90 md:block" />
     </div>
   );
 }
@@ -10366,11 +10477,58 @@ function decodeInboxPageToken(token?: string | null): Record<string, string> {
 
 function encodeInboxPageToken(state: Record<string, string>) {
   const compactState = Object.fromEntries(Object.entries(state).filter(([, value]) => Boolean(value)));
-  if (Object.keys(compactState).length === 0) {
+  if (!Object.values(compactState).some((value) => value !== INBOX_PAGE_DONE)) {
     return null;
   }
 
   return window.btoa(JSON.stringify(compactState)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function getInboxPageStateKey(accountId: string, labelId: string) {
+  return labelId ? `${accountId}|${labelId}` : accountId;
+}
+
+function parseInboxPageStateKey(key: string) {
+  const separatorIndex = key.indexOf("|");
+  if (separatorIndex < 0) {
+    return { accountId: key, labelId: "" };
+  }
+  return {
+    accountId: key.slice(0, separatorIndex),
+    labelId: key.slice(separatorIndex + 1),
+  };
+}
+
+function mergeInboxMessages(current: InboxMessage[], incoming: InboxMessage[]) {
+  const merged = new Map<string, InboxMessage>();
+
+  for (const message of [...current, ...incoming]) {
+    const key = getInboxMessageKey(message);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, message);
+      continue;
+    }
+
+    merged.set(key, {
+      ...existing,
+      ...message,
+      labels: [...new Set([...existing.labels, ...message.labels])],
+    });
+  }
+
+  return [...merged.values()];
+}
+
+function getInboxAllLabelCount(labels: Label[], counts: Record<string, number | null>) {
+  if (labels.length === 0) {
+    return 0;
+  }
+
+  const values = labels.map((label) => counts[label.id]);
+  return values.every((value) => typeof value === "number")
+    ? values.reduce<number>((total, value) => total + Number(value), 0)
+    : null;
 }
 
 function getInboxModeDescription(mode: InboxMode) {

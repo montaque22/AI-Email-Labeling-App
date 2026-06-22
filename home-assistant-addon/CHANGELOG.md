@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.38
+
+- Added an aggregate All category to the Inbox label navigation.
+- Replaced manual Inbox pagination with infinite scrolling and a responsive skeleton loading row.
+
+## 0.1.37
+
+- Added the Emailable icon and logo to the HACS custom integration brand assets.
+
+## 0.1.36
+
+- Fixed the desktop documentation table of contents below the application header so it remains visible while reading long pages.
+
+## 0.1.35
+
+- Added user-focused documentation for Metrics and Logs, Email Accounts, Polling, Webhooks, Endpoints, and Confidence Thresholds.
+- Documented feature setup, practical use cases, security considerations, limits, and troubleshooting guidance.
+
 ## 0.1.34
 
 - Made the desktop documentation table of contents sticky, viewport-bounded, and independently scrollable.
