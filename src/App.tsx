@@ -1178,7 +1178,7 @@ function AuthenticatedLayout({
           </div>
         ) : null}
 
-        <main className="min-h-[calc(100vh-4rem)] min-w-0 overflow-x-hidden p-4 sm:p-5 lg:p-8">
+        <main className="min-h-[calc(100vh-4rem)] min-w-0 overflow-x-clip p-4 sm:p-5 lg:p-8">
           {activePage === "overview" && (
             <OverviewPage
               onNavigate={onNavigate}
@@ -2168,13 +2168,13 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
 
       <div className={cn("grid min-w-0 gap-4 xl:gap-5", inboxMode === "inbox" ? "xl:grid-cols-[260px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
         {inboxMode === "inbox" ? (
-        <div className="hidden xl:block">
-          <Card>
+        <div className="hidden self-start xl:sticky xl:top-20 xl:z-20 xl:block">
+          <Card className="flex max-h-[calc(100vh-6rem)] flex-col overflow-hidden">
             <CardHeader>
               <CardTitle>Labels</CardTitle>
               <CardDescription>Choose a label or folder.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-2">
+            <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto">
               <button
                 className={cn(
                   "flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-white/60 hover:text-zinc-950",
@@ -2212,8 +2212,9 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
         ) : null}
 
         <div className="min-w-0 space-y-4">
-          <Card className="hidden min-w-0 max-w-full md:block">
-            <CardContent className="flex flex-row flex-wrap items-start justify-between gap-3 p-3 sm:p-4">
+          <div className="sticky top-20 z-30 hidden min-w-0 max-w-full md:block">
+            <Card className="inbox-sticky-surface">
+              <CardContent className="flex flex-row flex-wrap items-start justify-between gap-3 p-3 sm:p-4">
               <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center">
                 <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
                 {inboxMode === "inbox" ? (
@@ -2292,8 +2293,9 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
                   Compose
                 </Button>
               </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          </div>
 
           <Card className="min-w-0 max-w-full overflow-hidden">
             <div className="block border-b border-white/60 px-3 pb-2 pt-3 md:hidden">

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.40
+
+- Fixed the desktop Inbox action/filter toolbar positioning after its glass surface overrode sticky behavior.
+- Increased the sticky toolbar opacity so scrolling content no longer shows through its controls.
+
+## 0.1.39
+
+- Made the desktop Inbox label navigation and action/filter controls remain visible while scrolling messages.
+- Added independent scrolling for long desktop label lists.
+
 ## 0.1.38
 
 - Added an aggregate All category to the Inbox label navigation.
