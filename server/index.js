@@ -101,6 +101,20 @@ registerPollingRoutes(app);
 
 app.use(express.static(distDir));
 
+app.get(/.*\/(manifest\.webmanifest|registerSW\.js|sw\.js|workbox-[^/]+\.js|pwa-(?:192|512|maskable)\.png)$/, (req, res, next) => {
+  const assetName = req.params[0];
+  if (!assetName) {
+    next();
+    return;
+  }
+
+  res.sendFile(path.join(distDir, assetName), (error) => {
+    if (error) {
+      next();
+    }
+  });
+});
+
 app.get(/.*\/assets\/(.*)/, (req, res, next) => {
   const assetName = req.params[0];
   if (!assetName) {

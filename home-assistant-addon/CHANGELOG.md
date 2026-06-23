@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.45
+
+- Improved PWA install metadata and iOS home-screen icon support.
+- Fixed nested route serving for PWA manifest, icon, and service worker assets.
+
 ## 0.1.44
 
 - Fixed PWA service worker navigation so OAuth refresh/connect URLs reach the backend instead of loading the app shell.
