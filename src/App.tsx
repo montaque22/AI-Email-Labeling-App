@@ -3685,16 +3685,51 @@ function InboxComposeModal({
   const [error, setError] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const bodyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const aiInstructionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const replyContext = initial?.replyContext ?? null;
   const isExistingDraft = Boolean(initial?.draftId);
   const isPush = variant === "push";
   const composeFormId = `inbox-compose-form-${variant}`;
 
   useEffect(() => {
+    resizeBodyTextarea();
+  }, [bodyText, isAiDraftOpen]);
+
+  useEffect(() => {
+    resizeAiInstructionTextarea();
+  }, [aiInstruction, isAiDraftOpen]);
+
+  useEffect(() => {
     if (!isByoAiActive) {
       setIsAiDraftOpen(false);
     }
   }, [isByoAiActive]);
+
+  function resizeBodyTextarea() {
+    const textarea = bodyTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }
+
+  function resizeAiInstructionTextarea() {
+    const textarea = aiInstructionTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "auto";
+    const lineHeight = Number.parseFloat(window.getComputedStyle(textarea).lineHeight) || 20;
+    const verticalPadding = textarea.offsetHeight - textarea.clientHeight;
+    const maxHeight = Math.ceil(lineHeight * 3 + verticalPadding);
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }
 
   async function submitEmail(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -3777,8 +3812,17 @@ function InboxComposeModal({
   return (
     <div className={cn("fixed inset-0 z-50", isPush ? "flex flex-col bg-[#f7f7f7] md:hidden" : "flex items-center justify-center bg-slate-950/20 p-4")}>
       <div className={cn(isPush ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]")}>
-        <div className={cn(isPush ? "min-h-0 flex-1 overflow-y-auto bg-transparent p-4 pb-28" : "max-h-[calc(92vh-2rem)] overflow-y-auto rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60")}>
-          <div className={cn("mb-4 flex items-center justify-between gap-4", isPush && "sticky -top-4 z-10 -mx-4 -mt-4 border-b border-zinc-200 bg-white/75 px-2 py-2 backdrop-blur-xl")}>
+        <div className={cn(
+          isPush
+            ? cn("min-h-0 flex-1 bg-transparent", isAiDraftOpen ? "flex flex-col overflow-hidden p-0" : "overflow-y-auto p-4 pb-28")
+            : "max-h-[calc(92vh-2rem)] overflow-y-auto rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60",
+        )}>
+          <div className={cn(
+            "mb-4 flex items-center justify-between gap-4",
+            isPush && (isAiDraftOpen
+              ? "z-10 mb-0 shrink-0 border-b border-zinc-200 bg-white/75 px-2 py-2 backdrop-blur-xl"
+              : "sticky -top-4 z-10 -mx-4 -mt-4 border-b border-zinc-200 bg-white/75 px-2 py-2 backdrop-blur-xl"),
+          )}>
             {isPush ? (
               <Button aria-label="Back to email" onClick={onClose} size="icon" type="button" variant="ghost">
                 <ChevronLeft className="h-5 w-5" />
@@ -3807,8 +3851,16 @@ function InboxComposeModal({
             )}
           </div>
         {isAiDraftOpen ? (
-          <div className={cn("relative flex min-h-[560px] flex-col overflow-hidden", isPush && "min-h-[calc(100vh-7rem)]")}>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 pb-24">
+          <div className={cn("flex flex-col overflow-hidden", isPush ? "min-h-0 flex-1" : "min-h-[560px]")}>
+            <div className={cn("min-h-0 flex-1 overflow-y-auto p-4", aiMessages.length > 0 || aiError ? "space-y-3" : "flex items-center justify-center")}>
+              {aiMessages.length === 0 && !aiError ? (
+                <div className="mx-auto max-w-xs text-center">
+                  <p className="text-sm font-medium text-zinc-900">Ask AI to help draft this message.</p>
+                  <p className="mt-2 text-sm leading-6 text-zinc-500">
+                    Describe the tone or key points, then apply the response you like to the email body.
+                  </p>
+                </div>
+              ) : null}
               {aiMessages.map((message) => (
                   <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")} key={message.id}>
                     {message.role === "assistant" ? (
@@ -3833,10 +3885,10 @@ function InboxComposeModal({
                 ))}
               {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
             </div>
-            <div className="absolute inset-x-0 bottom-0 z-10 bg-white/35 p-3 backdrop-blur-xl">
+            <div className="shrink-0 bg-white/35 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 backdrop-blur-xl">
               <div className="flex items-center gap-2">
-                <input
-                  className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white/45 px-3 text-sm outline-none placeholder:text-zinc-400 shadow-sm backdrop-blur-xl focus:border-zinc-400"
+                <textarea
+                  className="min-h-10 min-w-0 flex-1 resize-none rounded-md border border-zinc-200 bg-white/45 px-3 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400 shadow-sm backdrop-blur-xl focus:border-zinc-400"
                   maxLength={1000}
                   onChange={(event) => setAiInstruction(event.target.value)}
                   onKeyDown={(event) => {
@@ -3846,7 +3898,8 @@ function InboxComposeModal({
                     }
                   }}
                   placeholder={replyContext ? "Ask AI how to draft this reply..." : "Ask AI how to draft this email..."}
-                  type="text"
+                  ref={aiInstructionTextareaRef}
+                  rows={1}
                   value={aiInstruction}
                 />
                 <Button className="h-9 w-9 border border-white/70 bg-white/55 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/75" disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} size="icon" type="button" variant="outline">
@@ -3939,7 +3992,15 @@ function InboxComposeModal({
             />
             <label className="block">
               <span className="sr-only">Body</span>
-              <textarea className="min-h-56 w-full resize-y rounded-lg border-0 bg-white/20 px-3 py-3 text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-400" onChange={(event) => setBodyText(event.target.value)} placeholder="Write your message..." required value={bodyText} />
+              <textarea
+                className="min-h-56 w-full resize-none overflow-hidden rounded-lg border-0 bg-white/20 px-3 py-3 text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-400"
+                onChange={(event) => setBodyText(event.target.value)}
+                placeholder="Write your message..."
+                ref={bodyTextareaRef}
+                required
+                rows={1}
+                value={bodyText}
+              />
             </label>
           </div>
           <label className="block">

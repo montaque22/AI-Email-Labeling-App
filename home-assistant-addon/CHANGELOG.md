@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.49
+
+- Redirect email account reconnect and token refresh flows back to the Email Accounts page after OAuth completes.
+
+## 0.1.48
+
+- Updated the mobile AI Draft prompt field to wrap and grow up to three lines before scrolling internally.
+
+## 0.1.47
+
+- Updated the mobile compose body field to grow with message content instead of using an inner scrollbar.
+
+## 0.1.46
+
+- Improved the mobile AI Draft layout with a stable bottom input bar and centered empty state guidance.
+
 ## 0.1.45
 
 - Improved PWA install metadata and iOS home-screen icon support.

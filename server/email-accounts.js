@@ -602,19 +602,26 @@ function createState(userId, provider, returnUrl = "") {
 function getOAuthReturnUrl(req) {
   const referer = req.get("referer");
   const requestOrigin = req.get("origin");
+  const configuredBaseUrl = process.env.APP_URL || process.env.BETTER_AUTH_URL;
+  const requestBaseUrl = `${req.protocol}://${req.get("host")}`;
+  const appOrigin = new URL(configuredBaseUrl || requestBaseUrl).origin;
+
   try {
     const url = new URL(referer || "");
-    if (url.pathname.includes("/api/hassio_ingress/") && (!requestOrigin || url.origin === requestOrigin)) {
+    const isSameOrigin = url.origin === appOrigin || Boolean(requestOrigin && url.origin === requestOrigin);
+    const isAppPage = !url.pathname.includes("/api/");
+    if (isSameOrigin && isAppPage) {
       return url.toString();
     }
   } catch {
-    // Direct app access falls back to the app root.
+    // Direct app access falls back to the Email Accounts page.
   }
-  return "";
+
+  return new URL("/settings/email-accounts", appOrigin).toString();
 }
 
 function redirectEmailAccountResult(res, state, status) {
-  const fallback = "/";
+  const fallback = "/settings/email-accounts";
   try {
     const target = state?.returnUrl ? new URL(state.returnUrl) : new URL(fallback, process.env.APP_URL || process.env.BETTER_AUTH_URL || "http://127.0.0.1:3000");
     target.searchParams.set("emailAccountStatus", status);
