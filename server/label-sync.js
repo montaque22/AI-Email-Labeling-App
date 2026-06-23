@@ -258,7 +258,7 @@ async function runProviderAction({ account, action, accessToken, label, provider
     return syncGmailLabel({ action, accessToken, label, providerLabelId });
   }
 
-  if (["imap", "yahoo"].includes(account.provider)) {
+  if (["imap", "yahoo", "microsoft"].includes(account.provider)) {
     return syncImapFolder({ action, account, label, providerLabelId, accessToken });
   }
 
@@ -270,7 +270,7 @@ async function getProviderLabel({ account, accessToken, providerLabelId }) {
     return getGmailLabel({ accessToken, providerLabelId });
   }
 
-  if (["imap", "yahoo"].includes(account.provider)) {
+  if (["imap", "yahoo", "microsoft"].includes(account.provider)) {
     return getImapFolder(account, providerLabelId, accessToken);
   }
 

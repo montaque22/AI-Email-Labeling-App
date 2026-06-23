@@ -5,7 +5,7 @@ configuration:
     fields:
       app_url:
         name: App URL
-        description: External URL users and OAuth providers use to reach Emailable. Use the same public URL you register in Google or Yahoo OAuth redirect settings.
+        description: External URL users and OAuth providers use to reach Emailable. Use the same public URL you register in Google, Microsoft, or Yahoo OAuth redirect settings.
       google_client_id:
         name: Google Client ID
         description: Google OAuth client ID used for Google sign-in and Gmail account connection. Create it in Google Cloud Console.
@@ -14,7 +14,7 @@ configuration:
         description: Google OAuth client secret paired with the Google Client ID. Keep this value private.
   optional:
     name: Optional / Advanced Configuration
-    description: Optional values for custom auth URLs, external databases, Yahoo OAuth, and development mode. Most users can leave these blank.
+    description: Optional values for custom auth URLs, external databases, Microsoft or Yahoo OAuth, and development mode. Most users can leave these blank.
     fields:
       better_auth_url:
         name: Better Auth URL
@@ -31,6 +31,12 @@ configuration:
       yahoo_client_secret:
         name: Yahoo Client Secret
         description: Optional Yahoo OAuth client secret paired with the Yahoo Client ID. Keep this value private.
+      microsoft_client_id:
+        name: Microsoft Client ID
+        description: Optional Microsoft Entra application client ID used to connect Outlook.com, Live.com, Hotmail, and Microsoft 365 accounts with modern OAuth authentication.
+      microsoft_client_secret:
+        name: Microsoft Client Secret
+        description: Optional Microsoft Entra client secret paired with the Microsoft Client ID. Keep this value private.
       node_env:
         name: Node Environment
         description: Runtime mode for the Node app. Use production unless you are developing the add-on.

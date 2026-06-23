@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
 import { getRenderedAiPromptBundle } from "./ai-prompts.js";
-import { getValidEmailAccountAccessToken } from "./email-accounts.js";
+import { getImapAccessToken, getValidEmailAccountAccessToken } from "./email-accounts.js";
 import {
   applySingleLabelToEmail,
   buildDraftWebhookPayload,
@@ -590,7 +590,9 @@ async function generateAiReply(userId, request) {
     throw badAiResponse("AI did not return a draft body.");
   }
 
-  const accessToken = target.account.provider === "gmail" ? await getValidEmailAccountAccessToken(target.account) : null;
+  const accessToken = target.account.provider === "gmail"
+    ? await getValidEmailAccountAccessToken(target.account)
+    : await getImapAccessToken(target.account);
   const draft = await createProviderReplyDraft({ accessToken, account: target.account, input });
   await emitWebhookEvent(userId, "email.drafted", buildDraftWebhookPayload({ account: target.account, input, draft }));
 

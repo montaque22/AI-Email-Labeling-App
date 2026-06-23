@@ -3,7 +3,13 @@ import { getRenderedAiPromptBundle } from "./ai-prompts.js";
 import { ensureUnemailableSystemLabel, UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
 import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
-import { ensureSsoEmailAccount, getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
+import {
+  ensureSsoEmailAccount,
+  getConnectedEmailAccounts,
+  getImapAccessToken,
+  getValidEmailAccountAccessToken,
+  isImapBackedProvider,
+} from "./email-accounts.js";
 import {
   createImapDraft,
   fetchImapEmailContextById,
@@ -679,7 +685,7 @@ async function modifyMessageLabels(req, res, action) {
       return;
     }
 
-    if (!["gmail", "imap", "yahoo"].includes(account.provider)) {
+    if (account.provider !== "gmail" && !isImapBackedProvider(account.provider)) {
       res.status(501).json({ error: `${account.provider} message labels are not implemented yet` });
       return;
     }
@@ -699,9 +705,7 @@ async function modifyMessageLabels(req, res, action) {
         removeLabelIds: action === "remove" ? labels.labels.map((label) => label.providerLabelId) : [],
       });
     } else {
-      const accessToken = account.provider === "yahoo"
-        ? await getValidEmailAccountAccessToken(account)
-        : "";
+      const accessToken = await getImapAccessToken(account);
       await moveImapMessageToFolders({
         account,
         emailId: input.emailId,
@@ -755,7 +759,7 @@ export async function classifyEmailWithLabelCandidates(userId, rule, { source = 
     throw error;
   }
 
-  if (!["gmail", "imap", "yahoo"].includes(target.account.provider)) {
+  if (target.account.provider !== "gmail" && !isImapBackedProvider(target.account.provider)) {
     const error = new Error(`${target.account.provider} message labels are not implemented yet`);
     error.status = 501;
     throw error;
@@ -874,7 +878,7 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
     throw error;
   }
 
-  if (!["gmail", "imap", "yahoo"].includes(messageTarget.account.provider)) {
+  if (messageTarget.account.provider !== "gmail" && !isImapBackedProvider(messageTarget.account.provider)) {
     const error = new Error(`${messageTarget.account.provider} message labels are not implemented yet`);
     error.status = 501;
     throw error;
@@ -900,9 +904,7 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
       removeLabelIds: syncedLabelsToRemove.map((label) => label.providerLabelId),
     });
   } else {
-    const accessToken = messageTarget.account.provider === "yahoo"
-      ? await getValidEmailAccountAccessToken(messageTarget.account)
-      : "";
+    const accessToken = await getImapAccessToken(messageTarget.account);
     await moveImapMessageToFolders({
       account: messageTarget.account,
       emailId,
@@ -1002,10 +1004,8 @@ export async function searchPollingCandidates(userId, lookbackHours) {
         const ignoredLabelIds = ignoredProviderLabels.get(account.id) ?? new Set();
         const messages = await searchRecentGmailPollingMessages(accessToken, account, since, ignoredLabelIds);
         candidates.push(...messages);
-      } else if (["imap", "yahoo"].includes(account.provider)) {
-        const accessToken = account.provider === "yahoo"
-          ? await getValidEmailAccountAccessToken(account)
-          : "";
+      } else if (isImapBackedProvider(account.provider)) {
+        const accessToken = await getImapAccessToken(account);
         const messages = await searchRecentImapEmailContexts(account, { since, limit: 100, accessToken });
         const retryFolder = retryFolders.get(account.id);
         if (retryFolder) {
@@ -1078,7 +1078,7 @@ async function searchConnectedEmailsForRules(userId, { query, accountEmail, from
       break;
     }
 
-    if (!["gmail", "imap", "yahoo"].includes(account.provider)) {
+    if (account.provider !== "gmail" && !isImapBackedProvider(account.provider)) {
       continue;
     }
 
@@ -1088,9 +1088,7 @@ async function searchConnectedEmailsForRules(userId, { query, accountEmail, from
         const emails = await searchGmailEmailsForRules(accessToken, { query, fromEmail }, 10 - results.length);
         results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
       } else {
-        const accessToken = account.provider === "yahoo"
-          ? await getValidEmailAccountAccessToken(account)
-          : "";
+        const accessToken = await getImapAccessToken(account);
         const emails = await searchImapEmailContexts(
           account,
           { subject: query },
@@ -1282,7 +1280,7 @@ async function findConnectedMessageById(userId, emailId, subject) {
   const matches = [];
 
   for (const account of accounts) {
-    if (!["gmail", "imap", "yahoo"].includes(account.provider)) {
+    if (account.provider !== "gmail" && !isImapBackedProvider(account.provider)) {
       continue;
     }
 
@@ -1310,9 +1308,7 @@ async function findConnectedMessageById(userId, emailId, subject) {
           },
         });
       } else {
-        const accessToken = account.provider === "yahoo"
-          ? await getValidEmailAccountAccessToken(account)
-          : "";
+        const accessToken = await getImapAccessToken(account);
         const match = await findImapMessageAccountMatch(account, emailId, subject, accessToken);
         if (match) {
           const email = await fetchImapEmailContextById(account, emailId, subject, accessToken);
@@ -1353,7 +1349,7 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
   }
 
   for (const account of selectedAccounts) {
-    if (!["gmail", "imap", "yahoo"].includes(account.provider)) {
+    if (account.provider !== "gmail" && !isImapBackedProvider(account.provider)) {
       continue;
     }
 
@@ -1380,9 +1376,7 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
           },
         });
       } else {
-        const accessToken = account.provider === "yahoo"
-          ? await getValidEmailAccountAccessToken(account)
-          : "";
+        const accessToken = await getImapAccessToken(account);
         const email = await fetchImapEmailContextById(account, emailId, subject, accessToken);
         if (email) {
           matches.push({ account, email });
@@ -2583,8 +2577,8 @@ export async function createProviderReplyDraft({ accessToken, account, input }) 
     return createGmailReplyDraft({ accessToken, account, input });
   }
 
-  if (account.provider === "imap") {
-    return createImapDraft({ account, input });
+  if (isImapBackedProvider(account.provider)) {
+    return createImapDraft({ account, input, accessToken: account.provider === "imap" ? "" : accessToken });
   }
 
   throw new Error(`${account.provider} draft replies are not implemented yet`);

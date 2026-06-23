@@ -7,14 +7,15 @@ const DEFAULT_SENT_MAILBOX = "Sent";
 
 export async function withImapClient(account, fn, oauthAccessToken = "") {
   const metadata = account.metadata ?? {};
-  const isYahoo = account.provider === "yahoo";
+  const usesOAuth = account.provider === "yahoo" || account.provider === "microsoft";
+  const defaultHost = account.provider === "yahoo" ? "imap.mail.yahoo.com" : account.provider === "microsoft" ? "outlook.office365.com" : "";
   const client = new ImapFlow({
-    host: metadata.imapHost || (isYahoo ? "imap.mail.yahoo.com" : ""),
+    host: metadata.imapHost || defaultHost,
     port: Number(metadata.imapPort ?? 993),
     secure: metadata.imapSecure !== false,
     auth: {
       user: metadata.imapUsername || account.email,
-      ...(isYahoo ? { accessToken: oauthAccessToken } : { pass: decryptToken(account.access_token) }),
+      ...(usesOAuth ? { accessToken: oauthAccessToken } : { pass: decryptToken(account.access_token) }),
     },
     logger: false,
   });
@@ -158,7 +159,7 @@ export async function moveImapMessageToFolders({
   }, accessToken);
 }
 
-export async function moveImapInboxMessageToFolder({ account, emailId, sourceMailbox, targetFolder }) {
+export async function moveImapInboxMessageToFolder({ account, emailId, sourceMailbox, targetFolder, accessToken = "" }) {
   return withImapClient(account, async (client, metadata) => {
     const mailbox = sourceMailbox || metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
     const found = await findImapMessage(client, mailbox, emailId);
@@ -174,15 +175,15 @@ export async function moveImapInboxMessageToFolder({ account, emailId, sourceMai
     }
 
     return { uid: found.uid, mailbox: targetFolder };
-  });
+  }, accessToken);
 }
 
-export async function moveImapInboxMessageToTrash({ account, emailId, sourceMailbox }) {
+export async function moveImapInboxMessageToTrash({ account, emailId, sourceMailbox, accessToken = "" }) {
   const trashMailbox = account.metadata?.trashMailbox || "Trash";
-  return moveImapInboxMessageToFolder({ account, emailId, sourceMailbox, targetFolder: trashMailbox });
+  return moveImapInboxMessageToFolder({ account, emailId, sourceMailbox, targetFolder: trashMailbox, accessToken });
 }
 
-export async function createImapDraft({ account, input }) {
+export async function createImapDraft({ account, input, accessToken = "" }) {
   return withImapClient(account, async (client, metadata) => {
     const draftsMailbox = metadata.draftsMailbox || DEFAULT_DRAFTS_MAILBOX;
     const sourceMailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
@@ -197,10 +198,10 @@ export async function createImapDraft({ account, input }) {
       subject: getReplySubject(input.subject || original?.subject || ""),
       toRecipients: parseAddressList(input.to || original?.from || ""),
     };
-  });
+  }, accessToken);
 }
 
-export async function createImapComposeDraft({ account, input }) {
+export async function createImapComposeDraft({ account, input, accessToken = "" }) {
   return withImapClient(account, async (client, metadata) => {
     const draftsMailbox = metadata.draftsMailbox || DEFAULT_DRAFTS_MAILBOX;
     await ensureImapMailbox(client, draftsMailbox);
@@ -213,10 +214,10 @@ export async function createImapComposeDraft({ account, input }) {
       subject: input.subject || "",
       toRecipients: parseAddressList(input.to || ""),
     };
-  });
+  }, accessToken);
 }
 
-export async function updateImapComposeDraft({ account, draftId, mailbox, input }) {
+export async function updateImapComposeDraft({ account, draftId, mailbox, input, accessToken = "" }) {
   return withImapClient(account, async (client, metadata) => {
     const draftsMailbox = mailbox || metadata.draftsMailbox || DEFAULT_DRAFTS_MAILBOX;
     const existingMailbox = await findImapMailbox(client, draftsMailbox);
@@ -241,10 +242,10 @@ export async function updateImapComposeDraft({ account, draftId, mailbox, input 
       subject: input.subject || "",
       toRecipients: parseAddressList(input.to || ""),
     };
-  });
+  }, accessToken);
 }
 
-export async function searchImapInboxMessages(account, { folder, limit, pageToken = "", query = "" }) {
+export async function searchImapInboxMessages(account, { folder, limit, pageToken = "", query = "", accessToken = "" }) {
   return withImapClient(account, async (client) => {
     const mailbox = await findImapMailbox(client, folder);
     if (!mailbox) {
@@ -279,10 +280,10 @@ export async function searchImapInboxMessages(account, { folder, limit, pageToke
       nextPageToken: offset + selected.length < sorted.length ? String(offset + selected.length) : null,
       totalEstimate: opened.exists ?? sorted.length,
     };
-  });
+  }, accessToken);
 }
 
-export async function getImapInboxCount(account, folder) {
+export async function getImapInboxCount(account, folder, accessToken = "") {
   return withImapClient(account, async (client) => {
     const mailbox = await findImapMailbox(client, folder);
     if (!mailbox) {
@@ -291,10 +292,10 @@ export async function getImapInboxCount(account, folder) {
 
     const opened = await client.mailboxOpen(mailbox.path);
     return opened.exists ?? null;
-  });
+  }, accessToken);
 }
 
-export async function fetchImapInboxMessage(account, { emailId, mailbox }) {
+export async function fetchImapInboxMessage(account, { emailId, mailbox, accessToken = "" }) {
   return withImapClient(account, async (client, metadata) => {
     const targetMailbox = mailbox || metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
     const mailboxInfo = await findImapMailbox(client, targetMailbox);
@@ -306,6 +307,7 @@ export async function fetchImapInboxMessage(account, { emailId, mailbox }) {
     const message = await client.fetchOne(String(emailId), {
       uid: true,
       envelope: true,
+      flags: true,
       bodyStructure: true,
       internalDate: true,
       source: true,
@@ -331,14 +333,28 @@ export async function fetchImapInboxMessage(account, { emailId, mailbox }) {
       bcc: (message.envelope?.bcc ?? []).map(formatImapAddress).filter(Boolean).join(", "),
       subject: message.envelope?.subject ?? "",
       date: (message.internalDate ?? message.envelope?.date ?? new Date()).toISOString(),
+      isRead: hasImapFlag(message.flags, "\\Seen"),
       bodyText,
       bodyHtml: "",
       attachments: collectImapAttachments(message.bodyStructure),
     };
-  });
+  }, accessToken);
 }
 
-export async function searchImapSentEmailContexts(account, filters, limit) {
+export async function markImapInboxMessageRead(account, { emailId, mailbox }, accessToken = "") {
+  return withImapClient(account, async (client, metadata) => {
+    const targetMailbox = mailbox || metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
+    const mailboxInfo = await findImapMailbox(client, targetMailbox);
+    if (!mailboxInfo) {
+      throw providerNotFoundError("IMAP mailbox was not found");
+    }
+
+    await client.mailboxOpen(mailboxInfo.path);
+    return client.messageFlagsAdd(String(emailId), ["\\Seen"], { uid: true });
+  }, accessToken);
+}
+
+export async function searchImapSentEmailContexts(account, filters, limit, accessToken = "") {
   return withImapClient(account, async (client, metadata) => {
     const sentMailbox = metadata.sentMailbox || DEFAULT_SENT_MAILBOX;
     const mailbox = await findImapMailbox(client, sentMailbox);
@@ -374,7 +390,7 @@ export async function searchImapSentEmailContexts(account, filters, limit) {
     }
 
     return results;
-  });
+  }, accessToken);
 }
 
 export async function searchImapEmailContexts(account, filters, limit, accessToken = "") {
@@ -520,7 +536,25 @@ async function ensureImapMailbox(client, name) {
 async function findImapMailbox(client, name) {
   const mailboxes = await client.list();
   const target = normalizeMailboxName(name);
-  return mailboxes.find((mailbox) => normalizeMailboxName(mailbox.path) === target || normalizeMailboxName(mailbox.name) === target) ?? null;
+  const exact = mailboxes.find(
+    (mailbox) => normalizeMailboxName(mailbox.path) === target || normalizeMailboxName(mailbox.name) === target,
+  );
+  if (exact) {
+    return exact;
+  }
+
+  const requestedSpecialUse = mailboxSpecialUse(name);
+  return requestedSpecialUse
+    ? mailboxes.find((mailbox) => String(mailbox.specialUse || "").toLowerCase() === requestedSpecialUse) ?? null
+    : null;
+}
+
+function mailboxSpecialUse(name) {
+  const normalized = normalizeMailboxName(name);
+  if (["sent", "sent items", "sent messages"].includes(normalized)) return "\\sent";
+  if (["draft", "drafts"].includes(normalized)) return "\\drafts";
+  if (["trash", "deleted", "deleted items"].includes(normalized)) return "\\trash";
+  return "";
 }
 
 async function findImapMessage(client, mailbox, emailId) {
@@ -614,9 +648,19 @@ function imapMessageToInboxListItem(message, account, mailbox) {
     subject: message.envelope?.subject ?? "",
     snippet: "",
     date: date.toISOString(),
+    isRead: hasImapFlag(message.flags, "\\Seen"),
     labels: [mailbox],
     hasAttachments: collectImapAttachments(message.bodyStructure).length > 0,
   };
+}
+
+function hasImapFlag(flags, expectedFlag) {
+  if (!flags) {
+    return false;
+  }
+
+  const normalizedExpected = String(expectedFlag).toLowerCase();
+  return [...flags].some((flag) => String(flag).toLowerCase() === normalizedExpected);
 }
 
 function collectImapAttachments(structure) {

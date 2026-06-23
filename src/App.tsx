@@ -374,6 +374,7 @@ type InboxMessage = {
   subject: string;
   snippet: string;
   date: string;
+  isRead: boolean;
   labels: string[];
   hasAttachments: boolean;
   replyCount?: number;
@@ -393,6 +394,7 @@ type InboxMessageDetail = {
   bcc?: string;
   subject: string;
   date: string;
+  isRead?: boolean;
   bodyText: string;
   bodyHtml: string;
   attachments: InboxAttachment[];
@@ -1811,6 +1813,15 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
       } else {
         setMessageDetail(data.message);
       }
+      if (data.message.isRead) {
+        const openedMessageKey = getInboxMessageKey(message);
+        setMessages((current) => current.map((item) =>
+          getInboxMessageKey(item) === openedMessageKey ? { ...item, isRead: true } : item,
+        ));
+        setSelectedMessage((current) =>
+          current && getInboxMessageKey(current) === openedMessageKey ? { ...current, isRead: true } : current,
+        );
+      }
     } catch {
       inboxMode === "drafts" ? setError("Could not load draft.") : setDetailError("Could not load email.");
     } finally {
@@ -2787,8 +2798,9 @@ function InboxMessageRow({
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-600">
           {getSenderInitial(message.sender || message.from)}
         </span>
-        <button className="min-w-0 cursor-pointer truncate text-left text-sm font-medium text-zinc-800" onClick={onOpen} type="button">
-          {message.sender || message.from || "Unknown sender"}
+        <button className="flex min-w-0 cursor-pointer items-center gap-2 text-left text-sm font-medium text-zinc-800" onClick={onOpen} type="button">
+          {!message.isRead ? <span aria-label="Unread" className="h-2 w-2 shrink-0 rounded-full bg-blue-500" title="Unread" /> : null}
+          <span className="min-w-0 truncate">{message.sender || message.from || "Unknown sender"}</span>
         </button>
         <button className="flex min-w-0 cursor-pointer items-center gap-2 text-left" onClick={onOpen} type="button">
           {message.labels[0] ? <Badge className="shrink-0 bg-blue-50 text-blue-700">{message.labels[0]}</Badge> : null}
@@ -2841,7 +2853,10 @@ function InboxMessageRow({
           ) : null}
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-3">
-              <p className="min-w-0 truncate text-base font-bold text-zinc-950">{message.sender || message.from || "Unknown sender"}</p>
+              <p className="flex min-w-0 items-center gap-2 truncate text-base font-bold text-zinc-950">
+                {!message.isRead ? <span aria-label="Unread" className="h-2 w-2 shrink-0 rounded-full bg-blue-500" title="Unread" /> : null}
+                <span className="min-w-0 truncate">{message.sender || message.from || "Unknown sender"}</span>
+              </p>
               {message.hasAttachments ? <Download className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" /> : null}
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-2">
@@ -3022,7 +3037,7 @@ function InboxMessagePushView({
                   </button>
                 ) : null}
               </div>
-              <p className="shrink-0 text-xs text-zinc-500">{formatInboxListDate(detail?.date || summary.date)}</p>
+              <p className="shrink-0 text-xs text-zinc-500">{formatDateTime(detail?.date || summary.date)}</p>
             </div>
             <h1 className="text-lg font-semibold leading-tight text-zinc-950">{detail?.subject || summary.subject || "(no subject)"}</h1>
           </div>
@@ -3239,7 +3254,7 @@ function InboxThreadConversation({ detail, privacyMode }: { detail: InboxMessage
   return (
     <div className="space-y-4">
       {messages.map((message, messageIndex) => (
-        <article className="overflow-hidden rounded-xl border border-white/80 bg-white/75 shadow-sm backdrop-blur-xl" key={message.id}>
+        <article className="min-w-0 overflow-hidden rounded-xl border border-white/80 bg-white/75 shadow-sm backdrop-blur-xl" key={message.id}>
           <div className="grid gap-1.5 bg-white/70 px-4 py-3 text-xs text-zinc-600 sm:text-sm">
             <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
               <p className="min-w-0 break-words">
@@ -3250,7 +3265,7 @@ function InboxThreadConversation({ detail, privacyMode }: { detail: InboxMessage
             <p className="break-words"><span className="font-medium text-zinc-950">To:</span> {formatEmailTextForPrivacy(message.to, privacyMode)}</p>
             {message.cc ? <p className="break-words"><span className="font-medium text-zinc-950">CC:</span> {formatEmailTextForPrivacy(message.cc, privacyMode)}</p> : null}
           </div>
-          <div className="border-t border-zinc-200/80 bg-white/80 p-4">
+          <div className="min-w-0 overflow-hidden border-t border-zinc-200/80 bg-white/80 p-4">
             {message.bodyHtml ? (
               <AutoSizeEmailFrame html={message.bodyHtml} title={`Thread message ${messageIndex + 1}`} />
             ) : (
@@ -3279,6 +3294,7 @@ function InboxThreadConversation({ detail, privacyMode }: { detail: InboxMessage
 function AutoSizeEmailFrame({ html, title }: { html: string; title: string }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [height, setHeight] = useState(700);
+  const srcDoc = buildResponsiveEmailHtml(html);
 
   function resizeFrame() {
     const frame = frameRef.current;
@@ -3297,11 +3313,103 @@ function AutoSizeEmailFrame({ html, title }: { html: string; title: string }) {
       ref={frameRef}
       sandbox="allow-same-origin"
       scrolling="no"
-      srcDoc={html}
+      srcDoc={srcDoc}
       style={{ height }}
       title={title}
     />
   );
+}
+
+function buildResponsiveEmailHtml(html: string) {
+  const responsiveStyle = `
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html,
+      body {
+        box-sizing: border-box;
+        margin: 0;
+        min-width: 0 !important;
+        max-width: 100% !important;
+        overflow-x: hidden !important;
+        overflow-wrap: anywhere;
+        word-break: normal;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: inherit;
+      }
+
+      img,
+      video,
+      canvas,
+      svg {
+        max-width: 100% !important;
+        height: auto !important;
+      }
+
+      table,
+      tbody,
+      tr,
+      td,
+      th,
+      div,
+      section,
+      article,
+      main,
+      p {
+        max-width: 100% !important;
+      }
+
+      table {
+        width: 100% !important;
+        table-layout: auto !important;
+      }
+
+      td,
+      th {
+        overflow-wrap: anywhere !important;
+        word-break: normal !important;
+      }
+
+      pre,
+      code {
+        white-space: pre-wrap !important;
+        overflow-wrap: anywhere !important;
+      }
+
+      a {
+        overflow-wrap: anywhere !important;
+      }
+
+      @media (max-width: 640px) {
+        body {
+          font-size: 16px;
+          line-height: 1.45;
+        }
+
+        [width],
+        [style*="width"] {
+          max-width: 100% !important;
+        }
+      }
+    </style>
+  `;
+
+  if (/<head[\s>]/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, `<head$1>${responsiveStyle}`);
+  }
+
+  return `
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    ${responsiveStyle}
+  </head>
+  <body>${html}</body>
+</html>`;
 }
 
 function InboxRuleBadge({ compact = false, onClick, rule }: { compact?: boolean; onClick?: () => void; rule?: InboxRuleStatus | null }) {
@@ -7809,6 +7917,7 @@ function WebhookPage() {
 function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [providers, setProviders] = useState<EmailProvider[]>([]);
+  const [selectedAccountAction, setSelectedAccountAction] = useState<EmailAccount | null>(null);
   const [imapForm, setImapForm] = useState({
     email: "",
     displayName: "",
@@ -7841,6 +7950,7 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
   const [pollCooldown, setPollCooldown] = useState(0);
   const [pollingError, setPollingError] = useState<string | null>(null);
   const [pollingNotice, setPollingNotice] = useState<string | null>(null);
+  const visibleProviders = providers.filter((provider) => provider.manual || provider.configured);
 
   useEffect(() => {
     void loadEmailAccounts();
@@ -7894,6 +8004,12 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
       }
 
       setAccounts(accountsData.accounts ?? []);
+      setSelectedAccountAction((selected) => {
+        if (!selected) {
+          return null;
+        }
+        return (accountsData.accounts ?? []).find((account: EmailAccount) => account.id === selected.id) ?? null;
+      });
       setProviders(providersData.providers ?? []);
       if (pollingResponse.ok && pollingData) {
         setPolling(pollingData);
@@ -8004,6 +8120,13 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
           return status ? { ...account, status: status.status, statusMessage: status.statusMessage } : account;
         }),
       );
+      setSelectedAccountAction((selected) => {
+        if (!selected) {
+          return null;
+        }
+        const status = statuses.get(selected.id);
+        return status ? { ...selected, status: status.status, statusMessage: status.statusMessage } : selected;
+      });
     } catch {
       setError("Could not check email account statuses.");
       setAccounts((current) => current.map((account) => (account.status === "checking" ? { ...account, status: "unchecked", statusMessage: "Not checked" } : account)));
@@ -8029,6 +8152,7 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
   }
 
   function refreshAccount(account: EmailAccount) {
+    setSelectedAccountAction(null);
     if (account.provider === "imap") {
       setError("To refresh an IMAP account, remove it and reconnect it with a current app password.");
       return;
@@ -8106,6 +8230,7 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
         return;
       }
 
+      setSelectedAccountAction(null);
       await loadEmailAccounts();
     } catch {
       setError("Could not remove email account.");
@@ -8121,8 +8246,7 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
           <div>
             <CardTitle>Email Accounts</CardTitle>
             <CardDescription>
-              Connect Gmail, Yahoo, and IMAP inboxes so the app can manage labels or folders, query emails, and read
-              account metadata.
+              Connect available inbox providers so the app can manage labels or folders, query emails, and read account metadata.
             </CardDescription>
           </div>
           <Button onClick={() => setShowProviderChoices((value) => !value)} type="button">
@@ -8132,21 +8256,17 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
         </CardHeader>
         <CardContent className="space-y-5">
           {showProviderChoices ? (
-            <div className="grid gap-3 md:grid-cols-3">
-              {providers.map((provider) => (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {visibleProviders.map((provider) => (
                 <button
-                  className={cn(
-                    "glass-panel rounded-md border p-4 text-left transition-colors hover:bg-zinc-50",
-                    !provider.configured && "cursor-not-allowed opacity-60",
-                  )}
-                  disabled={!provider.configured}
+                  className="glass-panel rounded-md border p-4 text-left transition-colors hover:bg-zinc-50"
                   key={provider.id}
                   onClick={() => connectProvider(provider.id)}
                   type="button"
                 >
                   <p className="text-sm font-medium text-zinc-950">{provider.label}</p>
                   <p className="mt-1 text-sm text-zinc-500">
-                    {provider.manual ? "Use IMAP app password" : provider.configured ? "Connect account" : "OAuth credentials not configured"}
+                    {provider.manual ? "Use IMAP app password" : "Connect account"}
                   </p>
                 </button>
               ))}
@@ -8173,7 +8293,7 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
                   </Button>
                 </Tooltip>
               </div>
-              <div className="overflow-hidden rounded-md border border-zinc-200">
+              <div className="hidden overflow-hidden rounded-md border border-zinc-200 md:block">
                 <div className="grid grid-cols-[1fr_120px_150px_104px] gap-3 border-b border-zinc-200 glass-panel px-4 py-3 text-xs font-medium uppercase text-zinc-500">
                   <span>Account</span>
                   <span>Provider</span>
@@ -8229,6 +8349,24 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
                         )}
                       </div>
                     </div>
+                  ))}
+                </div>
+              </div>
+              <div className="overflow-hidden rounded-md border border-white/70 bg-white/40 shadow-sm backdrop-blur-xl md:hidden">
+                <div className="divide-y divide-zinc-200/80">
+                  {accounts.map((account) => (
+                    <button
+                      className="flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-white/70"
+                      key={account.id}
+                      onClick={() => setSelectedAccountAction(account)}
+                      type="button"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-base font-medium text-zinc-950">{formatEmailForPrivacy(account.email, privacyMode)}</p>
+                        <p className="mt-0.5 truncate text-sm text-zinc-500">{account.displayName || providerLabel(account.provider)}</p>
+                      </div>
+                      <EmailAccountStatusBadge account={account} />
+                    </button>
                   ))}
                 </div>
               </div>
@@ -8332,7 +8470,7 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
                 <div>
                   <h3 className="text-lg font-semibold text-zinc-950">Connect IMAP Account</h3>
                   <p className="mt-1 text-sm text-zinc-500">
-                    Use an app password from your email provider. Do not use your main account password.
+                    Use this for providers without a dedicated OAuth option. Do not use it for Microsoft accounts.
                   </p>
                 </div>
                 <Button aria-label="Close IMAP setup" disabled={isConnectingImap} onClick={closeImapModal} size="icon" type="button" variant="ghost">
@@ -8377,9 +8515,6 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
                   <a className="text-blue-700 hover:underline" href="https://help.yahoo.com/kb/generate-manage-rd-party-passwords-sln15241.html" rel="noreferrer" target="_blank">
                     Yahoo app password
                   </a>
-                  <a className="text-blue-700 hover:underline" href="https://support.microsoft.com/en-gb/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040" rel="noreferrer" target="_blank">
-                    Outlook IMAP
-                  </a>
                 </div>
               </div>
 
@@ -8395,6 +8530,16 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
             </div>
           </div>
         </div>
+      ) : null}
+      {selectedAccountAction ? (
+        <EmailAccountActionSheet
+          account={selectedAccountAction}
+          isDeleting={isDeleting === selectedAccountAction.id}
+          onClose={() => setSelectedAccountAction(null)}
+          onRefresh={() => refreshAccount(selectedAccountAction)}
+          onRemove={() => void removeAccount(selectedAccountAction.id)}
+          privacyMode={privacyMode}
+        />
       ) : null}
     </div>
   );
@@ -10381,12 +10526,35 @@ function formatInboxListDate(value: string) {
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startOfTomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const messageDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
 
   if (date >= startOfToday && date < startOfTomorrow) {
     return new Intl.DateTimeFormat(undefined, {
       hour: "numeric",
       minute: "2-digit",
     }).format(date);
+  }
+
+  const todayUtc = Date.UTC(startOfToday.getFullYear(), startOfToday.getMonth(), startOfToday.getDate());
+  const messageDayUtc = Date.UTC(messageDay.getFullYear(), messageDay.getMonth(), messageDay.getDate());
+  const daysAgo = Math.floor((todayUtc - messageDayUtc) / 86_400_000);
+  if (daysAgo === 1) {
+    return "Yesterday";
+  }
+  if (daysAgo >= 2 && daysAgo <= 6) {
+    return `${daysAgo} days ago`;
+  }
+  if (daysAgo >= 7 && daysAgo < 35) {
+    const weeksAgo = Math.floor(daysAgo / 7);
+    return `${weeksAgo} ${weeksAgo === 1 ? "week" : "weeks"} ago`;
+  }
+  if (daysAgo >= 35 && daysAgo < 365) {
+    const monthsAgo = Math.max(1, Math.floor(daysAgo / 30));
+    return `${monthsAgo} ${monthsAgo === 1 ? "month" : "months"} ago`;
+  }
+  if (daysAgo >= 365) {
+    const yearsAgo = Math.floor(daysAgo / 365);
+    return `${yearsAgo} ${yearsAgo === 1 ? "year" : "years"} ago`;
   }
 
   return new Intl.DateTimeFormat(undefined, {
@@ -10583,11 +10751,68 @@ function providerLabel(provider: string) {
     return "Yahoo";
   }
 
+  if (provider === "microsoft") {
+    return "Microsoft";
+  }
+
   if (provider === "imap") {
     return "IMAP";
   }
 
   return provider;
+}
+
+function EmailAccountActionSheet({
+  account,
+  isDeleting,
+  onClose,
+  onRefresh,
+  onRemove,
+  privacyMode,
+}: {
+  account: EmailAccount;
+  isDeleting: boolean;
+  onClose: () => void;
+  onRefresh: () => void;
+  onRemove: () => void;
+  privacyMode: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-slate-950/20 p-3 md:hidden" onClick={onClose}>
+      <div
+        className="w-full overflow-hidden rounded-2xl border border-white/70 bg-white/75 p-3 shadow-2xl shadow-slate-900/20 backdrop-blur-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-zinc-300" />
+        <div className="px-2 pb-3">
+          <p className="truncate text-base font-semibold text-zinc-950">{formatEmailForPrivacy(account.email, privacyMode)}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Badge className="w-fit capitalize">{providerLabel(account.provider)}</Badge>
+            <EmailAccountStatusBadge account={account} />
+          </div>
+        </div>
+        <div className="grid gap-2">
+          <Button className="h-11 justify-start" onClick={onRefresh} type="button" variant="outline">
+            <RefreshCw className={cn("h-4 w-4", account.status === "needs_refresh" && "text-amber-600")} />
+            Refresh token
+          </Button>
+          {account.canRemove ? (
+            <Button className="h-11 justify-start text-red-600 hover:text-red-700" disabled={isDeleting} onClick={onRemove} type="button" variant="outline">
+              {isDeleting ? <Loader /> : <Trash2 className="h-4 w-4" />}
+              Delete account
+            </Button>
+          ) : (
+            <p className="rounded-md border border-zinc-200 bg-white/60 px-3 py-3 text-sm text-zinc-500">
+              This account is required and cannot be removed.
+            </p>
+          )}
+          <Button className="h-11" onClick={onClose} type="button" variant="ghost">
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function EmailAccountStatusBadge({ account }: { account: EmailAccount }) {

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.43
+
+- Added Progressive Web App support with installable app metadata, icons, and a conservative service worker.
+- Improved mobile email rendering so wide HTML emails fit the screen.
+- Added a mobile-friendly Email Accounts row view with a bottom action sheet for refresh and delete actions.
+- Hid unconfigured OAuth email providers from the add-account provider list.
+
+## 0.1.42
+
+- Added Microsoft OAuth2 modern authentication for Outlook.com, Live.com, Hotmail, and Microsoft 365 accounts.
+- Added OAuth-backed Microsoft IMAP access, folder management, drafts, searches, and SMTP sending.
+
+## 0.1.41
+
+- Added provider read/unread state to Inbox messages and a blue unread indicator beside the sender.
+- Marked Gmail and IMAP messages as read when their details are opened.
+- Added relative Inbox timestamps while preserving exact dates in email details.
+
 ## 0.1.40
 
 - Fixed the desktop Inbox action/filter toolbar positioning after its glass surface overrode sticky behavior.

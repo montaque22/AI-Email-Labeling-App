@@ -319,8 +319,9 @@ async function searchSentEmailContexts(userId, filters) {
       if (account.provider === "gmail") {
         const emails = await searchGmailSentEmailContexts(accessToken, filters, 10 - results.length);
         results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
-      } else if (account.provider === "imap") {
-        const emails = await searchImapSentEmailContexts(account, filters, 10 - results.length);
+      } else if (["imap", "yahoo", "microsoft"].includes(account.provider)) {
+        const accessToken = account.provider === "imap" ? "" : await getValidEmailAccountAccessToken(account);
+        const emails = await searchImapSentEmailContexts(account, filters, 10 - results.length, accessToken);
         results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
       }
     } catch (error) {

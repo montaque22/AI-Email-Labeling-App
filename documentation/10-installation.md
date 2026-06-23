@@ -35,6 +35,10 @@ EMAIL_ACCOUNT_TOKEN_SECRET=replace-with-a-strong-random-secret-for-email-account
 # Optional Yahoo OAuth connection
 YAHOO_CLIENT_ID=your-yahoo-oauth-client-id
 YAHOO_CLIENT_SECRET=your-yahoo-oauth-client-secret
+
+# Optional Microsoft modern OAuth connection
+MICROSOFT_CLIENT_ID=your-microsoft-entra-application-client-id
+MICROSOFT_CLIENT_SECRET=your-microsoft-entra-client-secret
 ```
 
 Use externally reachable URLs in production:
@@ -152,7 +156,7 @@ Configure these environment variables in Coolify:
 - `GOOGLE_CLIENT_ID`.
 - `GOOGLE_CLIENT_SECRET`.
 - `EMAIL_ACCOUNT_TOKEN_SECRET`.
-- Optional Yahoo variables listed above.
+- Optional Microsoft and Yahoo variables listed above.
 
 After changing database or authentication settings, run:
 
@@ -190,6 +194,7 @@ The add-on configuration is grouped into Basic Configuration and Optional / Adva
 - `BETTER_AUTH_SECRET`: generated and persisted automatically when left blank.
 - `DATABASE_URL`: may be left blank to use bundled PostgreSQL.
 - `YAHOO_CLIENT_ID` and `YAHOO_CLIENT_SECRET`: required only for Yahoo OAuth.
+- `MICROSOFT_CLIENT_ID` and `MICROSOFT_CLIENT_SECRET`: required for Outlook.com, Live.com, Hotmail, and Microsoft 365 OAuth connections.
 - `NODE_ENV`: use `production` unless developing the add-on.
 
 Changing `DATABASE_URL` switches databases. Existing data is not migrated automatically between bundled and external PostgreSQL databases.
@@ -283,6 +288,26 @@ https://your-production-domain.example/api/email-accounts/callback/yahoo
 
 Yahoo accounts can alternatively use generic IMAP with a Yahoo app password.
 
+## Microsoft OAuth setup
+
+Microsoft accounts use OAuth2 modern authentication. Do not add Outlook.com, Live.com, Hotmail, or Microsoft 365 accounts through the generic IMAP app-password form.
+
+1. Open Microsoft Entra admin center and create an app registration.
+2. Choose the account type that supports both organizational accounts and personal Microsoft accounts.
+3. Add Web redirect URIs:
+
+```text
+http://127.0.0.1:3000/api/email-accounts/callback/microsoft
+https://your-production-domain.example/api/email-accounts/callback/microsoft
+```
+
+4. Under API permissions, add the delegated Office 365 Exchange Online permissions `IMAP.AccessAsUser.All` and `SMTP.Send`.
+5. Create a client secret.
+6. Save the application client ID and client secret as `MICROSOFT_CLIENT_ID` and `MICROSOFT_CLIENT_SECRET`.
+7. Restart Emailable, then choose **Microsoft** from **Settings > Email Accounts > Add Email Account**.
+
+Emailable also requests `offline_access` so it can renew Microsoft access tokens. An organization may require administrator consent. SMTP sending can also be disabled by a Microsoft 365 tenant policy even when mailbox reading works.
+
 ## IMAP setup
 
 Add an IMAP account from Settings > Email Accounts > Add Email Account > IMAP. Provide the email address, IMAP host, port, username, app password, and mailbox names.
@@ -291,14 +316,12 @@ Helpful setup pages:
 
 - [Gmail IMAP](https://support.google.com/mail/answer/7126229?hl=en).
 - [Yahoo app passwords](https://help.yahoo.com/kb/generate-manage-rd-party-passwords-sln15241.html).
-- [Outlook.com IMAP settings](https://support.microsoft.com/en-gb/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040).
 
 Common defaults:
 
 ```text
 Gmail host: imap.gmail.com
 Yahoo host: imap.mail.yahoo.com
-Outlook host: outlook.office365.com
 Port: 993
 SSL/TLS: enabled
 ```

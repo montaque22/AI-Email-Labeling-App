@@ -24,6 +24,35 @@ export const EMAIL_ACCOUNT_PROVIDERS = {
     clientSecret: process.env.YAHOO_CLIENT_SECRET,
     useBasicAuthForToken: true,
   },
+  microsoft: {
+    label: "Microsoft",
+    authUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    scopes: [
+      "openid",
+      "profile",
+      "email",
+      "offline_access",
+      "https://outlook.office.com/IMAP.AccessAsUser.All",
+      "https://outlook.office.com/SMTP.Send",
+    ],
+    clientId: process.env.MICROSOFT_CLIENT_ID,
+    clientSecret: process.env.MICROSOFT_CLIENT_SECRET,
+    extraAuthParams: { prompt: "select_account" },
+    profileFromIdToken: true,
+    accountMetadata: {
+      imapHost: "outlook.office365.com",
+      imapPort: 993,
+      imapSecure: true,
+      defaultMailbox: "INBOX",
+      sentMailbox: "Sent",
+      draftsMailbox: "Drafts",
+      trashMailbox: "Deleted",
+      smtpHost: "smtp-mail.outlook.com",
+      smtpPort: 587,
+      smtpSecure: false,
+    },
+  },
   imap: {
     label: "IMAP",
     manual: true,
@@ -74,12 +103,14 @@ export function registerEmailAccountRoutes(app) {
 
   app.get("/api/email-accounts/providers", requireSession, (_req, res) => {
     res.json({
-      providers: Object.entries(EMAIL_ACCOUNT_PROVIDERS).map(([id, provider]) => ({
-        id,
-        label: provider.label,
-        configured: provider.manual || Boolean(provider.clientId && provider.clientSecret),
-        manual: Boolean(provider.manual),
-      })),
+      providers: Object.entries(EMAIL_ACCOUNT_PROVIDERS)
+        .filter(([, provider]) => provider.manual || isProviderConfigured(provider))
+        .map(([id, provider]) => ({
+          id,
+          label: provider.label,
+          configured: true,
+          manual: Boolean(provider.manual),
+        })),
     });
   });
 
@@ -141,7 +172,7 @@ export function registerEmailAccountRoutes(app) {
     try {
       const redirectUri = getRedirectUri(req, providerId);
       const tokenSet = await exchangeCodeForTokens(provider, req.query.code, redirectUri);
-      const profile = await fetchProviderProfile(provider, tokenSet.access_token);
+      const profile = await fetchProviderProfile(provider, tokenSet);
 
       const account = await upsertEmailAccount(state.userId, providerId, profile, tokenSet);
       const { syncAllLabelsToEmailAccount } = await import("./label-sync.js");
@@ -228,7 +259,7 @@ async function checkEmailAccountStatuses(userId) {
     try {
       if (account.provider === "imap") {
         await withImapClient(account, async () => true);
-      } else if (account.provider === "yahoo") {
+      } else if (isOAuthImapProvider(account.provider)) {
         const accessToken = await getValidEmailAccountAccessToken(account);
         await withImapClient(account, async () => true, accessToken);
       } else {
@@ -424,7 +455,27 @@ async function exchangeCodeForTokens(provider, code, redirectUri) {
   return response.json();
 }
 
-async function fetchProviderProfile(provider, accessToken) {
+async function fetchProviderProfile(provider, tokenSet) {
+  if (provider.profileFromIdToken) {
+    const claims = decodeJwtPayload(tokenSet.id_token);
+    if (claims.aud !== provider.clientId || !claims.exp || Number(claims.exp) * 1000 <= Date.now()) {
+      throw new Error("Microsoft returned an invalid identity token");
+    }
+    const email = String(claims.email || claims.preferred_username || "").trim().toLowerCase();
+    const id = String(claims.oid || claims.sub || email).trim();
+    if (!email || !id) {
+      throw new Error("Microsoft did not return an email address for this account");
+    }
+
+    return {
+      id,
+      email,
+      displayName: String(claims.name || email),
+      raw: claims,
+    };
+  }
+
+  const accessToken = tokenSet.access_token;
   const response = await fetch(provider.userInfoUrl, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -481,7 +532,7 @@ async function upsertEmailAccount(userId, provider, profile, tokenSet) {
       encryptedRefreshToken,
       scopes,
       expiresAt,
-      JSON.stringify(profile.raw),
+      JSON.stringify({ ...profile.raw, ...(EMAIL_ACCOUNT_PROVIDERS[provider].accountMetadata ?? {}) }),
     ],
   );
 
@@ -634,12 +685,58 @@ export async function getConnectedEmailAccounts(userId) {
   return result.rows;
 }
 
+export function isOAuthImapProvider(provider) {
+  return provider === "yahoo" || provider === "microsoft";
+}
+
+export function isImapBackedProvider(provider) {
+  return provider === "imap" || isOAuthImapProvider(provider);
+}
+
+export async function getImapAccessToken(account) {
+  return isOAuthImapProvider(account.provider) ? getValidEmailAccountAccessToken(account) : "";
+}
+
+function isProviderConfigured(provider) {
+  if (provider.manual) {
+    return true;
+  }
+
+  return isConfiguredSecret(provider.clientId) && isConfiguredSecret(provider.clientSecret);
+}
+
+function isConfiguredSecret(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return Boolean(normalized) && !normalized.startsWith("your-") && normalized !== "undefined" && normalized !== "null";
+}
+
 function parseScopes(scope) {
   if (typeof scope !== "string" || scope.trim().length === 0) {
     return EMAIL_ACCOUNT_PROVIDERS.gmail.scopes;
   }
 
   return scope.split(" ").filter(Boolean);
+}
+
+function decodeJwtPayload(token) {
+  if (typeof token !== "string") {
+    throw new Error("Microsoft did not return an identity token");
+  }
+
+  const [, payload] = token.split(".");
+  if (!payload) {
+    throw new Error("Microsoft returned an invalid identity token");
+  }
+
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("Microsoft returned an invalid identity token");
+  }
 }
 
 export async function getValidEmailAccountAccessToken(account) {

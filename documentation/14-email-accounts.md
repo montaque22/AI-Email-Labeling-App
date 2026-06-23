@@ -17,6 +17,7 @@ Emailable currently supports:
 | Account type | How it connects | How Emailable organizes mail |
 | --- | --- | --- |
 | Gmail | Google OAuth | Gmail labels |
+| Microsoft | Microsoft OAuth2 modern authentication | Outlook and Microsoft 365 folders |
 | Yahoo | Yahoo OAuth | Yahoo folders |
 | IMAP | Server settings and an app password | Mail folders |
 
@@ -26,23 +27,25 @@ Gmail supports multiple labels on a message, while folder-based accounts normall
 
 1. Open **Settings > Email Accounts**.
 2. Select **Add Email Account**.
-3. Choose Gmail, Yahoo, or IMAP.
+3. Choose Gmail, Microsoft, Yahoo, or IMAP.
 4. Complete the provider sign-in or enter the requested IMAP settings.
 5. Return to Emailable and confirm that the account shows **Connected**.
 
 When a new account is connected, Emailable attempts to create or match the labels and folders that already exist in your Emailable label list. If a matching label already exists at the provider, Emailable stores its provider ID instead of creating a duplicate.
 
-## Gmail and Yahoo authorization
+## Gmail, Microsoft, and Yahoo authorization
 
-Gmail and Yahoo open the provider's own sign-in and consent screen. Emailable does not receive the account password. The provider returns access and refresh credentials that let Emailable perform the actions you approved.
+These providers open their own sign-in and consent screen. Emailable does not receive the account password. The provider returns access and refresh credentials that let Emailable perform the actions you approved.
 
 For Gmail, approve the mailbox permission requested by Emailable. Signing in to the Emailable application with Google is not the same as connecting that Gmail mailbox for email management. The application login proves who you are; the mailbox connection grants permission to read and modify mail.
 
 If an account says it is missing the required scope, use its refresh action and approve the requested permission. Emailable cannot synchronize labels or process messages with a login-only permission.
 
+Microsoft accounts must use the dedicated Microsoft option. Emailable requests delegated IMAP and SMTP permissions and stores an encrypted refresh token so it can renew access. Organizational Microsoft 365 tenants may require administrator consent, and tenant policy may separately disable SMTP sending.
+
 ## Connect an IMAP account
 
-Choose IMAP for providers that do not have a dedicated connection in Emailable.
+Choose IMAP only for providers that do not have a dedicated connection in Emailable. Microsoft accounts should use the Microsoft OAuth option instead of this form.
 
 You will need:
 
@@ -96,4 +99,3 @@ When an account email is provided in an API request, Emailable uses it to search
 - OAuth redirects require the public Emailable application URL to match the redirect URL configured with the provider.
 - Provider rate limits still apply. Connecting several accounts or searching a large lookback can increase response time.
 - Privacy Mode only masks email addresses in the interface. It does not change what connected providers or enabled AI workflows can access.
-

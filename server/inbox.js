@@ -1,10 +1,16 @@
 import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
-import { getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
+import {
+  getConnectedEmailAccounts,
+  getImapAccessToken,
+  getValidEmailAccountAccessToken,
+  isImapBackedProvider,
+} from "./email-accounts.js";
 import {
   createImapComposeDraft,
   fetchImapInboxMessage,
   getImapInboxCount,
+  markImapInboxMessageRead,
   moveImapInboxMessageToFolder,
   moveImapInboxMessageToTrash,
   searchImapInboxMessages,
@@ -13,6 +19,7 @@ import {
 import { modifyGmailMessageLabels } from "./integrations.js";
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
+import nodemailer from "nodemailer";
 
 const INBOX_PAGE_SIZE = 10;
 
@@ -195,7 +202,7 @@ async function listSpecialMailboxMessages(userId, query, options) {
   const skippedAccounts = [];
 
   for (const account of accounts) {
-    if (!["gmail", "imap"].includes(account.provider)) {
+    if (account.provider !== "gmail" && !isImapBackedProvider(account.provider)) {
       skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: options.unsupportedReason });
       continue;
     }
@@ -221,8 +228,10 @@ async function listSpecialMailboxMessages(userId, query, options) {
         nextPageState[account.id] = result.nextPageToken;
         providerResults.push(...result.messages);
       } else {
+        const accessToken = await getImapAccessToken(account);
         const mailbox = account.metadata?.[options.imapMetadataKey] || options.fallbackMailbox;
         const result = await searchImapInboxMessages(account, {
+          accessToken,
           folder: mailbox,
           limit: INBOX_PAGE_SIZE,
           pageToken: pageToken[account.id] ?? "",
@@ -231,6 +240,7 @@ async function listSpecialMailboxMessages(userId, query, options) {
         nextPageState[account.id] = result.nextPageToken;
         providerResults.push(...result.messages.map((message) => ({
           ...message,
+          isRead: true,
           labels: [options.labelName],
           ...(options.gmailLabelId === "DRAFT" ? { draftId: message.id } : {}),
         })));
@@ -274,7 +284,7 @@ async function listInboxMessages(userId, query) {
       continue;
     }
 
-    if (!["gmail", "imap"].includes(account.provider)) {
+    if (account.provider !== "gmail" && !isImapBackedProvider(account.provider)) {
       skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: "Provider inbox is not implemented yet" });
       continue;
     }
@@ -293,10 +303,12 @@ async function listInboxMessages(userId, query) {
         nextPageState[account.id] = result.nextPageToken;
         providerResults.push(...result.messages);
       } else {
+        const accessToken = await getImapAccessToken(account);
         if (isSpecialImapMailbox(account, sync.providerLabelId)) {
           continue;
         }
         const result = await searchImapInboxMessages(account, {
+          accessToken,
           folder: sync.providerLabelId,
           limit: INBOX_PAGE_SIZE,
           pageToken: pageToken[account.id] ?? "",
@@ -334,17 +346,53 @@ async function getInboxMessage(userId, query) {
   if (account.provider === "gmail") {
     const accessToken = await getValidEmailAccountAccessToken(account);
     const message = await fetchGmailInboxMessage(accessToken, account, query.emailId);
-    return attachSingleRuleStatus(userId, message);
+    const isRead = await markGmailMessageRead(accessToken, message);
+    return attachSingleRuleStatus(userId, { ...message, isRead });
   }
 
-  if (account.provider === "imap") {
-    const message = await fetchImapInboxMessage(account, { emailId: query.emailId, mailbox: query.mailbox });
-    return attachSingleRuleStatus(userId, message);
+  if (isImapBackedProvider(account.provider)) {
+    const accessToken = await getImapAccessToken(account);
+    const message = await fetchImapInboxMessage(account, { accessToken, emailId: query.emailId, mailbox: query.mailbox });
+    const isRead = await markImapMessageRead(account, message, accessToken);
+    return attachSingleRuleStatus(userId, { ...message, isRead });
   }
 
   const error = new Error(`${account.provider} inbox detail is not implemented yet`);
   error.status = 501;
   throw error;
+}
+
+async function markGmailMessageRead(accessToken, message) {
+  if (message.isRead) {
+    return true;
+  }
+
+  try {
+    await modifyGmailMessageLabels({
+      accessToken,
+      emailId: message.id,
+      addLabelIds: [],
+      removeLabelIds: ["UNREAD"],
+    });
+    return true;
+  } catch (error) {
+    console.warn(`Could not mark Gmail message ${message.id} as read:`, error.message);
+    return false;
+  }
+}
+
+async function markImapMessageRead(account, message, accessToken = "") {
+  if (message.isRead) {
+    return true;
+  }
+
+  try {
+    const marked = await markImapInboxMessageRead(account, { emailId: message.id, mailbox: message.mailbox }, accessToken);
+    return marked !== false;
+  } catch (error) {
+    console.warn(`Could not mark IMAP message ${message.id} as read:`, error.message);
+    return false;
+  }
 }
 
 async function attachRuleStatus(userId, messages) {
@@ -405,8 +453,9 @@ async function getInboxLabelCounts(userId, { accountIds }) {
             count += estimate;
             hasCount = true;
           }
-        } else if (account.provider === "imap") {
-          const estimate = await getImapInboxCount(account, sync.providerLabelId);
+        } else if (isImapBackedProvider(account.provider)) {
+          const accessToken = await getImapAccessToken(account);
+          const estimate = await getImapInboxCount(account, sync.providerLabelId, accessToken);
           if (typeof estimate === "number") {
             count += estimate;
             hasCount = true;
@@ -437,8 +486,9 @@ async function createInboxDraft(userId, compose) {
   if (account.provider === "gmail") {
     const accessToken = await getValidEmailAccountAccessToken(account);
     draft = await createGmailComposeDraft(accessToken, account, compose);
-  } else if (account.provider === "imap") {
-    draft = await createImapComposeDraft({ account, input: compose });
+  } else if (isImapBackedProvider(account.provider)) {
+    const accessToken = await getImapAccessToken(account);
+    draft = await createImapComposeDraft({ account, input: compose, accessToken });
   } else {
     const error = new Error(`${account.provider} compose is not implemented yet`);
     error.status = 501;
@@ -477,8 +527,9 @@ async function updateInboxDraft(userId, draftId, compose, mailbox = "") {
   if (account.provider === "gmail") {
     const accessToken = await getValidEmailAccountAccessToken(account);
     draft = await updateGmailComposeDraft(accessToken, account, draftId, compose);
-  } else if (account.provider === "imap") {
-    draft = await updateImapComposeDraft({ account, draftId, mailbox, input: compose });
+  } else if (isImapBackedProvider(account.provider)) {
+    const accessToken = await getImapAccessToken(account);
+    draft = await updateImapComposeDraft({ account, draftId, mailbox, input: compose, accessToken });
   } else {
     const error = new Error(`${account.provider} draft updates are not implemented yet`);
     error.status = 501;
@@ -505,14 +556,16 @@ async function sendInboxEmail(userId, compose) {
     throw error;
   }
 
-  if (account.provider !== "gmail") {
+  if (account.provider !== "gmail" && account.provider !== "microsoft") {
     const error = new Error(`${providerDisplayName(account.provider)} sending is not implemented yet. Save as draft for this provider for now.`);
     error.status = 501;
     throw error;
   }
 
   const accessToken = await getValidEmailAccountAccessToken(account);
-  const sent = await sendGmailComposeMessage(accessToken, account, compose);
+  const sent = account.provider === "gmail"
+    ? await sendGmailComposeMessage(accessToken, account, compose)
+    : await sendMicrosoftComposeMessage(accessToken, account, compose);
 
   await emitWebhookEvent(userId, "email.sent", {
     to: splitAddressList(compose.to),
@@ -584,8 +637,10 @@ async function relabelInboxMessages(userId, action) {
               ? [sourceSync.providerLabelId]
               : [],
         });
-      } else if (account.provider === "imap") {
+      } else if (isImapBackedProvider(account.provider)) {
+        const accessToken = await getImapAccessToken(account);
         await moveImapInboxMessageToFolder({
+          accessToken,
           account,
           emailId: message.emailId,
           sourceMailbox: message.mailbox,
@@ -675,8 +730,10 @@ async function setInboxMessagesLabel(userId, action) {
           addLabelIds: targetSync?.providerLabelId ? [targetSync.providerLabelId] : [],
           removeLabelIds,
         });
-      } else if (account.provider === "imap") {
+      } else if (isImapBackedProvider(account.provider)) {
+        const accessToken = await getImapAccessToken(account);
         await moveImapInboxMessageToFolder({
+          accessToken,
           account,
           emailId: message.emailId,
           sourceMailbox: message.mailbox,
@@ -727,8 +784,9 @@ async function deleteInboxMessages(userId, messages) {
       if (account.provider === "gmail") {
         const accessToken = await getValidEmailAccountAccessToken(account);
         await trashGmailMessage(accessToken, message.emailId);
-      } else if (account.provider === "imap") {
-        await moveImapInboxMessageToTrash({ account, emailId: message.emailId, sourceMailbox: message.mailbox });
+      } else if (isImapBackedProvider(account.provider)) {
+        const accessToken = await getImapAccessToken(account);
+        await moveImapInboxMessageToTrash({ account, accessToken, emailId: message.emailId, sourceMailbox: message.mailbox });
       } else {
         throw new Error(`${account.provider} delete is not implemented yet`);
       }
@@ -866,6 +924,7 @@ async function fetchGmailInboxMessage(accessToken, account, emailId) {
     bcc: headers.bcc || "",
     subject: headers.subject || "",
     date: new Date(Number(message.internalDate || Date.parse(headers.date) || Date.now())).toISOString(),
+    isRead: !Array.isArray(message.labelIds) || !message.labelIds.includes("UNREAD"),
     bodyText: body.text,
     bodyHtml: sanitizeEmailHtml(body.html),
     attachments: collectGmailAttachments(message.payload),
@@ -1030,6 +1089,41 @@ async function sendGmailComposeMessage(accessToken, account, compose) {
   return response.json();
 }
 
+async function sendMicrosoftComposeMessage(accessToken, account, compose) {
+  const metadata = account.metadata ?? {};
+  const transport = nodemailer.createTransport({
+    host: metadata.smtpHost || "smtp-mail.outlook.com",
+    port: Number(metadata.smtpPort ?? 587),
+    secure: metadata.smtpSecure === true,
+    requireTLS: true,
+    auth: {
+      type: "OAuth2",
+      user: account.email,
+      accessToken,
+    },
+  });
+
+  try {
+    const result = await transport.sendMail({
+      from: account.email,
+      to: splitAddressList(compose.to),
+      cc: splitAddressList(compose.cc),
+      bcc: splitAddressList(compose.bcc),
+      subject: compose.subject,
+      text: compose.bodyText,
+    });
+    return { id: result.messageId || null, threadId: null };
+  } catch (error) {
+    const providerError = new Error(
+      `Microsoft rejected the send request. Reconnect the account and confirm SMTP AUTH is allowed. ${error?.message || ""}`.trim(),
+    );
+    providerError.status = 502;
+    throw providerError;
+  } finally {
+    transport.close();
+  }
+}
+
 async function trashGmailMessage(accessToken, emailId) {
   const response = await providerFetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}/trash`,
@@ -1057,6 +1151,7 @@ async function gmailMessageToInboxListItem(message, account, label, accessToken 
     subject: headers.subject || "",
     snippet: message.snippet || "",
     date: date.toISOString(),
+    isRead: !Array.isArray(message.labelIds) || !message.labelIds.includes("UNREAD"),
     labels: [label.name],
     hasAttachments: false,
     replyCount: accessToken && message.threadId ? await getGmailSentReplyCount(accessToken, message.threadId, message.id) : 0,
@@ -1346,6 +1441,9 @@ function providerDisplayName(provider) {
   }
   if (provider === "imap") {
     return "IMAP";
+  }
+  if (provider === "microsoft") {
+    return "Microsoft";
   }
   return provider;
 }
