@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.44
+
+- Fixed PWA service worker navigation so OAuth refresh/connect URLs reach the backend instead of loading the app shell.
+
 ## 0.1.43
 
 - Added Progressive Web App support with installable app metadata, icons, and a conservative service worker.
