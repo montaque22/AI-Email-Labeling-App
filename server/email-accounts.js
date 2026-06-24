@@ -349,6 +349,10 @@ function parseImapAccountInput(body) {
 }
 
 export async function ensureSsoEmailAccount(userId) {
+  if (typeof userId === "string" && userId.startsWith("home-assistant:")) {
+    return;
+  }
+
   const authAccountResult = await dbPool.query(
     `
       select a."accountId",

@@ -8055,8 +8055,8 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
         fetch("/api/email-accounts/providers", { credentials: "include" }),
         fetch("/api/email-accounts/polling", { credentials: "include" }),
       ]);
-      const accountsData = await accountsResponse.json();
-      const providersData = await providersResponse.json();
+      const accountsData = await accountsResponse.json().catch(() => ({}));
+      const providersData = await providersResponse.json().catch(() => ({}));
       const pollingData = await pollingResponse.json().catch(() => null);
 
       if (!accountsResponse.ok) {
@@ -8071,7 +8071,12 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
         }
         return (accountsData.accounts ?? []).find((account: EmailAccount) => account.id === selected.id) ?? null;
       });
-      setProviders(providersData.providers ?? []);
+      if (providersResponse.ok) {
+        setProviders(providersData.providers ?? []);
+      } else {
+        setProviders([]);
+      }
+
       if (pollingResponse.ok && pollingData) {
         setPolling(pollingData);
       } else if (pollingData?.error) {

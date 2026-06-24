@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.50
+
+- Fixed Email Accounts loading for Home Assistant users without a Google SSO backing account.
+- Made Email Accounts loading tolerate secondary provider or polling setting response failures.
+
 ## 0.1.49
 
 - Redirect email account reconnect and token refresh flows back to the Email Accounts page after OAuth completes.
