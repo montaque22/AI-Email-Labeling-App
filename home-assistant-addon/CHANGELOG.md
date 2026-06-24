@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.52
+
+- Fixed add-on URLs that include the public Home Assistant slug path, such as Nabu Casa add-on URLs.
+
 ## 0.1.51
 
 - Fixed Home Assistant ingress API routing by injecting the add-on ingress base path into the app shell.

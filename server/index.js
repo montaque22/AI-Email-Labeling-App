@@ -25,6 +25,7 @@ const indexHtmlPath = path.join(distDir, "index.html");
 
 const app = express();
 const port = resolveServerPort(process.env.PORT);
+const configuredAppBasePath = resolveConfiguredAppBasePath();
 
 function resolveServerPort(value) {
   const portNumber = value === undefined || value === "" ? 3000 : Number(value);
@@ -33,6 +34,34 @@ function resolveServerPort(value) {
   }
   return portNumber;
 }
+
+function resolveConfiguredAppBasePath() {
+  for (const value of [process.env.APP_URL, process.env.BETTER_AUTH_URL]) {
+    if (!value) {
+      continue;
+    }
+
+    try {
+      const pathname = new URL(value).pathname.replace(/\/$/, "");
+      if (pathname && pathname !== "/") {
+        return pathname;
+      }
+    } catch {
+      // Ignore invalid environment values so local development can still start.
+    }
+  }
+
+  return "";
+}
+
+app.use((req, _res, next) => {
+  if (configuredAppBasePath && (req.url === configuredAppBasePath || req.url.startsWith(`${configuredAppBasePath}/`))) {
+    const strippedUrl = req.url.slice(configuredAppBasePath.length) || "/";
+    req.url = strippedUrl.startsWith("/") ? strippedUrl : `/${strippedUrl}`;
+  }
+
+  next();
+});
 
 app.get("/api/auth-settings", (_req, res) => {
   res.json({
@@ -161,7 +190,7 @@ async function renderIndexHtml(req) {
 function getIngressBasePath(req) {
   const ingressPath = String(req.get("x-ingress-path") || "").trim();
   if (!ingressPath.includes("/api/hassio_ingress/")) {
-    return "";
+    return configuredAppBasePath;
   }
 
   return ingressPath.replace(/\/$/, "");
