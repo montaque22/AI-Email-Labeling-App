@@ -15,6 +15,11 @@ export function getRuntimeBasePath() {
     return ingressMatch[1].replace(/\/$/, "");
   }
 
+  const homeAssistantBase = readHomeAssistantIngressBase();
+  if (homeAssistantBase) {
+    return homeAssistantBase;
+  }
+
   return "";
 }
 
@@ -101,9 +106,25 @@ function readConfiguredBasePath() {
   return value.startsWith("/") ? value.replace(/\/$/, "") : `/${value.replace(/\/$/, "")}`;
 }
 
+function readHomeAssistantIngressBase() {
+  const hassUrl = window.hassUrl;
+  if (typeof hassUrl !== "function") {
+    return "";
+  }
+
+  try {
+    const testUrl = new URL(hassUrl("/api/health"), window.location.origin);
+    const match = testUrl.pathname.match(/^(.*\/api\/hassio_ingress\/[^/]+)\/api\/health$/);
+    return match?.[1]?.replace(/\/$/, "") ?? "";
+  } catch {
+    return "";
+  }
+}
+
 declare global {
   interface Window {
     __EMAILABLE_BASE_PATH__?: string;
     __emailableFetchBaseInstalled?: boolean;
+    hassUrl?: (path: string) => string;
   }
 }

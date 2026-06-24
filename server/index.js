@@ -1,4 +1,5 @@
 import express from "express";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { toNodeHandler } from "better-auth/node";
@@ -99,7 +100,7 @@ registerByoAiRoutes(app);
 registerMcpRoutes(app);
 registerPollingRoutes(app);
 
-app.use(express.static(distDir));
+app.use(express.static(distDir, { index: false }));
 
 app.get(/.*\/(manifest\.webmanifest|registerSW\.js|sw\.js|workbox-[^/]+\.js|pwa-(?:192|512|maskable)\.png)$/, (req, res, next) => {
   const assetName = req.params[0];
@@ -138,9 +139,33 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get(/.*/, (_req, res) => {
-  res.sendFile(indexHtmlPath);
+app.get(/.*/, async (req, res, next) => {
+  try {
+    res.type("html").send(await renderIndexHtml(req));
+  } catch (error) {
+    next(error);
+  }
 });
+
+async function renderIndexHtml(req) {
+  const html = await fs.readFile(indexHtmlPath, "utf8");
+  const basePath = getIngressBasePath(req);
+  if (!basePath) {
+    return html;
+  }
+
+  const baseScript = `<script>window.__EMAILABLE_BASE_PATH__=${JSON.stringify(basePath)};</script>`;
+  return html.replace("</head>", `${baseScript}</head>`);
+}
+
+function getIngressBasePath(req) {
+  const ingressPath = String(req.get("x-ingress-path") || "").trim();
+  if (!ingressPath.includes("/api/hassio_ingress/")) {
+    return "";
+  }
+
+  return ingressPath.replace(/\/$/, "");
+}
 
 async function startServer() {
   try {

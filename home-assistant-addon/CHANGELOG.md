@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.51
+
+- Fixed Home Assistant ingress API routing by injecting the add-on ingress base path into the app shell.
+
 ## 0.1.50
 
 - Fixed Email Accounts loading for Home Assistant users without a Google SSO backing account.
