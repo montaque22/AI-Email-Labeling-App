@@ -3,15 +3,19 @@ import { dbPool } from "./db.js";
 
 const localPort = process.env.PORT || "3000";
 const defaultLocalUrl = `http://127.0.0.1:${localPort}`;
-const baseURL = process.env.BETTER_AUTH_URL || process.env.APP_URL || defaultLocalUrl;
+const configuredBaseURL = process.env.BETTER_AUTH_URL || process.env.APP_URL || defaultLocalUrl;
+const baseURL = normalizeBetterAuthBaseURL(configuredBaseURL);
 const isProduction = process.env.NODE_ENV === "production";
 const authSecret = process.env.BETTER_AUTH_SECRET || (isProduction ? undefined : "local-dev-better-auth-secret");
 const googleClientId = process.env.GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 const staticTrustedOrigins = [
   baseURL,
+  configuredBaseURL,
   process.env.APP_URL,
+  process.env.BETTER_AUTH_URL,
   ...getHomeAssistantUiOrigins(baseURL),
+  ...getHomeAssistantUiOrigins(configuredBaseURL),
   ...getHomeAssistantUiOrigins(process.env.APP_URL),
   "http://*:8123",
   "https://*:8123",
@@ -111,4 +115,16 @@ function getHomeAssistantUiOrigins(value) {
 
   url.port = "8123";
   return [url.origin];
+}
+
+function normalizeBetterAuthBaseURL(value) {
+  const url = safeParseUrl(value);
+  if (!url) {
+    return value;
+  }
+
+  url.pathname = "";
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/$/, "");
 }

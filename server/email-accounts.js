@@ -608,31 +608,52 @@ function getOAuthReturnUrl(req) {
   const requestOrigin = req.get("origin");
   const configuredBaseUrl = process.env.APP_URL || process.env.BETTER_AUTH_URL;
   const requestBaseUrl = `${req.protocol}://${req.get("host")}`;
-  const appOrigin = new URL(configuredBaseUrl || requestBaseUrl).origin;
+  const appBaseUrl = new URL(configuredBaseUrl || requestBaseUrl);
+  const appOrigin = appBaseUrl.origin;
 
   try {
     const url = new URL(referer || "");
     const isSameOrigin = url.origin === appOrigin || Boolean(requestOrigin && url.origin === requestOrigin);
     const isAppPage = !url.pathname.includes("/api/");
     if (isSameOrigin && isAppPage) {
-      return url.toString();
+      return normalizeAppPageUrl(url, appBaseUrl).toString();
     }
   } catch {
     // Direct app access falls back to the Email Accounts page.
   }
 
-  return new URL("/settings/email-accounts", appOrigin).toString();
+  return new URL("settings/email-accounts", ensureTrailingSlash(appBaseUrl)).toString();
 }
 
 function redirectEmailAccountResult(res, state, status) {
   const fallback = "/settings/email-accounts";
   try {
-    const target = state?.returnUrl ? new URL(state.returnUrl) : new URL(fallback, process.env.APP_URL || process.env.BETTER_AUTH_URL || "http://127.0.0.1:3000");
+    const appBaseUrl = new URL(process.env.APP_URL || process.env.BETTER_AUTH_URL || "http://127.0.0.1:3000");
+    const target = state?.returnUrl
+      ? normalizeAppPageUrl(new URL(state.returnUrl), appBaseUrl)
+      : new URL(fallback.replace(/^\//, ""), ensureTrailingSlash(appBaseUrl));
     target.searchParams.set("emailAccountStatus", status);
     res.redirect(target.toString());
   } catch {
     res.redirect(`${fallback}?emailAccountStatus=${status}`);
   }
+}
+
+function normalizeAppPageUrl(url, appBaseUrl) {
+  const basePath = appBaseUrl.pathname.replace(/\/$/, "");
+  if (!basePath || basePath === "/" || url.origin !== appBaseUrl.origin || url.pathname.startsWith(`${basePath}/`)) {
+    return url;
+  }
+
+  const normalized = new URL(url.toString());
+  normalized.pathname = `${basePath}${url.pathname.startsWith("/") ? url.pathname : `/${url.pathname}`}`;
+  return normalized;
+}
+
+function ensureTrailingSlash(url) {
+  const normalized = new URL(url.toString());
+  normalized.pathname = normalized.pathname.endsWith("/") ? normalized.pathname : `${normalized.pathname}/`;
+  return normalized;
 }
 
 function verifyState(state) {

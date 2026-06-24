@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.54
+
+- Fixed Better Auth session routes when Home Assistant add-on URLs include an ingress slug path.
+
+## 0.1.53
+
+- Fixed Gmail account OAuth return URLs for Home Assistant add-on installs using a public add-on slug path.
+- Added defensive routing for Home Assistant ingress-prefixed API requests.
+
 ## 0.1.52
 
 - Fixed add-on URLs that include the public Home Assistant slug path, such as Nabu Casa add-on URLs.

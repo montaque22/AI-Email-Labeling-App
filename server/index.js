@@ -26,6 +26,7 @@ const indexHtmlPath = path.join(distDir, "index.html");
 const app = express();
 const port = resolveServerPort(process.env.PORT);
 const configuredAppBasePath = resolveConfiguredAppBasePath();
+const authHandler = toNodeHandler(auth);
 
 function resolveServerPort(value) {
   const portNumber = value === undefined || value === "" ? 3000 : Number(value);
@@ -54,7 +55,19 @@ function resolveConfiguredAppBasePath() {
   return "";
 }
 
+if (configuredAppBasePath) {
+  app.all(`${configuredAppBasePath}/api/auth/*splat`, authHandler);
+}
+
+app.all(/\/api\/hassio_ingress\/[^/]+\/api\/auth\/.*/, (req, res) => {
+  const strippedUrl = stripHomeAssistantIngressPath(req.url);
+  req.url = configuredAppBasePath ? `${configuredAppBasePath}${strippedUrl}` : strippedUrl;
+  authHandler(req, res);
+});
+
 app.use((req, _res, next) => {
+  req.url = stripHomeAssistantIngressPath(req.url);
+
   if (configuredAppBasePath && (req.url === configuredAppBasePath || req.url.startsWith(`${configuredAppBasePath}/`))) {
     const strippedUrl = req.url.slice(configuredAppBasePath.length) || "/";
     req.url = strippedUrl.startsWith("/") ? strippedUrl : `/${strippedUrl}`;
@@ -62,6 +75,16 @@ app.use((req, _res, next) => {
 
   next();
 });
+
+function stripHomeAssistantIngressPath(url) {
+  const match = url.match(/^\/api\/hassio_ingress\/[^/]+(?=\/)/);
+  if (!match) {
+    return url;
+  }
+
+  const strippedUrl = url.slice(match[0].length) || "/";
+  return strippedUrl.startsWith("/") ? strippedUrl : `/${strippedUrl}`;
+}
 
 app.get("/api/auth-settings", (_req, res) => {
   res.json({
@@ -84,7 +107,7 @@ app.get("/api/home-assistant-session", async (req, res) => {
   }
 });
 
-app.all("/api/auth/*splat", toNodeHandler(auth));
+app.all("/api/auth/*splat", authHandler);
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
