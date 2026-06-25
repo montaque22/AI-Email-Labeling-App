@@ -11093,7 +11093,9 @@ function parseEmailAccountOAuthCallbackUrl(value: string): EmailAccountOAuthCall
   try {
     const url = new URL(trimmed, window.location.origin);
     const normalizedPath = stripRuntimeBasePath(url.pathname);
-    const match = normalizedPath.match(/^\/api\/email-accounts\/callback\/([^/]+)$/);
+    const match =
+      normalizedPath.match(/^\/api\/email-accounts\/callback\/([^/]+)$/) ??
+      url.pathname.match(/(?:^|\/)api\/email-accounts\/callback\/([^/]+)$/);
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
     if (!match || !code || !state) {
