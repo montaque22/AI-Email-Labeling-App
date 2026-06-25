@@ -105,6 +105,18 @@ type LabelSync = {
   lastError?: string | null;
 };
 
+type ProviderLabelOption = {
+  name: string;
+  description: string;
+  exists: boolean;
+  accounts: Array<{
+    emailAccountId: string;
+    email: string;
+    provider: string;
+    providerLabelId: string;
+  }>;
+};
+
 type EmailAccount = {
   id: string;
   provider: string;
@@ -498,11 +510,13 @@ const settingsSubItems = [
   { id: "mcp-server" as const, label: "MCP Server" },
 ];
 
+const LAST_PAGE_STORAGE_KEY = "emailable-last-page";
+
 export function App() {
   const session = authClient.useSession();
   const [homeAssistantUser, setHomeAssistantUser] = useState<AuthUser | null>(null);
   const [isHomeAssistantSessionPending, setIsHomeAssistantSessionPending] = useState(true);
-  const [activePage, setActivePage] = useState<Page>(() => pageFromPath(window.location.pathname));
+  const [activePage, setActivePage] = useState<Page>(() => initialPageFromLocation());
   const [ruleToOpen, setRuleToOpen] = useState<string | null>(null);
   const [ruleInitialFilter, setRuleInitialFilter] = useState<RulePendingFilter | null>(null);
   const user = homeAssistantUser ?? (session.data?.user ? mapAuthUser(session.data.user) : null);
@@ -530,7 +544,9 @@ export function App() {
 
   useEffect(() => {
     function handlePopState() {
-      setActivePage(pageFromPath(window.location.pathname));
+      const page = pageFromPath(window.location.pathname);
+      setActivePage(page);
+      rememberActivePage(page);
       setRuleToOpen(null);
       setRuleInitialFilter(null);
     }
@@ -541,11 +557,12 @@ export function App() {
 
   function navigate(page: Page) {
     setActivePage(page);
+    rememberActivePage(page);
     setRuleInitialFilter(null);
     if (page !== "rules") {
       setRuleToOpen(null);
     }
-    const path = pathForPage(page);
+    const path = getRuntimeUrl(pathForPage(page));
     if (window.location.pathname !== path) {
       window.history.pushState({}, "", path);
     }
@@ -555,8 +572,10 @@ export function App() {
     setRuleToOpen(emailId);
     setRuleInitialFilter(null);
     setActivePage("rules");
-    if (window.location.pathname !== pathForPage("rules")) {
-      window.history.pushState({}, "", pathForPage("rules"));
+    rememberActivePage("rules");
+    const path = getRuntimeUrl(pathForPage("rules"));
+    if (window.location.pathname !== path) {
+      window.history.pushState({}, "", path);
     }
   }
 
@@ -564,8 +583,10 @@ export function App() {
     setRuleToOpen(null);
     setRuleInitialFilter("pending");
     setActivePage("rules");
-    if (window.location.pathname !== pathForPage("rules")) {
-      window.history.pushState({}, "", pathForPage("rules"));
+    rememberActivePage("rules");
+    const path = getRuntimeUrl(pathForPage("rules"));
+    if (window.location.pathname !== path) {
+      window.history.pushState({}, "", path);
     }
   }
 
@@ -1189,7 +1210,7 @@ function AuthenticatedLayout({
               privacyMode={privacyMode}
             />
           )}
-          {activePage === "inbox" && <InboxPage onOpenMobileMenu={() => setMobileMenuOpen(true)} privacyMode={privacyMode} />}
+          {activePage === "inbox" && <InboxPage onNavigate={onNavigate} onOpenMobileMenu={() => setMobileMenuOpen(true)} privacyMode={privacyMode} />}
           {activePage === "labels" && <LabelsPage privacyMode={privacyMode} />}
           {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} privacyMode={privacyMode} />}
           {activePage === "metrics" && <MetricsPage />}
@@ -1263,11 +1284,11 @@ function OverviewPage({
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
-          actionLabel="View metrics"
+          actionLabel="View inbox"
           icon={MailCheck}
           label="Emails processed today"
           loading={isLoading}
-          onAction={() => onNavigate("metrics")}
+          onAction={() => onNavigate("inbox")}
           value={formatNumber(overview?.todayLabeled ?? 0)}
         />
         <MetricCard
@@ -1448,9 +1469,18 @@ function DocumentationPage({
   );
 }
 
-function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => void; privacyMode: boolean }) {
+function InboxPage({
+  onNavigate,
+  onOpenMobileMenu,
+  privacyMode,
+}: {
+  onNavigate: (page: Page) => void;
+  onOpenMobileMenu: () => void;
+  privacyMode: boolean;
+}) {
   const [labels, setLabels] = useState<Label[]>([]);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
+  const [accountsNeedingRefresh, setAccountsNeedingRefresh] = useState<EmailAccount[]>([]);
   const [inboxMode, setInboxMode] = useState<InboxMode>("inbox");
   const [selectedLabelId, setSelectedLabelId] = useState(INBOX_ALL_LABEL_ID);
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
@@ -1515,6 +1545,7 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
         setAccounts(loadedAccounts);
         setSelectedAccountIds(loadedAccounts.map((account: EmailAccount) => account.id));
         setIsByoAiActive(Boolean(byoAiResponse.ok && byoAiData.aiEnabled));
+        void checkInboxAccountTokenStatuses(loadedAccounts);
       } catch {
         setError("Could not load Inbox setup.");
       } finally {
@@ -1524,6 +1555,35 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
 
     void loadBootstrap();
   }, []);
+
+  async function checkInboxAccountTokenStatuses(loadedAccounts: EmailAccount[]) {
+    if (loadedAccounts.length === 0) {
+      setAccountsNeedingRefresh([]);
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/email-accounts/token-status", {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        return;
+      }
+
+      const statuses = Array.isArray(data.accounts) ? (data.accounts as EmailAccount[]) : [];
+      const statusById = new Map(statuses.map((account) => [account.id, account]));
+      setAccountsNeedingRefresh(
+        loadedAccounts
+          .map((account) => ({ ...account, ...(statusById.get(account.id) ?? {}) }))
+          .filter((account) => account.status === "needs_refresh"),
+      );
+    } catch {
+      // Inbox loading should not fail just because the token status check failed.
+    }
+  }
 
   useEffect(() => {
     if (selectedAccountIds.length === 0 || (inboxMode === "inbox" && !selectedLabelId)) {
@@ -2175,6 +2235,25 @@ function InboxPage({ onOpenMobileMenu, privacyMode }: { onOpenMobileMenu: () => 
         >
           {isBulkActionRunning ? <Loader /> : <Trash2 className="h-5 w-5" />}
         </Button>
+      ) : null}
+
+      {accountsNeedingRefresh.length > 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 shadow-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <p>
+              {accountsNeedingRefresh.length === 1
+                ? `${formatEmailForPrivacy(accountsNeedingRefresh[0].email, privacyMode)} needs to be refreshed before Emailable can reliably fetch mail.`
+                : `${accountsNeedingRefresh.length} email accounts need to be refreshed before Emailable can reliably fetch mail.`}
+            </p>
+            <button
+              className="w-fit cursor-pointer font-medium text-amber-950 underline underline-offset-4 hover:text-amber-800"
+              onClick={() => onNavigate("email-accounts")}
+              type="button"
+            >
+              Go to Email Accounts
+            </button>
+          </div>
+        </div>
       ) : null}
 
       <div className={cn("grid min-w-0 gap-4 xl:gap-5", inboxMode === "inbox" ? "xl:grid-cols-[260px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
@@ -4055,6 +4134,14 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
   const [isAddLabelModalOpen, setIsAddLabelModalOpen] = useState(false);
+  const [isAddLabelMenuOpen, setIsAddLabelMenuOpen] = useState(false);
+  const [isCsvUploadModalOpen, setIsCsvUploadModalOpen] = useState(false);
+  const [isProviderImportModalOpen, setIsProviderImportModalOpen] = useState(false);
+  const [providerLabelOptions, setProviderLabelOptions] = useState<ProviderLabelOption[]>([]);
+  const [selectedProviderLabelNames, setSelectedProviderLabelNames] = useState<string[]>([]);
+  const [providerLabelDescriptions, setProviderLabelDescriptions] = useState<Record<string, string>>({});
+  const [isLoadingProviderLabels, setIsLoadingProviderLabels] = useState(false);
+  const [providerImportError, setProviderImportError] = useState<string | null>(null);
   const [confidenceThreshold, setConfidenceThreshold] = useState("0.90");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -4063,7 +4150,7 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [labelAction, setLabelAction] = useState<
-    "create" | "update" | "delete" | "retry" | "sync" | "refresh" | "upload" | null
+    "create" | "update" | "delete" | "retry" | "sync" | "refresh" | "upload" | "provider" | null
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -4238,9 +4325,106 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
       }
 
       await loadLabels();
-      setIsAddLabelModalOpen(false);
+      setIsCsvUploadModalOpen(false);
     } catch {
       setUploadError("Could not upload labels.");
+    } finally {
+      setIsSaving(false);
+      setLabelAction(null);
+    }
+  }
+
+  async function openProviderImportModal() {
+    setIsAddLabelMenuOpen(false);
+    setProviderImportError(null);
+    setIsProviderImportModalOpen(true);
+    setIsLoadingProviderLabels(true);
+
+    try {
+      const response = await fetch("/api/labels/provider-options", { credentials: "include" });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setProviderImportError(data.error ?? "Could not load labels from providers.");
+        setProviderLabelOptions([]);
+        return;
+      }
+
+      const options = (data.labels ?? []) as ProviderLabelOption[];
+      setProviderLabelOptions(options);
+      setSelectedProviderLabelNames(options.filter((option) => option.exists).map((option) => option.name));
+      setProviderLabelDescriptions(
+        options.reduce<Record<string, string>>((descriptions, option) => {
+          descriptions[option.name] = option.description ?? "";
+          return descriptions;
+        }, {}),
+      );
+
+      if (data.errors?.length) {
+        setProviderImportError(
+          `Loaded labels from available accounts, but ${data.errors.length} account${data.errors.length === 1 ? "" : "s"} could not be checked.`,
+        );
+      }
+    } catch {
+      setProviderImportError("Could not load labels from providers.");
+      setProviderLabelOptions([]);
+    } finally {
+      setIsLoadingProviderLabels(false);
+    }
+  }
+
+  function toggleProviderLabel(option: ProviderLabelOption) {
+    if (option.exists || isSaving) {
+      return;
+    }
+
+    setSelectedProviderLabelNames((current) =>
+      current.includes(option.name) ? current.filter((name) => name !== option.name) : [...current, option.name],
+    );
+  }
+
+  async function importProviderLabels() {
+    const selectedOptions = providerLabelOptions.filter((option) => selectedProviderLabelNames.includes(option.name) && !option.exists);
+    if (selectedOptions.length === 0) {
+      setProviderImportError("Select at least one provider label that is not already in Emailable.");
+      return;
+    }
+
+    for (const option of selectedOptions) {
+      const validationError = validateLabelInput(option.name, providerLabelDescriptions[option.name] ?? "");
+      if (validationError) {
+        setProviderImportError(`${option.name}: ${validationError}`);
+        return;
+      }
+    }
+
+    setProviderImportError(null);
+    setIsSaving(true);
+    setLabelAction("provider");
+
+    try {
+      const response = await fetch("/api/labels/import-provider", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          labels: selectedOptions.map((option) => ({
+            name: option.name,
+            description: providerLabelDescriptions[option.name] ?? "",
+          })),
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setProviderImportError(data.error ?? "Could not import labels from providers.");
+        return;
+      }
+
+      setIsProviderImportModalOpen(false);
+      await loadLabels();
+    } catch {
+      setProviderImportError("Could not import labels from providers.");
     } finally {
       setIsSaving(false);
       setLabelAction(null);
@@ -4549,31 +4733,180 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap justify-between gap-2 border-t border-zinc-200 pt-4">
-                  <div>
-                    <input
-                      accept=".csv,text/csv"
-                      className="hidden"
-                      onChange={(event) => void handleCsvUpload(event)}
-                      ref={csvUploadRef}
-                      type="file"
-                    />
-                    <Button disabled={isSaving} onClick={() => csvUploadRef.current?.click()} type="button" variant="outline">
-                      {labelAction === "upload" ? <Loader /> : <Upload className="h-4 w-4" />}
-                      {labelAction === "upload" ? "Uploading..." : "Upload CSV"}
-                    </Button>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button disabled={isSaving} onClick={() => setIsAddLabelModalOpen(false)} type="button" variant="outline">
-                      Cancel
-                    </Button>
-                    <Button disabled={isSaving} type="submit">
-                      {labelAction === "create" ? <Loader /> : <Plus className="h-4 w-4" />}
-                      {labelAction === "create" ? "Adding..." : "Add Label"}
-                    </Button>
-                  </div>
+                <div className="flex flex-wrap justify-end gap-2 border-t border-zinc-200 pt-4">
+                  <Button disabled={isSaving} onClick={() => setIsAddLabelModalOpen(false)} type="button" variant="outline">
+                    Cancel
+                  </Button>
+                  <Button disabled={isSaving} type="submit">
+                    {labelAction === "create" ? <Loader /> : <Plus className="h-4 w-4" />}
+                    {labelAction === "create" ? "Adding..." : "Add Label"}
+                  </Button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {isCsvUploadModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+          <div className="w-[min(640px,100%)] rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+            <div className="rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-base font-semibold text-zinc-950">Upload Labels CSV</h2>
+                  <p className="mt-1 text-sm text-zinc-500">
+                    Upload up to 20 labels at a time. The CSV header must be exactly <span className="font-medium text-zinc-700">Name, Description</span>.
+                  </p>
+                </div>
+                <Button
+                  aria-label="Close CSV upload modal"
+                  disabled={isSaving}
+                  onClick={() => setIsCsvUploadModalOpen(false)}
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+
+              {uploadError ? <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{uploadError}</p> : null}
+
+              <div
+                className="prose prose-sm mt-5 max-w-none rounded-md border border-zinc-200 bg-white/45 p-4"
+                dangerouslySetInnerHTML={{
+                  __html: renderMarkdownHtml(`| Name | Description |\n| --- | --- |\n| Action Required | Emails that need a response or decision. |\n| Reference | Emails worth keeping for later. |`),
+                }}
+              />
+
+              <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-zinc-200 pt-4">
+                <input
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={(event) => void handleCsvUpload(event)}
+                  ref={csvUploadRef}
+                  type="file"
+                />
+                <Button disabled={isSaving} onClick={() => setIsCsvUploadModalOpen(false)} type="button" variant="outline">
+                  Cancel
+                </Button>
+                <Button disabled={isSaving} onClick={() => csvUploadRef.current?.click()} type="button">
+                  {labelAction === "upload" ? <Loader /> : <Upload className="h-4 w-4" />}
+                  {labelAction === "upload" ? "Uploading..." : "Choose File"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {isProviderImportModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+          <div className="flex max-h-[90vh] w-[min(920px,100%)] flex-col rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+            <div className="flex min-h-0 flex-1 flex-col rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
+              <div className="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
+                <div>
+                  <h2 className="text-base font-semibold text-zinc-950">Choose from Providers</h2>
+                  <p className="mt-1 max-w-3xl text-sm text-zinc-500">
+                    Import existing labels or folders from connected accounts. If a chosen label is missing from another account, Emailable will create it there during sync.
+                  </p>
+                </div>
+                <Button
+                  aria-label="Close provider labels modal"
+                  disabled={isSaving}
+                  onClick={() => setIsProviderImportModalOpen(false)}
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+                {providerImportError ? <p className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{providerImportError}</p> : null}
+                {isLoadingProviderLabels ? (
+                  <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
+                    Loading labels and folders from providers...
+                  </div>
+                ) : providerLabelOptions.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
+                    No provider labels or folders were found.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto rounded-md border border-zinc-200">
+                    <div className="grid min-w-[760px] grid-cols-[48px_1fr_1.6fr] gap-3 border-b border-zinc-200 bg-white/35 px-4 py-3 text-xs font-medium uppercase text-zinc-500">
+                      <span />
+                      <span>Name</span>
+                      <span>Description</span>
+                    </div>
+                    <div className="divide-y divide-zinc-200">
+                      {providerLabelOptions.map((option) => {
+                        const isSelected = selectedProviderLabelNames.includes(option.name);
+                        const disabled = option.exists;
+                        return (
+                          <div
+                            className={cn(
+                              "grid min-w-[760px] grid-cols-[48px_1fr_1.6fr] gap-3 px-4 py-3",
+                              disabled ? "bg-zinc-100/60 text-zinc-400" : "bg-white/20",
+                            )}
+                            key={option.name}
+                          >
+                            <input
+                              checked={isSelected}
+                              className="mt-2 h-4 w-4"
+                              disabled={disabled || isSaving}
+                              onChange={() => toggleProviderLabel(option)}
+                              type="checkbox"
+                            />
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="truncate text-sm font-medium text-zinc-950">{option.name}</p>
+                                {disabled ? <Badge className="border-zinc-200 bg-zinc-100 text-zinc-500">Already added</Badge> : null}
+                              </div>
+                              <p className="mt-1 text-xs text-zinc-500">
+                                Found in{" "}
+                                {option.accounts
+                                  .map((account) => `${providerLabel(account.provider)} ${formatEmailForPrivacy(account.email, privacyMode)}`)
+                                  .join(", ")}
+                              </p>
+                            </div>
+                            <div>
+                              <textarea
+                                className="min-h-20 w-full glass-panel rounded-md border px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400 disabled:cursor-not-allowed disabled:opacity-60"
+                                disabled={disabled || !isSelected || isSaving}
+                                maxLength={LABEL_DESCRIPTION_MAX_LENGTH}
+                                onChange={(event) =>
+                                  setProviderLabelDescriptions((current) => ({
+                                    ...current,
+                                    [option.name]: event.target.value,
+                                  }))
+                                }
+                                placeholder="Describe when this label should be used."
+                                value={providerLabelDescriptions[option.name] ?? ""}
+                              />
+                              <div className="mt-1 flex justify-end text-xs text-zinc-500">
+                                <span>
+                                  {(providerLabelDescriptions[option.name] ?? "").length}/{LABEL_DESCRIPTION_MAX_LENGTH}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap justify-end gap-2 border-t border-zinc-200 px-5 py-4">
+                <Button disabled={isSaving} onClick={() => setIsProviderImportModalOpen(false)} type="button" variant="outline">
+                  Cancel
+                </Button>
+                <Button disabled={isSaving || isLoadingProviderLabels} onClick={() => void importProviderLabels()} type="button">
+                  {labelAction === "provider" ? <Loader /> : <Plus className="h-4 w-4" />}
+                  {labelAction === "provider" ? "Importing..." : "Import selected"}
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -4627,18 +4960,56 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
               {labelAction === "delete" ? <Loader /> : <Trash2 className="h-4 w-4" />}
               {labelAction === "delete" ? "Deleting..." : "Delete selected"}
             </Button>
-            <Button
-              disabled={isSaving}
-              onClick={() => {
-                setError(null);
-                setUploadError(null);
-                setIsAddLabelModalOpen(true);
-              }}
-              type="button"
-            >
-              <Plus className="h-4 w-4" />
-              Add Label
-            </Button>
+            <div className="relative">
+              <Button
+                aria-expanded={isAddLabelMenuOpen}
+                aria-label="Add label options"
+                className="glass-icon-button h-10 w-10 rounded-full border border-white/70 bg-white/45 p-0 text-zinc-950 shadow-sm hover:bg-white/65"
+                disabled={isSaving}
+                onClick={() => setIsAddLabelMenuOpen((open) => !open)}
+                type="button"
+                variant="outline"
+              >
+                <Plus className="h-5 w-5" />
+              </Button>
+              {isAddLabelMenuOpen ? (
+                <div className="absolute right-0 top-12 z-30 w-56 rounded-xl border border-white/70 bg-white/75 p-1 shadow-xl shadow-slate-900/10 [backdrop-filter:blur(8px)] [-webkit-backdrop-filter:blur(8px)]">
+                  <button
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-zinc-700 hover:bg-white/70"
+                    onClick={() => {
+                      setError(null);
+                      setUploadError(null);
+                      setIsAddLabelMenuOpen(false);
+                      setIsAddLabelModalOpen(true);
+                    }}
+                    type="button"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add Manually
+                  </button>
+                  <button
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-zinc-700 hover:bg-white/70"
+                    onClick={() => {
+                      setUploadError(null);
+                      setIsAddLabelMenuOpen(false);
+                      setIsCsvUploadModalOpen(true);
+                    }}
+                    type="button"
+                  >
+                    <Upload className="h-4 w-4" />
+                    Upload CSV
+                  </button>
+                  <button
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-zinc-700 hover:bg-white/70"
+                    onClick={() => void openProviderImportModal()}
+                    type="button"
+                  >
+                    <Inbox className="h-4 w-4" />
+                    Choose from Providers
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -10473,6 +10844,29 @@ function pageFromPath(pathname: string): Page {
 
   const match = (Object.entries(pagePaths) as Array<[Page, string]>).find(([, path]) => path === normalizedPath);
   return match?.[0] ?? "overview";
+}
+
+function initialPageFromLocation(): Page {
+  const normalizedPath = stripRuntimeBasePath(window.location.pathname);
+  if (normalizedPath !== "/") {
+    return pageFromPath(window.location.pathname);
+  }
+
+  const storedPage = localStorage.getItem(LAST_PAGE_STORAGE_KEY);
+  if (!storedPage || !(storedPage in pagePaths)) {
+    return "overview";
+  }
+
+  const page = storedPage as Page;
+  const path = getRuntimeUrl(pathForPage(page));
+  if (path !== window.location.pathname) {
+    window.history.replaceState({}, "", path);
+  }
+  return page;
+}
+
+function rememberActivePage(page: Page) {
+  localStorage.setItem(LAST_PAGE_STORAGE_KEY, page);
 }
 
 function stripRuntimeBasePath(pathname: string) {

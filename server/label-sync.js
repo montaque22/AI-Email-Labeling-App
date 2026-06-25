@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { dbPool } from "./db.js";
 import { getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
-import { getImapFolder, syncImapFolder } from "./imap-provider.js";
+import { getImapFolder, listImapFolders, syncImapFolder } from "./imap-provider.js";
 
 export async function ensureLabelSyncTable() {
   if (!dbPool) {
@@ -68,6 +68,52 @@ export async function refreshAllLabelSyncStatus(userId) {
       await checkLabelSync(label, account);
     }
   }
+}
+
+export async function listProviderLabelOptions(userId) {
+  const accounts = await getConnectedEmailAccounts(userId);
+  const optionsByName = new Map();
+  const errors = [];
+
+  for (const account of accounts) {
+    try {
+      const accessToken = await getValidEmailAccountAccessToken(account);
+      const providerLabels = await listAccountProviderLabels(account, accessToken);
+
+      for (const providerLabel of providerLabels) {
+        const name = String(providerLabel.name || "").trim();
+        if (!name) {
+          continue;
+        }
+
+        const key = name.toLowerCase();
+        const option = optionsByName.get(key) ?? {
+          name,
+          accounts: [],
+        };
+
+        option.accounts.push({
+          emailAccountId: account.id,
+          email: account.email,
+          provider: account.provider,
+          providerLabelId: providerLabel.id,
+        });
+        optionsByName.set(key, option);
+      }
+    } catch (error) {
+      errors.push({
+        emailAccountId: account.id,
+        email: account.email,
+        provider: account.provider,
+        error: error.message || "Could not load provider labels",
+      });
+    }
+  }
+
+  return {
+    labels: [...optionsByName.values()].sort((left, right) => left.name.localeCompare(right.name)),
+    errors,
+  };
 }
 
 export async function ensureLabelSyncedToAccount(userId, labelId, emailAccountId) {
@@ -277,6 +323,18 @@ async function getProviderLabel({ account, accessToken, providerLabelId }) {
   throw new Error(`${account.provider} label validation is not implemented yet`);
 }
 
+async function listAccountProviderLabels(account, accessToken) {
+  if (account.provider === "gmail") {
+    return listGmailLabels({ accessToken });
+  }
+
+  if (["imap", "yahoo", "microsoft"].includes(account.provider)) {
+    return listImapFolders(account, accessToken);
+  }
+
+  return [];
+}
+
 async function syncGmailLabel({ action, accessToken, label, providerLabelId }) {
   const baseUrl = "https://gmail.googleapis.com/gmail/v1/users/me/labels";
 
@@ -365,6 +423,19 @@ async function findGmailLabelByName({ accessToken, name }) {
   });
   const data = await response.json();
   return (data.labels ?? []).find((label) => label.name === name) ?? null;
+}
+
+async function listGmailLabels({ accessToken }) {
+  const response = await providerFetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", accessToken, {
+    method: "GET",
+  });
+  const data = await response.json();
+  return (data.labels ?? [])
+    .filter((label) => label.type === "user")
+    .map((label) => ({
+      id: label.id,
+      name: label.name,
+    }));
 }
 
 async function getGmailLabel({ accessToken, providerLabelId }) {

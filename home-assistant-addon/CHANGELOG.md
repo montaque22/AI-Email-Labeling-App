@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.55
+
+- Added label creation options for manual entry, CSV upload, and importing existing labels or folders from connected providers.
+- Added an Inbox warning when connected account tokens need refresh.
+- Restored the last active page when the app is reopened from the root URL.
+
 ## 0.1.54
 
 - Fixed Better Auth session routes when Home Assistant add-on URLs include an ingress slug path.

@@ -49,10 +49,11 @@ When a new email account is connected later, Emailable attempts to create or mat
 ## Create a label
 
 1. Open **Labels**.
-2. Select **Add Label**.
-3. Enter a name.
-4. Add a clear description of when the label should be used.
-5. Save the label.
+2. Select the **+** button in the Labels section.
+3. Choose **Add Manually**.
+4. Enter a name.
+5. Add a clear description of when the label should be used.
+6. Save the label.
 
 Label validation rules are:
 
@@ -84,7 +85,15 @@ Descriptions should help distinguish similar categories. For example, explain wh
 
 ## Import labels from CSV
 
-The Add Label modal can import a CSV with these headers:
+Use CSV import when you want to add several new Emailable labels at once.
+
+1. Open **Labels**.
+2. Select the **+** button.
+3. Choose **Upload CSV**.
+4. Review the example table in the modal.
+5. Choose a `.csv` file.
+
+The CSV must use these exact headers:
 
 ```csv
 Name,Description
@@ -93,6 +102,26 @@ Reference,"Useful information that does not require action."
 ```
 
 The CSV can contain up to 20 data rows. Emailable validates every row before storing anything. If one row fails validation, the entire import is rejected so the account is not left with a partial import.
+
+## Choose labels from providers
+
+Use **Choose from Providers** when labels or folders already exist in one or more connected email accounts and you want Emailable to adopt them.
+
+1. Open **Labels**.
+2. Select the **+** button.
+3. Choose **Choose from Providers**.
+4. Review the labels and folders found in connected accounts.
+5. Select the labels you want Emailable to manage.
+6. Add descriptions for the selected labels.
+7. Import the selected labels.
+
+The provider list is gathered from all connected accounts. Gmail accounts contribute Gmail user labels. IMAP-style accounts contribute folders.
+
+If a provider label already exists in Emailable, it is shown but disabled. This prevents duplicate Emailable labels while still making it clear that the provider label was found.
+
+If a selected label exists in one connected account but not another, Emailable saves the label in its own database and then syncs it to accounts where it is missing. For example, if `Receipts` already exists in Gmail Account A but not Gmail Account B, importing it tells Emailable to manage `Receipts` and create or match it in Gmail Account B during synchronization.
+
+Provider import still uses the same label validation rules as manual creation. The name must fit Emailable's allowed characters and length, and the description can be up to 200 characters.
 
 ## Synced and unsynced labels
 

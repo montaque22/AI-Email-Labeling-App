@@ -4,6 +4,7 @@ import { dbPool } from "./db.js";
 import {
   attachSyncsToLabels,
   ensureLabelSyncTable,
+  listProviderLabelOptions,
   refreshAllLabelSyncStatus,
   retryLabelSync,
   syncAllLabelsToConnectedAccounts,
@@ -84,6 +85,56 @@ export function registerLabelRoutes(app) {
       for (const label of labels) {
         await syncLabelToConnectedAccounts(req.user.id, label, "create");
         await emitWebhookEvent(req.user.id, "label.created", { label });
+      }
+
+      res.status(201).json({ imported: labels.length, labels });
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
+
+  app.get("/api/labels/provider-options", requireSession, async (req, res) => {
+    try {
+      const [providerOptions, labels] = await Promise.all([listProviderLabelOptions(req.user.id), listLabels(req.user.id)]);
+      const existingDescriptions = new Map(labels.map((label) => [label.name.toLowerCase(), label.description]));
+      const existingNames = new Set(labels.map((label) => label.name.toLowerCase()));
+
+      res.json({
+        labels: providerOptions.labels.map((label) => ({
+          ...label,
+          exists: existingNames.has(label.name.toLowerCase()),
+          description: existingDescriptions.get(label.name.toLowerCase()) ?? "",
+        })),
+        errors: providerOptions.errors,
+      });
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
+
+  app.post("/api/labels/import-provider", requireSession, async (req, res) => {
+    const input = parseProviderLabelImportInput(req.body);
+
+    if (!input.ok) {
+      res.status(400).json({ error: input.error });
+      return;
+    }
+
+    try {
+      const existingLabels = await listLabels(req.user.id);
+      const existingNames = new Set(existingLabels.map((label) => label.name.toLowerCase()));
+      const labelsToCreate = input.labels.filter((label) => !existingNames.has(label.name.toLowerCase()));
+
+      if (labelsToCreate.length === 0) {
+        res.status(400).json({ error: "Select at least one provider label that is not already in Emailable." });
+        return;
+      }
+
+      const labels = await createLabels(req.user.id, labelsToCreate);
+
+      for (const label of labels) {
+        await syncLabelToConnectedAccounts(req.user.id, label, "create");
+        await emitWebhookEvent(req.user.id, "label.created", { label, source: "provider" });
       }
 
       res.status(201).json({ imported: labels.length, labels });
@@ -278,6 +329,46 @@ function parseLabelImportInput(body) {
       return { ok: false, error: `Row ${index + 2}: ${input.error}` };
     }
 
+    parsedLabels.push({ name: input.name, description: input.description });
+  }
+
+  return { ok: true, labels: parsedLabels };
+}
+
+function parseProviderLabelImportInput(body) {
+  const labels = Array.isArray(body?.labels) ? body.labels : null;
+
+  if (!labels) {
+    return { ok: false, error: "labels must be an array" };
+  }
+
+  if (labels.length === 0) {
+    return { ok: false, error: "Select at least one provider label." };
+  }
+
+  if (labels.length > 50) {
+    return { ok: false, error: "Choose from providers supports at most 50 labels at a time." };
+  }
+
+  const seenNames = new Set();
+  const parsedLabels = [];
+
+  for (const [index, label] of labels.entries()) {
+    const input = parseLabelInput({
+      name: label?.name,
+      description: label?.description,
+    });
+
+    if (!input.ok) {
+      return { ok: false, error: `Provider label ${index + 1}: ${input.error}` };
+    }
+
+    const key = input.name.toLowerCase();
+    if (seenNames.has(key)) {
+      return { ok: false, error: `Provider label ${index + 1}: ${input.name} is selected more than once.` };
+    }
+
+    seenNames.add(key);
     parsedLabels.push({ name: input.name, description: input.description });
   }
 

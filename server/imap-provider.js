@@ -123,6 +123,18 @@ export async function getImapFolder(account, providerLabelId, accessToken = "") 
   }, accessToken);
 }
 
+export async function listImapFolders(account, accessToken = "") {
+  return withImapClient(account, async (client) => {
+    const mailboxes = await client.list();
+    return mailboxes
+      .filter((mailbox) => !isSystemMailbox(mailbox))
+      .map((mailbox) => ({
+        id: mailbox.path,
+        name: mailbox.name || mailbox.path,
+      }));
+  }, accessToken);
+}
+
 export async function moveImapMessageToFolders({
   account,
   emailId,
@@ -555,6 +567,17 @@ function mailboxSpecialUse(name) {
   if (["draft", "drafts"].includes(normalized)) return "\\drafts";
   if (["trash", "deleted", "deleted items"].includes(normalized)) return "\\trash";
   return "";
+}
+
+function isSystemMailbox(mailbox) {
+  if (mailbox.specialUse) {
+    return true;
+  }
+
+  const normalized = normalizeMailboxName(mailbox.path || mailbox.name || "");
+  return ["inbox", "sent", "sent items", "sent messages", "draft", "drafts", "trash", "deleted", "deleted items", "junk", "spam"].includes(
+    normalized,
+  );
 }
 
 async function findImapMessage(client, mailbox, emailId) {
