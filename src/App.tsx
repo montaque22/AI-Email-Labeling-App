@@ -543,6 +543,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    rememberActivePage(activePage);
+  }, [activePage]);
+
+  useEffect(() => {
     function handlePopState() {
       const page = pageFromPath(window.location.pathname);
       setActivePage(page);
@@ -10852,6 +10856,10 @@ function initialPageFromLocation(): Page {
     return pageFromPath(window.location.pathname);
   }
 
+  if (!shouldRestoreLastPage()) {
+    return "overview";
+  }
+
   const storedPage = localStorage.getItem(LAST_PAGE_STORAGE_KEY);
   if (!storedPage || !(storedPage in pagePaths)) {
     return "overview";
@@ -10866,7 +10874,19 @@ function initialPageFromLocation(): Page {
 }
 
 function rememberActivePage(page: Page) {
+  if (!shouldRestoreLastPage()) {
+    return;
+  }
+
   localStorage.setItem(LAST_PAGE_STORAGE_KEY, page);
+}
+
+function shouldRestoreLastPage() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.matchMedia("(max-width: 767px)").matches;
 }
 
 function stripRuntimeBasePath(pathname: string) {

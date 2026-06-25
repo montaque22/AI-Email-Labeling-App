@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.56
+
+- Limited last-page restore to mobile-sized screens so desktop opens normally while mobile/PWA sessions resume the last page.
+
 ## 0.1.55
 
 - Added label creation options for manual entry, CSV upload, and importing existing labels or folders from connected providers.
