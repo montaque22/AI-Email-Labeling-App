@@ -137,6 +137,17 @@ type EmailProvider = {
   manual?: boolean;
 };
 
+type PendingEmailAccountOAuth = {
+  provider: string;
+  startedAt: number;
+};
+
+type EmailAccountOAuthCallback = {
+  provider: string;
+  code: string;
+  state: string;
+};
+
 type PollingSettings = {
   enabled: boolean;
   aiActive: boolean;
@@ -511,6 +522,8 @@ const settingsSubItems = [
 ];
 
 const LAST_PAGE_STORAGE_KEY = "emailable-last-page";
+const EMAIL_ACCOUNT_OAUTH_PENDING_KEY = "emailable-email-account-oauth-pending";
+const EMAIL_ACCOUNT_OAUTH_WINDOW_MS = 3 * 60 * 1000;
 
 export function App() {
   const session = authClient.useSession();
@@ -1233,7 +1246,7 @@ function AuthenticatedLayout({
           {activePage === "ai-prompt-library" && <AiPromptLibraryPage privacyMode={privacyMode} />}
           {activePage === "settings" && <SettingsPage onNavigate={onNavigate} />}
           {activePage === "confidence-threshold" && <ConfidenceThresholdPage />}
-          {activePage === "email-accounts" && <EmailAccountsPage privacyMode={privacyMode} />}
+          {activePage === "email-accounts" && <EmailAccountsPage isHomeAssistant={Boolean(user.homeAssistant)} privacyMode={privacyMode} />}
           {activePage === "endpoints" && <EndpointsPage />}
           {activePage === "webhook" && <WebhookPage />}
           {activePage === "mcp-server" && <McpServerPage onNavigate={onNavigate} />}
@@ -8354,7 +8367,7 @@ function WebhookPage() {
   );
 }
 
-function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
+function EmailAccountsPage({ isHomeAssistant, privacyMode }: { isHomeAssistant: boolean; privacyMode: boolean }) {
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [providers, setProviders] = useState<EmailProvider[]>([]);
   const [selectedAccountAction, setSelectedAccountAction] = useState<EmailAccount | null>(null);
@@ -8376,6 +8389,13 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
   const [isConnectingImap, setIsConnectingImap] = useState(false);
   const [showProviderChoices, setShowProviderChoices] = useState(false);
   const [showImapModal, setShowImapModal] = useState(false);
+  const [pendingOAuth, setPendingOAuth] = useState<PendingEmailAccountOAuth | null>(() =>
+    isHomeAssistant ? readPendingEmailAccountOAuth() : null,
+  );
+  const [showManualOAuthModal, setShowManualOAuthModal] = useState(false);
+  const [manualOAuthUrl, setManualOAuthUrl] = useState("");
+  const [manualOAuthError, setManualOAuthError] = useState<string | null>(null);
+  const [isCompletingOAuth, setIsCompletingOAuth] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [imapError, setImapError] = useState<string | null>(null);
   const [polling, setPolling] = useState<PollingSettings>({
@@ -8395,6 +8415,35 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
   useEffect(() => {
     void loadEmailAccounts();
   }, []);
+
+  useEffect(() => {
+    if (!isHomeAssistant) {
+      setPendingOAuth(null);
+      return;
+    }
+
+    const pending = readPendingEmailAccountOAuth();
+    setPendingOAuth(pending);
+
+    if (pending) {
+      void completeDetectedHomeAssistantOAuthCallback(pending);
+    }
+  }, [isHomeAssistant]);
+
+  useEffect(() => {
+    if (!pendingOAuth) {
+      return;
+    }
+
+    const remainingMs = EMAIL_ACCOUNT_OAUTH_WINDOW_MS - (Date.now() - pendingOAuth.startedAt);
+    if (remainingMs <= 0) {
+      clearHomeAssistantOAuthPendingState();
+      return;
+    }
+
+    const timer = window.setTimeout(clearHomeAssistantOAuthPendingState, remainingMs);
+    return () => window.clearTimeout(timer);
+  }, [pendingOAuth]);
 
   useEffect(() => {
     if (pollCooldown <= 0) {
@@ -8580,6 +8629,76 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
     }
   }
 
+  function clearHomeAssistantOAuthPendingState() {
+    clearPendingEmailAccountOAuth();
+    setPendingOAuth(null);
+    setShowManualOAuthModal(false);
+    setManualOAuthUrl("");
+    setManualOAuthError(null);
+    setShowProviderChoices(false);
+  }
+
+  async function completeDetectedHomeAssistantOAuthCallback(pending: PendingEmailAccountOAuth) {
+    const callback = findEmailAccountOAuthCallbackInBrowserUrls();
+    if (!callback) {
+      return;
+    }
+
+    if (callback.provider !== pending.provider) {
+      return;
+    }
+
+    await completeHomeAssistantOAuthCallback(callback);
+  }
+
+  async function completeHomeAssistantOAuthCallback(callback: EmailAccountOAuthCallback) {
+    setIsCompletingOAuth(true);
+    setManualOAuthError(null);
+    setError(null);
+
+    try {
+      const data = await completeEmailAccountOAuthCallback(callback);
+      if (data.status !== "connected") {
+        const message = typeof data.error === "string" ? data.error : "Could not complete the OAuth callback.";
+        setManualOAuthError(message);
+        setError(message);
+        return;
+      }
+
+      clearPendingEmailAccountOAuth();
+      setPendingOAuth(null);
+      setShowManualOAuthModal(false);
+      setManualOAuthUrl("");
+      const returnUrl = typeof data.returnUrl === "string" ? data.returnUrl : getRuntimeUrl("/settings/email-accounts?emailAccountStatus=connected");
+      window.location.replace(returnUrl);
+    } catch {
+      setManualOAuthError("Could not complete the OAuth callback. Paste the full callback URL and try again.");
+      setError("Could not complete the OAuth callback.");
+    } finally {
+      setIsCompletingOAuth(false);
+    }
+  }
+
+  async function completeManualOAuthCallback() {
+    if (!pendingOAuth) {
+      setManualOAuthError("No pending account connection was found. Start the provider connection again.");
+      return;
+    }
+
+    const callback = parseEmailAccountOAuthCallbackUrl(manualOAuthUrl);
+    if (!callback) {
+      setManualOAuthError("Paste the full URL from the browser address bar after the provider redirects back to Emailable.");
+      return;
+    }
+
+    if (callback.provider !== pendingOAuth.provider) {
+      setManualOAuthError(`This callback is for ${providerLabel(callback.provider)}, but the pending connection is for ${providerLabel(pendingOAuth.provider)}.`);
+      return;
+    }
+
+    await completeHomeAssistantOAuthCallback(callback);
+  }
+
   function connectProvider(providerId: string) {
     if (providerId === "imap") {
       setError(null);
@@ -8589,6 +8708,13 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
     }
 
     const connectUrl = getAbsoluteRuntimeUrl(`/api/email-accounts/connect/${providerId}`);
+    if (isHomeAssistant) {
+      const pending = storePendingEmailAccountOAuth(providerId);
+      setPendingOAuth(pending);
+      setShowProviderChoices(false);
+      setManualOAuthError(null);
+    }
+
     if (window.top && window.top !== window) {
       window.top.location.href = connectUrl;
     } else {
@@ -8694,17 +8820,50 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
               Connect available inbox providers so the app can manage labels or folders, query emails, and read account metadata.
             </CardDescription>
           </div>
-          <Button onClick={() => setShowProviderChoices((value) => !value)} type="button">
+          <Button
+            disabled={Boolean(pendingOAuth) || isCompletingOAuth}
+            onClick={() => setShowProviderChoices((value) => !value)}
+            type="button"
+          >
             <Plus className="h-4 w-4" />
             Add Email Account
           </Button>
         </CardHeader>
         <CardContent className="space-y-5">
+          {isHomeAssistant && pendingOAuth ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-medium">Waiting for {providerLabel(pendingOAuth.provider)} authorization to return.</p>
+                  <p className="mt-1 text-amber-800">
+                    Home Assistant sometimes opens the provider callback in its own shell. If Emailable does not finish automatically, complete it manually within 3 minutes.
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    disabled={isCompletingOAuth}
+                    onClick={() => {
+                      setManualOAuthError(null);
+                      setShowManualOAuthModal(true);
+                    }}
+                    type="button"
+                    variant="outline"
+                  >
+                    Complete manually
+                  </Button>
+                  <Button disabled={isCompletingOAuth} onClick={clearHomeAssistantOAuthPendingState} type="button" variant="ghost">
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : null}
           {showProviderChoices ? (
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {visibleProviders.map((provider) => (
                 <button
-                  className="glass-panel rounded-md border p-4 text-left transition-colors hover:bg-zinc-50"
+                  className="glass-panel rounded-md border p-4 text-left transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={Boolean(pendingOAuth) || isCompletingOAuth}
                   key={provider.id}
                   onClick={() => connectProvider(provider.id)}
                   type="button"
@@ -8971,6 +9130,60 @@ function EmailAccountsPage({ privacyMode }: { privacyMode: boolean }) {
                   {isConnectingImap ? "Connecting..." : "Connect IMAP Account"}
                 </Button>
               </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {showManualOAuthModal && pendingOAuth ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+            <div className="rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-zinc-950">Complete account connection</h3>
+                  <p className="mt-1 text-sm text-zinc-600">
+                    Copy the full URL from the browser address bar after {providerLabel(pendingOAuth.provider)} redirects back, then paste it here.
+                  </p>
+                </div>
+                <Button
+                  aria-label="Close manual OAuth completion"
+                  disabled={isCompletingOAuth}
+                  onClick={() => setShowManualOAuthModal(false)}
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <label className="mt-5 block">
+                <span className="mb-1 block text-sm font-medium text-zinc-700">Callback URL</span>
+                <textarea
+                  className="min-h-28 w-full resize-y rounded-md border border-zinc-200 bg-white/60 px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
+                  disabled={isCompletingOAuth}
+                  onChange={(event) => {
+                    setManualOAuthUrl(event.target.value);
+                    setManualOAuthError(null);
+                  }}
+                  placeholder="https://.../api/email-accounts/callback/gmail?state=...&code=..."
+                  value={manualOAuthUrl}
+                />
+              </label>
+
+              {manualOAuthError ? (
+                <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{manualOAuthError}</p>
+              ) : null}
+
+              <div className="mt-5 flex justify-end gap-2">
+                <Button disabled={isCompletingOAuth} onClick={() => setShowManualOAuthModal(false)} type="button" variant="outline">
+                  Close
+                </Button>
+                <Button disabled={isCompletingOAuth || manualOAuthUrl.trim().length === 0} onClick={() => void completeManualOAuthCallback()} type="button">
+                  {isCompletingOAuth ? <Loader /> : null}
+                  Complete connection
+                </Button>
               </div>
             </div>
           </div>
@@ -10835,34 +11048,140 @@ function pathForPage(page: Page) {
   return pagePaths[page] ?? "/";
 }
 
+function storePendingEmailAccountOAuth(provider: string) {
+  const pending = { provider, startedAt: Date.now() };
+  sessionStorage.setItem(EMAIL_ACCOUNT_OAUTH_PENDING_KEY, JSON.stringify(pending));
+  return pending;
+}
+
+function readPendingEmailAccountOAuth(): PendingEmailAccountOAuth | null {
+  const raw = sessionStorage.getItem(EMAIL_ACCOUNT_OAUTH_PENDING_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingEmailAccountOAuth>;
+    if (typeof parsed.provider !== "string" || typeof parsed.startedAt !== "number" || !Number.isFinite(parsed.startedAt)) {
+      sessionStorage.removeItem(EMAIL_ACCOUNT_OAUTH_PENDING_KEY);
+      return null;
+    }
+
+    const pending = { provider: parsed.provider, startedAt: Number(parsed.startedAt) };
+    if (Date.now() - pending.startedAt > EMAIL_ACCOUNT_OAUTH_WINDOW_MS) {
+      sessionStorage.removeItem(EMAIL_ACCOUNT_OAUTH_PENDING_KEY);
+      return null;
+    }
+
+    return pending;
+  } catch {
+    sessionStorage.removeItem(EMAIL_ACCOUNT_OAUTH_PENDING_KEY);
+    return null;
+  }
+}
+
+function clearPendingEmailAccountOAuth() {
+  sessionStorage.removeItem(EMAIL_ACCOUNT_OAUTH_PENDING_KEY);
+}
+
+function parseEmailAccountOAuthCallbackUrl(value: string): EmailAccountOAuthCallback | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const url = new URL(trimmed, window.location.origin);
+    const normalizedPath = stripRuntimeBasePath(url.pathname);
+    const match = normalizedPath.match(/^\/api\/email-accounts\/callback\/([^/]+)$/);
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    if (!match || !code || !state) {
+      return null;
+    }
+
+    return {
+      provider: decodeURIComponent(match[1]),
+      code,
+      state,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findEmailAccountOAuthCallbackInBrowserUrls() {
+  const candidates = new Set<string>();
+  candidates.add(window.location.href);
+
+  if (document.referrer) {
+    candidates.add(document.referrer);
+  }
+
+  try {
+    if (window.parent && window.parent !== window) {
+      candidates.add(window.parent.location.href);
+    }
+  } catch {
+    // Cross-origin Home Assistant frames do not expose their URL to the add-on.
+  }
+
+  try {
+    if (window.top && window.top !== window) {
+      candidates.add(window.top.location.href);
+    }
+  } catch {
+    // Cross-origin Home Assistant frames do not expose their URL to the add-on.
+  }
+
+  for (const candidate of candidates) {
+    const callback = parseEmailAccountOAuthCallbackUrl(candidate);
+    if (callback) {
+      return callback;
+    }
+  }
+
+  return null;
+}
+
+async function completeEmailAccountOAuthCallback(callback: EmailAccountOAuthCallback) {
+  const response = await fetch(`/api/email-accounts/callback/${encodeURIComponent(callback.provider)}/complete`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: callback.code, state: callback.state }),
+  });
+  const data = await response.json().catch(() => ({}));
+  return {
+    ...data,
+    status: response.ok ? data.status : "failed",
+  } as { status?: string; returnUrl?: string; error?: string };
+}
+
 async function completeEmailAccountOAuthCallbackFromAppShell() {
-  const normalizedPath = stripRuntimeBasePath(window.location.pathname);
-  const match = normalizedPath.match(/^\/api\/email-accounts\/callback\/([^/]+)$/);
-  if (!match) {
+  const pending = readPendingEmailAccountOAuth();
+  const callback = parseEmailAccountOAuthCallbackUrl(window.location.href) ?? (pending ? findEmailAccountOAuthCallbackInBrowserUrls() : null);
+  if (!callback) {
     return;
   }
 
-  const provider = match[1];
-  const params = new URLSearchParams(window.location.search);
-  const code = params.get("code");
-  const state = params.get("state");
+  if (pending && callback.provider !== pending.provider) {
+    return;
+  }
 
-  if (!code || !state) {
+  if (!callback.code || !callback.state) {
+    clearPendingEmailAccountOAuth();
     window.location.replace(getRuntimeUrl("/settings/email-accounts?emailAccountStatus=failed"));
     return;
   }
 
   try {
-    const response = await fetch(`/api/email-accounts/callback/${encodeURIComponent(provider)}/complete`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, state }),
-    });
-    const data = await response.json().catch(() => ({}));
+    const data = await completeEmailAccountOAuthCallback(callback);
+    clearPendingEmailAccountOAuth();
     const returnUrl = typeof data.returnUrl === "string" ? data.returnUrl : getRuntimeUrl("/settings/email-accounts?emailAccountStatus=failed");
     window.location.replace(returnUrl);
   } catch {
+    clearPendingEmailAccountOAuth();
     window.location.replace(getRuntimeUrl("/settings/email-accounts?emailAccountStatus=failed"));
   }
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.58
+
+- Added a Home Assistant-only OAuth recovery flow for connected email accounts.
+- Saved pending provider connection attempts before OAuth redirects and added a manual callback URL completion fallback when Home Assistant intercepts the provider callback page.
+
 ## 0.1.57
 
 - Added a frontend OAuth callback bridge for Home Assistant/Nabu Casa installs where provider redirects load the app shell instead of executing the backend callback directly.
