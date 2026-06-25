@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.59
+
+- Fixed manual OAuth callback completion for Home Assistant/Nabu Casa URLs that include the public add-on slug before the callback route.
+
 ## 0.1.58
 
 - Added a Home Assistant-only OAuth recovery flow for connected email accounts.
