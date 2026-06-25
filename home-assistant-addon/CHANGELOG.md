@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.57
+
+- Added a frontend OAuth callback bridge for Home Assistant/Nabu Casa installs where provider redirects load the app shell instead of executing the backend callback directly.
+
 ## 0.1.56
 
 - Limited last-page restore to mobile-sized screens so desktop opens normally while mobile/PWA sessions resume the last page.

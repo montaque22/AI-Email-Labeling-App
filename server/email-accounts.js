@@ -155,32 +155,29 @@ export function registerEmailAccountRoutes(app) {
   });
 
   app.get("/api/email-accounts/callback/:provider", async (req, res) => {
-    const providerId = req.params.provider;
-    const provider = EMAIL_ACCOUNT_PROVIDERS[providerId];
-    const state = verifyState(req.query.state);
-
-    if (!provider || !provider.clientId || !provider.clientSecret || !state) {
-      redirectEmailAccountResult(res, state, "failed");
-      return;
-    }
-
-    if (typeof req.query.code !== "string") {
-      redirectEmailAccountResult(res, state, "failed");
-      return;
-    }
-
     try {
-      const redirectUri = getRedirectUri(req, providerId);
-      const tokenSet = await exchangeCodeForTokens(provider, req.query.code, redirectUri);
-      const profile = await fetchProviderProfile(provider, tokenSet);
-
-      const account = await upsertEmailAccount(state.userId, providerId, profile, tokenSet);
-      const { syncAllLabelsToEmailAccount } = await import("./label-sync.js");
-      await syncAllLabelsToEmailAccount(state.userId, account.id);
-      redirectEmailAccountResult(res, state, "connected");
+      const result = await completeEmailAccountOAuthCallback(req, req.params.provider, req.query);
+      redirectEmailAccountResult(res, result.state, result.status);
     } catch (error) {
       console.error("Email account OAuth callback failed:", error);
-      redirectEmailAccountResult(res, state, "failed");
+      redirectEmailAccountResult(res, error.state, "failed");
+    }
+  });
+
+  app.post("/api/email-accounts/callback/:provider/complete", async (req, res) => {
+    try {
+      const result = await completeEmailAccountOAuthCallback(req, req.params.provider, req.body);
+      res.json({
+        status: result.status,
+        returnUrl: buildEmailAccountResultUrl(result.state, result.status),
+      });
+    } catch (error) {
+      console.error("Email account OAuth callback failed:", error);
+      res.status(400).json({
+        status: "failed",
+        returnUrl: buildEmailAccountResultUrl(error.state, "failed"),
+        error: "Could not connect email account",
+      });
     }
   });
 
@@ -589,6 +586,36 @@ function getRedirectUri(req, providerId) {
   return `${origin}${TEMPLATE_CALLBACK_PATH}/${providerId}`;
 }
 
+async function completeEmailAccountOAuthCallback(req, providerId, input) {
+  const provider = EMAIL_ACCOUNT_PROVIDERS[providerId];
+  const state = verifyState(input?.state);
+
+  if (!provider || !provider.clientId || !provider.clientSecret || !state) {
+    const error = new Error("Invalid email account OAuth callback");
+    error.state = state;
+    throw error;
+  }
+
+  if (typeof input?.code !== "string") {
+    const error = new Error("Missing email account OAuth code");
+    error.state = state;
+    throw error;
+  }
+
+  try {
+    const redirectUri = getRedirectUri(req, providerId);
+    const tokenSet = await exchangeCodeForTokens(provider, input.code, redirectUri);
+    const profile = await fetchProviderProfile(provider, tokenSet);
+    const account = await upsertEmailAccount(state.userId, providerId, profile, tokenSet);
+    const { syncAllLabelsToEmailAccount } = await import("./label-sync.js");
+    await syncAllLabelsToEmailAccount(state.userId, account.id);
+    return { state, status: "connected" };
+  } catch (error) {
+    error.state = state;
+    throw error;
+  }
+}
+
 function createState(userId, provider, returnUrl = "") {
   const payload = Buffer.from(
     JSON.stringify({
@@ -626,6 +653,10 @@ function getOAuthReturnUrl(req) {
 }
 
 function redirectEmailAccountResult(res, state, status) {
+  res.redirect(buildEmailAccountResultUrl(state, status));
+}
+
+function buildEmailAccountResultUrl(state, status) {
   const fallback = "/settings/email-accounts";
   try {
     const appBaseUrl = new URL(process.env.APP_URL || process.env.BETTER_AUTH_URL || "http://127.0.0.1:3000");
@@ -633,9 +664,9 @@ function redirectEmailAccountResult(res, state, status) {
       ? normalizeAppPageUrl(new URL(state.returnUrl), appBaseUrl)
       : new URL(fallback.replace(/^\//, ""), ensureTrailingSlash(appBaseUrl));
     target.searchParams.set("emailAccountStatus", status);
-    res.redirect(target.toString());
+    return target.toString();
   } catch {
-    res.redirect(`${fallback}?emailAccountStatus=${status}`);
+    return `${fallback}?emailAccountStatus=${status}`;
   }
 }
 

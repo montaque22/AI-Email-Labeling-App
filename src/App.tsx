@@ -522,6 +522,10 @@ export function App() {
   const user = homeAssistantUser ?? (session.data?.user ? mapAuthUser(session.data.user) : null);
 
   useEffect(() => {
+    void completeEmailAccountOAuthCallbackFromAppShell();
+  }, []);
+
+  useEffect(() => {
     async function loadHomeAssistantSession() {
       try {
         const response = await fetch("/api/home-assistant-session", { credentials: "include" });
@@ -10829,6 +10833,38 @@ const pagePaths: Record<Page, string> = {
 
 function pathForPage(page: Page) {
   return pagePaths[page] ?? "/";
+}
+
+async function completeEmailAccountOAuthCallbackFromAppShell() {
+  const normalizedPath = stripRuntimeBasePath(window.location.pathname);
+  const match = normalizedPath.match(/^\/api\/email-accounts\/callback\/([^/]+)$/);
+  if (!match) {
+    return;
+  }
+
+  const provider = match[1];
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code");
+  const state = params.get("state");
+
+  if (!code || !state) {
+    window.location.replace(getRuntimeUrl("/settings/email-accounts?emailAccountStatus=failed"));
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/email-accounts/callback/${encodeURIComponent(provider)}/complete`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, state }),
+    });
+    const data = await response.json().catch(() => ({}));
+    const returnUrl = typeof data.returnUrl === "string" ? data.returnUrl : getRuntimeUrl("/settings/email-accounts?emailAccountStatus=failed");
+    window.location.replace(returnUrl);
+  } catch {
+    window.location.replace(getRuntimeUrl("/settings/email-accounts?emailAccountStatus=failed"));
+  }
 }
 
 function pageFromPath(pathname: string): Page {
