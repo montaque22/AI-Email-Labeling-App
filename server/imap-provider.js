@@ -652,7 +652,7 @@ function buildImapSearchQuery(query) {
     return { all: true };
   }
 
-  return { or: [{ subject: trimmed }, { from: trimmed }, { body: trimmed }] };
+  return { or: [{ subject: trimmed }, { from: trimmed }, { to: trimmed }] };
 }
 
 function imapMessageToInboxListItem(message, account, mailbox) {

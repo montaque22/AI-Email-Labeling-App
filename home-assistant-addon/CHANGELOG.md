@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.60
+
+- Added Inbox search across connected accounts for To, From, and Subject matches with 1-second debounced top-result suggestions.
+
 ## 0.1.59
 
 - Fixed manual OAuth callback completion for Home Assistant/Nabu Casa URLs that include the public add-on slug before the callback route.

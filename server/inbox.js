@@ -59,6 +59,21 @@ export function registerInboxRoutes(app) {
     }
   });
 
+  app.get("/api/inbox/search", requireSession, async (req, res) => {
+    try {
+      const input = parseMailboxListQuery(req.query);
+      if (!input.query.search) {
+        res.json({ messages: [], nextPageToken: null, skippedAccounts: [] });
+        return;
+      }
+
+      const result = await searchInboxMessages(req.user.id, input.query);
+      res.json(result);
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
   app.get("/api/inbox/message", requireSession, async (req, res) => {
     try {
       const input = parseInboxDetailQuery(req.query);
@@ -192,6 +207,57 @@ async function listInboxSentMessages(userId, query) {
     labelName: "Sent",
     unsupportedReason: "Provider sent mail is not implemented yet",
   });
+}
+
+async function searchInboxMessages(userId, query) {
+  const accounts = await getInboxAccounts(userId, query.accountIds);
+  const pageToken = decodePageToken(query.pageToken);
+  const nextPageState = {};
+  const providerResults = [];
+  const skippedAccounts = [];
+
+  for (const account of accounts) {
+    if (account.provider !== "gmail" && !isImapBackedProvider(account.provider)) {
+      skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: "Provider inbox search is not implemented yet" });
+      continue;
+    }
+
+    try {
+      if (account.provider === "gmail") {
+        const accessToken = await getValidEmailAccountAccessToken(account);
+        const result = await searchGmailInboxMessages({
+          accessToken,
+          account,
+          pageToken: pageToken[account.id] ?? "",
+          query: query.search,
+        });
+        nextPageState[account.id] = result.nextPageToken;
+        providerResults.push(...result.messages);
+      } else {
+        const accessToken = await getImapAccessToken(account);
+        const result = await searchImapInboxMessages(account, {
+          accessToken,
+          folder: account.metadata?.defaultMailbox || "INBOX",
+          limit: INBOX_PAGE_SIZE,
+          pageToken: pageToken[account.id] ?? "",
+          query: query.search,
+        });
+        nextPageState[account.id] = result.nextPageToken;
+        providerResults.push(...result.messages);
+      }
+    } catch (error) {
+      skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: error.message });
+    }
+  }
+
+  const messages = await attachRuleStatus(userId, sortInboxMessages(providerResults, query.sort));
+  const hasMore = Object.values(nextPageState).some(Boolean);
+
+  return {
+    messages,
+    nextPageToken: hasMore ? encodePageToken(nextPageState) : null,
+    skippedAccounts,
+  };
 }
 
 async function listSpecialMailboxMessages(userId, query, options) {
@@ -890,6 +956,91 @@ async function listGmailInboxMessages({ accessToken, account, label, providerLab
   }
 
   return { messages, nextPageToken: data.nextPageToken ?? null };
+}
+
+async function searchGmailInboxMessages({ accessToken, account, pageToken, query }) {
+  const pageState = decodeGmailSearchPageToken(pageToken);
+  const nextPageState = {};
+  const messagesById = new Map();
+
+  for (const field of ["from", "to", "subject"]) {
+    const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+    url.searchParams.set("maxResults", String(INBOX_PAGE_SIZE));
+    if (pageState[field]) {
+      url.searchParams.set("pageToken", pageState[field]);
+    }
+    url.searchParams.set("q", buildGmailInboxSearchQuery(field, query));
+
+    const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+    const data = await response.json();
+    nextPageState[field] = data.nextPageToken ?? "";
+
+    for (const item of data.messages ?? []) {
+      if (!item.id || messagesById.has(item.id)) {
+        continue;
+      }
+      const message = await fetchGmailMessageMetadata(accessToken, item.id);
+      if (!gmailMessageMatchesInboxSearch(message, query)) {
+        continue;
+      }
+      messagesById.set(item.id, await gmailMessageToInboxListItem(message, account, { name: "" }, accessToken));
+    }
+  }
+
+  const messages = sortInboxMessages([...messagesById.values()], "newest").slice(0, INBOX_PAGE_SIZE);
+  const hasMore = Object.values(nextPageState).some(Boolean);
+  return { messages, nextPageToken: hasMore ? encodeGmailSearchPageToken(nextPageState) : null };
+}
+
+function buildGmailInboxSearchQuery(field, query) {
+  const term = formatGmailSearchTerm(query);
+  return ["-in:sent", "-in:drafts", term ? `${field}:${term}` : ""].filter(Boolean).join(" ");
+}
+
+function formatGmailSearchTerm(value) {
+  const normalized = String(value ?? "").trim().replace(/[{}()]/g, " ").replace(/\s+/g, " ");
+  if (!normalized) {
+    return "";
+  }
+  if (!normalized.includes(" ")) {
+    return normalized.replace(/["\\]/g, "\\$&");
+  }
+  return `"${normalized.replace(/["\\]/g, "\\$&")}"`;
+}
+
+function gmailMessageMatchesInboxSearch(message, query) {
+  const headers = getGmailHeaders(message);
+  const needle = normalizeInboxSearchText(query);
+  if (!needle) {
+    return false;
+  }
+
+  return [headers.from, headers.to, headers.subject].some((value) => normalizeInboxSearchText(value).includes(needle));
+}
+
+function normalizeInboxSearchText(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function decodeGmailSearchPageToken(token) {
+  if (!token) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
+    return typeof parsed === "object" && parsed ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function encodeGmailSearchPageToken(state) {
+  const activeState = Object.fromEntries(Object.entries(state).filter(([, value]) => Boolean(value)));
+  if (Object.keys(activeState).length === 0) {
+    return null;
+  }
+  return Buffer.from(JSON.stringify(activeState)).toString("base64url");
 }
 
 async function fetchGmailMessageMetadata(accessToken, emailId) {

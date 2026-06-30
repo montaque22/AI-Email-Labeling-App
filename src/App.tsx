@@ -1510,6 +1510,11 @@ function InboxPage({
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [sort, setSort] = useState<InboxSort>("newest");
   const [sentSearch, setSentSearch] = useState("");
+  const [inboxSearch, setInboxSearch] = useState("");
+  const [committedInboxSearch, setCommittedInboxSearch] = useState("");
+  const [inboxSearchSuggestions, setInboxSearchSuggestions] = useState<InboxMessage[]>([]);
+  const [isInboxSearchPending, setIsInboxSearchPending] = useState(false);
+  const [isInboxSearchMenuOpen, setIsInboxSearchMenuOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [messageLoadProgress, setMessageLoadProgress] = useState({ completed: 0, total: 0 });
@@ -1535,6 +1540,7 @@ function InboxPage({
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreInFlightRef = useRef(false);
   const messageRequestIdRef = useRef(0);
+  const searchSuggestionRequestIdRef = useRef(0);
 
   useEffect(() => {
     async function loadBootstrap() {
@@ -1607,14 +1613,32 @@ function InboxPage({
   }
 
   useEffect(() => {
-    if (selectedAccountIds.length === 0 || (inboxMode === "inbox" && !selectedLabelId)) {
+    const isSearchActive = committedInboxSearch.trim().length > 0;
+    const activeAccountIds = isSearchActive ? accounts.map((account) => account.id) : selectedAccountIds;
+    if (activeAccountIds.length === 0 || (!isSearchActive && inboxMode === "inbox" && !selectedLabelId)) {
       setMessages([]);
       setNextPageToken(null);
       return;
     }
 
     void loadMessages({ reset: true });
-  }, [inboxMode, selectedLabelId, selectedAccountIds.join(","), sort, sentSearch]);
+  }, [inboxMode, selectedLabelId, selectedAccountIds.join(","), accounts.map((account) => account.id).join(","), sort, sentSearch, committedInboxSearch]);
+
+  useEffect(() => {
+    const query = inboxSearch.trim();
+    if (!query) {
+      searchSuggestionRequestIdRef.current += 1;
+      setInboxSearchSuggestions([]);
+      setIsInboxSearchPending(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void loadInboxSearchSuggestions(query);
+    }, 1000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [inboxSearch, accounts.map((account) => account.id).join(","), sort]);
 
   useEffect(() => {
     if (!isAccountMenuOpen) {
@@ -1720,9 +1744,72 @@ function InboxPage({
   const filteredMessages = messages;
   const selectedLabel = labels.find((label) => label.id === selectedLabelId) ?? null;
   const allLabelCount = getInboxAllLabelCount(labels, labelCounts);
+  const isInboxSearchActive = committedInboxSearch.trim().length > 0;
+
+  async function loadInboxSearchSuggestions(query: string) {
+    if (accounts.length === 0) {
+      setInboxSearchSuggestions([]);
+      return;
+    }
+
+    const requestId = searchSuggestionRequestIdRef.current + 1;
+    searchSuggestionRequestIdRef.current = requestId;
+    setIsInboxSearchPending(true);
+
+    try {
+      const params = buildInboxMessageParams({
+        accountIds: accounts.map((account) => account.id),
+        inboxMode,
+        labelId: "",
+        pageToken: null,
+        search: query,
+        sort,
+      });
+      const response = await fetch(`/api/inbox/search?${params.toString()}`, { credentials: "include" });
+      const data = await response.json();
+      if (searchSuggestionRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      setInboxSearchSuggestions(response.ok ? (data.messages ?? []).slice(0, 5) : []);
+      setIsInboxSearchMenuOpen(true);
+    } catch {
+      if (searchSuggestionRequestIdRef.current === requestId) {
+        setInboxSearchSuggestions([]);
+      }
+    } finally {
+      if (searchSuggestionRequestIdRef.current === requestId) {
+        setIsInboxSearchPending(false);
+      }
+    }
+  }
+
+  function commitInboxSearch(value = inboxSearch) {
+    const query = value.trim();
+    setCommittedInboxSearch(query);
+    setInboxSearch(query);
+    setInboxSearchSuggestions([]);
+    setIsInboxSearchMenuOpen(false);
+  }
+
+  function clearInboxSearch() {
+    searchSuggestionRequestIdRef.current += 1;
+    setInboxSearch("");
+    setCommittedInboxSearch("");
+    setInboxSearchSuggestions([]);
+    setIsInboxSearchMenuOpen(false);
+    setIsInboxSearchPending(false);
+  }
+
+  function selectInboxSearchSuggestion(message: InboxMessage) {
+    commitInboxSearch(getInboxSearchSuggestionValue(message));
+  }
 
   async function loadMessages({ reset }: { reset: boolean }) {
-    if (selectedAccountIds.length === 0 || (inboxMode === "inbox" && !selectedLabelId)) {
+    const activeSearch = committedInboxSearch.trim();
+    const isSearchActive = activeSearch.length > 0;
+    const activeAccountIds = isSearchActive ? accounts.map((account) => account.id) : selectedAccountIds;
+    if (activeAccountIds.length === 0 || (!isSearchActive && inboxMode === "inbox" && !selectedLabelId)) {
       return;
     }
 
@@ -1746,11 +1833,19 @@ function InboxPage({
     setError(null);
 
     try {
-      const endpoint = inboxMode === "drafts" ? "/api/inbox/drafts" : inboxMode === "sent" ? "/api/inbox/sent" : "/api/inbox/messages";
-      const isAllLabels = inboxMode === "inbox" && selectedLabelId === INBOX_ALL_LABEL_ID;
+      const endpoint = isSearchActive ? "/api/inbox/search" : inboxMode === "drafts" ? "/api/inbox/drafts" : inboxMode === "sent" ? "/api/inbox/sent" : "/api/inbox/messages";
+      const isAllLabels = !isSearchActive && inboxMode === "inbox" && selectedLabelId === INBOX_ALL_LABEL_ID;
       const currentPageState = reset ? {} : decodeInboxPageToken(nextPageToken);
       const targets = reset
-        ? selectedAccountIds.flatMap((accountId) => {
+        ? activeAccountIds.flatMap((accountId) => {
+            if (isSearchActive) {
+              return [{
+                accountId,
+                labelId: "",
+                pageStateKey: getInboxPageStateKey(accountId, "search"),
+                providerPageToken: "",
+              }];
+            }
             const labelIds = isAllLabels ? labels.map((label) => label.id) : [selectedLabelId];
             return labelIds.map((labelId) => ({
               accountId,
@@ -1770,7 +1865,7 @@ function InboxPage({
                 providerPageToken,
               };
             })
-            .filter((target) => target.accountId && (inboxMode !== "inbox" || target.labelId));
+            .filter((target) => target.accountId && (isSearchActive || inboxMode !== "inbox" || target.labelId));
 
       if (reset) {
         setMessageLoadProgress({ completed: 0, total: targets.length });
@@ -1788,7 +1883,7 @@ function InboxPage({
           pageToken: target.providerPageToken
             ? encodeInboxPageToken({ [target.accountId]: target.providerPageToken })
             : null,
-          search: sentSearch,
+          search: isSearchActive ? activeSearch : sentSearch,
           sort,
         });
 
@@ -2277,6 +2372,23 @@ function InboxPage({
         </div>
       ) : null}
 
+      {!isMobileEditMode ? (
+        <div className="md:hidden">
+          <InboxSearchBox
+            isLoading={isInboxSearchPending}
+            isOpen={isInboxSearchMenuOpen}
+            onClear={clearInboxSearch}
+            onCommit={() => commitInboxSearch()}
+            onFocus={() => setIsInboxSearchMenuOpen(inboxSearchSuggestions.length > 0)}
+            onOpenChange={setIsInboxSearchMenuOpen}
+            onSelectSuggestion={selectInboxSearchSuggestion}
+            onValueChange={setInboxSearch}
+            suggestions={inboxSearchSuggestions}
+            value={inboxSearch}
+          />
+        </div>
+      ) : null}
+
       <div className={cn("grid min-w-0 gap-4 xl:gap-5", inboxMode === "inbox" ? "xl:grid-cols-[260px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
         {inboxMode === "inbox" ? (
         <div className="hidden self-start xl:sticky xl:top-20 xl:z-20 xl:block">
@@ -2327,6 +2439,19 @@ function InboxPage({
             <Card className="inbox-sticky-surface">
               <CardContent className="flex flex-row flex-wrap items-start justify-between gap-3 p-3 sm:p-4">
               <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center">
+                <InboxSearchBox
+                  className="w-full sm:w-72 lg:w-80"
+                  isLoading={isInboxSearchPending}
+                  isOpen={isInboxSearchMenuOpen}
+                  onClear={clearInboxSearch}
+                  onCommit={() => commitInboxSearch()}
+                  onFocus={() => setIsInboxSearchMenuOpen(inboxSearchSuggestions.length > 0)}
+                  onOpenChange={setIsInboxSearchMenuOpen}
+                  onSelectSuggestion={selectInboxSearchSuggestion}
+                  onValueChange={setInboxSearch}
+                  suggestions={inboxSearchSuggestions}
+                  value={inboxSearch}
+                />
                 <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
                 {inboxMode === "inbox" ? (
                 <label className="block xl:hidden">
@@ -2414,8 +2539,10 @@ function InboxPage({
             </div>
             <CardHeader className="hidden flex-row flex-wrap items-start justify-between gap-3 space-y-0 md:flex">
               <div className="min-w-0">
-                <CardTitle>Email</CardTitle>
-                <CardDescription>{filteredMessages.length} loaded {inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "messages"}</CardDescription>
+                <CardTitle>{isInboxSearchActive ? "Search results" : "Email"}</CardTitle>
+                <CardDescription>
+                  {filteredMessages.length} loaded {isInboxSearchActive ? "matches" : inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "messages"}
+                </CardDescription>
               </div>
               <label className="flex shrink-0 items-center gap-2 text-sm text-zinc-500">
                 <span>Sort</span>
@@ -2449,7 +2576,9 @@ function InboxPage({
                 <InboxLoadingProgress completed={messageLoadProgress.completed} total={messageLoadProgress.total} />
               ) : filteredMessages.length === 0 ? (
                 <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
-                  {inboxMode === "drafts" ? "No drafts found." : inboxMode === "sent" ? "No sent messages found." : "No messages found for this label."}
+                  {isInboxSearchActive
+                    ? "No emails matched that search."
+                    : inboxMode === "drafts" ? "No drafts found." : inboxMode === "sent" ? "No sent messages found." : "No messages found for this label."}
                 </p>
               ) : (
                 filteredMessages.map((message) => (
@@ -2620,6 +2749,100 @@ function InboxPage({
             />
           </div>
         </>
+      ) : null}
+    </div>
+  );
+}
+
+function InboxSearchBox({
+  className,
+  isLoading,
+  isOpen,
+  onClear,
+  onCommit,
+  onFocus,
+  onOpenChange,
+  onSelectSuggestion,
+  onValueChange,
+  suggestions,
+  value,
+}: {
+  className?: string;
+  isLoading: boolean;
+  isOpen: boolean;
+  onClear: () => void;
+  onCommit: () => void;
+  onFocus: () => void;
+  onOpenChange: (open: boolean) => void;
+  onSelectSuggestion: (message: InboxMessage) => void;
+  onValueChange: (value: string) => void;
+  suggestions: InboxMessage[];
+  value: string;
+}) {
+  return (
+    <div className={cn("relative z-20 w-full", className)}>
+      <div className="flex h-10 items-center gap-2 rounded-md border border-white/70 bg-white/70 px-3 shadow-sm backdrop-blur-xl transition focus-within:border-zinc-300">
+        <Search className="h-4 w-4 shrink-0 text-zinc-400" />
+        <input
+          className="min-w-0 flex-1 bg-transparent text-sm text-zinc-950 outline-none placeholder:text-zinc-400"
+          onBlur={() => window.setTimeout(() => onOpenChange(false), 120)}
+          onChange={(event) => onValueChange(event.target.value)}
+          onFocus={onFocus}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onCommit();
+            }
+            if (event.key === "Escape") {
+              onOpenChange(false);
+            }
+          }}
+          placeholder="Search To, From, Subject"
+          type="search"
+          value={value}
+        />
+        {isLoading ? <Loader /> : null}
+        {value ? (
+          <button
+            aria-label="Clear inbox search"
+            className="cursor-pointer rounded-full p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
+            onClick={onClear}
+            type="button"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+      </div>
+
+      {isOpen && value.trim() ? (
+        <div className="absolute left-0 right-0 top-12 z-50 overflow-hidden rounded-xl border border-white/80 bg-white/90 shadow-2xl shadow-slate-900/15 backdrop-blur-xl">
+          {suggestions.length > 0 ? (
+            <div className="max-h-80 divide-y divide-zinc-100 overflow-y-auto">
+              {suggestions.map((message) => (
+                <button
+                  className="flex w-full cursor-pointer items-start gap-3 px-3 py-2.5 text-left hover:bg-zinc-50"
+                  key={`${message.accountId}-${message.mailbox ?? ""}-${message.id}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => onSelectSuggestion(message)}
+                  type="button"
+                >
+                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-600">
+                    {getSenderInitial(message.sender || message.from)}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-zinc-950">{message.subject || "(no subject)"}</span>
+                    <span className="mt-0.5 block truncate text-xs text-zinc-500">{message.sender || message.from || "Unknown sender"}</span>
+                  </span>
+                  <span className="shrink-0 text-xs text-zinc-400">{formatInboxListDate(message.date)}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="px-3 py-4 text-sm text-zinc-500">
+              {isLoading ? "Searching..." : "No matching emails found."}
+            </p>
+          )}
+        </div>
       ) : null}
     </div>
   );
@@ -11443,13 +11666,17 @@ function buildInboxMessageParams({
   if (inboxMode === "inbox") {
     params.set("labelId", labelId);
   }
-  if (inboxMode === "sent" && search) {
+  if (search) {
     params.set("search", search);
   }
   if (pageToken) {
     params.set("pageToken", pageToken);
   }
   return params;
+}
+
+function getInboxSearchSuggestionValue(message: InboxMessage) {
+  return message.subject?.trim() || message.sender?.trim() || message.from?.trim() || message.accountEmail;
 }
 
 function sortInboxMessagesForClient(messages: InboxMessage[], sort: InboxSort) {
