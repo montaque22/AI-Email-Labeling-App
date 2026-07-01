@@ -13,7 +13,7 @@ It is designed for people and teams who want to automate email workflows without
 
 ## Video overview
 
-[Watch the Emailable overview video](https://youtu.be/6c88xoYkGyA).
+[Watch the Emailable overview video](https://youtu.be/9v1Ta5EMWQ0).
 
 ## Documentation
 
