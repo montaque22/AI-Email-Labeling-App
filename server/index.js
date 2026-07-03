@@ -8,6 +8,7 @@ import { ensureAiPromptsTable, registerAiPromptRoutes } from "./ai-prompts.js";
 import { ensureByoAiTables, registerByoAiRoutes } from "./byoai.js";
 import { dbPool } from "./db.js";
 import { ensureEmailAccountsTable, registerEmailAccountRoutes } from "./email-accounts.js";
+import { ensureEmailIndexTable } from "./email-index.js";
 import { registerInboxRoutes } from "./inbox.js";
 import { ensureIntegrationTables, registerIntegrationRoutes } from "./integrations.js";
 import { ensureLabelsTable, registerLabelRoutes } from "./labels.js";
@@ -222,6 +223,7 @@ function getIngressBasePath(req) {
 async function startServer() {
   try {
     await ensureEmailAccountsTable();
+    await ensureEmailIndexTable();
     await ensureLabelsTable();
     await ensureSettingsTable();
     await ensureIntegrationTables();

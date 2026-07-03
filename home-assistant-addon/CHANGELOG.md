@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.62
+
+- Added archived email browsing to the Inbox mode selector.
+- Added desktop archive and icon-only compose/delete controls.
+- Added a save-draft action beside Send in the compose and reply composer.
+
+## 0.1.61
+
+- Added database-backed email metadata indexing for labeled and sent mail.
+- Updated Inbox list, label counts, and search to read indexed email metadata instead of fetching provider message lists.
+- Changed Inbox deletes to remove indexed messages immediately and delete from providers in the background.
+
 ## 0.1.60
 
 - Added Inbox search across connected accounts for To, From, and Subject matches with 1-second debounced top-result suggestions.

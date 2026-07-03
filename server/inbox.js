@@ -7,6 +7,15 @@ import {
   isImapBackedProvider,
 } from "./email-accounts.js";
 import {
+  archiveEmailIndexEntries,
+  deleteEmailIndexEntries,
+  getEmailIndexLabelCounts,
+  listEmailIndexEntries,
+  updateEmailIndexLabels,
+  updateEmailIndexReadStatus,
+  upsertEmailIndexEntry,
+} from "./email-index.js";
+import {
   createImapComposeDraft,
   fetchImapInboxMessage,
   getImapInboxCount,
@@ -19,6 +28,7 @@ import {
 import { modifyGmailMessageLabels } from "./integrations.js";
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
+import crypto from "node:crypto";
 import nodemailer from "nodemailer";
 
 const INBOX_PAGE_SIZE = 10;
@@ -187,6 +197,21 @@ export function registerInboxRoutes(app) {
       handleProviderError(res, error);
     }
   });
+
+  app.post("/api/inbox/messages/archive", requireSession, async (req, res) => {
+    try {
+      const input = parseBulkMessageInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      const result = await archiveInboxMessages(req.user.id, input.messages);
+      res.json(result);
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
 }
 
 async function listInboxDrafts(userId, query) {
@@ -200,64 +225,28 @@ async function listInboxDrafts(userId, query) {
 }
 
 async function listInboxSentMessages(userId, query) {
-  return listSpecialMailboxMessages(userId, query, {
-    gmailLabelId: "SENT",
-    imapMetadataKey: "sentMailbox",
-    fallbackMailbox: "Sent",
-    labelName: "Sent",
-    unsupportedReason: "Provider sent mail is not implemented yet",
+  const result = await listEmailIndexEntries(userId, {
+    accountIds: query.accountIds,
+    direction: "sent",
+    pageToken: query.pageToken,
+    search: query.search,
+    sort: query.sort,
+    limit: INBOX_PAGE_SIZE,
   });
+  return { ...result, skippedAccounts: [] };
 }
 
 async function searchInboxMessages(userId, query) {
-  const accounts = await getInboxAccounts(userId, query.accountIds);
-  const pageToken = decodePageToken(query.pageToken);
-  const nextPageState = {};
-  const providerResults = [];
-  const skippedAccounts = [];
-
-  for (const account of accounts) {
-    if (account.provider !== "gmail" && !isImapBackedProvider(account.provider)) {
-      skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: "Provider inbox search is not implemented yet" });
-      continue;
-    }
-
-    try {
-      if (account.provider === "gmail") {
-        const accessToken = await getValidEmailAccountAccessToken(account);
-        const result = await searchGmailInboxMessages({
-          accessToken,
-          account,
-          pageToken: pageToken[account.id] ?? "",
-          query: query.search,
-        });
-        nextPageState[account.id] = result.nextPageToken;
-        providerResults.push(...result.messages);
-      } else {
-        const accessToken = await getImapAccessToken(account);
-        const result = await searchImapInboxMessages(account, {
-          accessToken,
-          folder: account.metadata?.defaultMailbox || "INBOX",
-          limit: INBOX_PAGE_SIZE,
-          pageToken: pageToken[account.id] ?? "",
-          query: query.search,
-        });
-        nextPageState[account.id] = result.nextPageToken;
-        providerResults.push(...result.messages);
-      }
-    } catch (error) {
-      skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: error.message });
-    }
-  }
-
-  const messages = await attachRuleStatus(userId, sortInboxMessages(providerResults, query.sort));
-  const hasMore = Object.values(nextPageState).some(Boolean);
-
-  return {
-    messages,
-    nextPageToken: hasMore ? encodePageToken(nextPageState) : null,
-    skippedAccounts,
-  };
+  const result = await listEmailIndexEntries(userId, {
+    accountIds: query.accountIds,
+    direction: "inbox",
+    includeArchived: true,
+    pageToken: query.pageToken,
+    search: query.search,
+    sort: query.sort,
+    limit: INBOX_PAGE_SIZE,
+  });
+  return { ...result, messages: await attachRuleStatus(userId, result.messages), skippedAccounts: [] };
 }
 
 async function listSpecialMailboxMessages(userId, query, options) {
@@ -327,10 +316,7 @@ async function listSpecialMailboxMessages(userId, query, options) {
 }
 
 async function listInboxMessages(userId, query) {
-  const [label, accounts] = await Promise.all([
-    getInboxLabel(userId, query.labelId),
-    getInboxAccounts(userId, query.accountIds),
-  ]);
+  const label = await getInboxLabel(userId, query.labelId);
 
   if (!label) {
     const error = new Error("Label not found");
@@ -338,64 +324,22 @@ async function listInboxMessages(userId, query) {
     throw error;
   }
 
-  const syncsByAccountId = new Map(label.syncs.map((sync) => [sync.emailAccountId, sync]));
-  const pageToken = decodePageToken(query.pageToken);
-  const nextPageState = {};
-  const providerResults = [];
-  const skippedAccounts = [];
-
-  for (const account of accounts) {
-    const sync = syncsByAccountId.get(account.id);
-    if (!sync?.providerLabelId || sync.syncStatus !== "synced") {
-      continue;
-    }
-
-    if (account.provider !== "gmail" && !isImapBackedProvider(account.provider)) {
-      skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: "Provider inbox is not implemented yet" });
-      continue;
-    }
-
-    try {
-      if (account.provider === "gmail") {
-        const accessToken = await getValidEmailAccountAccessToken(account);
-        const result = await listGmailInboxMessages({
-          accessToken,
-          account,
-          label,
-          providerLabelId: sync.providerLabelId,
-          pageToken: pageToken[account.id] ?? "",
-          query: query.search,
-        });
-        nextPageState[account.id] = result.nextPageToken;
-        providerResults.push(...result.messages);
-      } else {
-        const accessToken = await getImapAccessToken(account);
-        if (isSpecialImapMailbox(account, sync.providerLabelId)) {
-          continue;
-        }
-        const result = await searchImapInboxMessages(account, {
-          accessToken,
-          folder: sync.providerLabelId,
-          limit: INBOX_PAGE_SIZE,
-          pageToken: pageToken[account.id] ?? "",
-          query: query.search,
-        });
-        nextPageState[account.id] = result.nextPageToken;
-        providerResults.push(...result.messages.map((message) => ({ ...message, labels: [label.name] })));
-      }
-    } catch (error) {
-      skippedAccounts.push({ accountId: account.id, email: account.email, provider: account.provider, reason: error.message });
-    }
-  }
-
-  const messages = await attachRuleStatus(userId, sortInboxMessages(providerResults, query.sort));
-  const hasMore = Object.values(nextPageState).some(Boolean);
+  const result = await listEmailIndexEntries(userId, {
+    accountIds: query.accountIds,
+    direction: "inbox",
+    labelName: label.name,
+    archivedOnly: Boolean(query.archivedOnly),
+    pageToken: query.pageToken,
+    search: query.search,
+    sort: query.sort,
+    limit: INBOX_PAGE_SIZE,
+  });
 
   return {
     label: { id: label.id, name: label.name, description: label.description },
-    messages,
-    nextPageToken: hasMore ? encodePageToken(nextPageState) : null,
-    skippedAccounts,
+    messages: await attachRuleStatus(userId, result.messages),
+    nextPageToken: result.nextPageToken,
+    skippedAccounts: [],
   };
 }
 
@@ -413,6 +357,7 @@ async function getInboxMessage(userId, query) {
     const accessToken = await getValidEmailAccountAccessToken(account);
     const message = await fetchGmailInboxMessage(accessToken, account, query.emailId);
     const isRead = await markGmailMessageRead(accessToken, message);
+    await updateEmailIndexReadStatus(userId, { accountId: account.id, emailId: message.id, mailbox: message.mailbox, isRead });
     return attachSingleRuleStatus(userId, { ...message, isRead });
   }
 
@@ -420,6 +365,7 @@ async function getInboxMessage(userId, query) {
     const accessToken = await getImapAccessToken(account);
     const message = await fetchImapInboxMessage(account, { accessToken, emailId: query.emailId, mailbox: query.mailbox });
     const isRead = await markImapMessageRead(account, message, accessToken);
+    await updateEmailIndexReadStatus(userId, { accountId: account.id, emailId: message.id, mailbox: message.mailbox, isRead });
     return attachSingleRuleStatus(userId, { ...message, isRead });
   }
 
@@ -492,50 +438,9 @@ async function attachSingleRuleStatus(userId, message) {
   return messageWithRule;
 }
 
-async function getInboxLabelCounts(userId, { accountIds }) {
+async function getInboxLabelCounts(userId, { accountIds, archivedOnly = false }) {
   const [labels, accounts] = await Promise.all([getInboxLabels(userId), getInboxAccounts(userId, accountIds)]);
-  const accountIdsSet = new Set(accounts.map((account) => account.id));
-  const counts = {};
-
-  for (const label of labels) {
-    let count = 0;
-    let hasCount = false;
-
-    for (const sync of label.syncs) {
-      if (!accountIdsSet.has(sync.emailAccountId) || !sync.providerLabelId || sync.syncStatus !== "synced") {
-        continue;
-      }
-
-      const account = accounts.find((candidate) => candidate.id === sync.emailAccountId);
-      if (!account) {
-        continue;
-      }
-
-      try {
-        if (account.provider === "gmail") {
-          const accessToken = await getValidEmailAccountAccessToken(account);
-          const estimate = await getGmailLabelEstimate(accessToken, sync.providerLabelId);
-          if (typeof estimate === "number") {
-            count += estimate;
-            hasCount = true;
-          }
-        } else if (isImapBackedProvider(account.provider)) {
-          const accessToken = await getImapAccessToken(account);
-          const estimate = await getImapInboxCount(account, sync.providerLabelId, accessToken);
-          if (typeof estimate === "number") {
-            count += estimate;
-            hasCount = true;
-          }
-        }
-      } catch {
-        // Counts are best-effort and should not block the Inbox.
-      }
-    }
-
-    counts[label.id] = hasCount ? count : null;
-  }
-
-  return counts;
+  return getEmailIndexLabelCounts(userId, { accountIds: accounts.map((account) => account.id), archivedOnly, labels });
 }
 
 async function createInboxDraft(userId, compose) {
@@ -632,6 +537,30 @@ async function sendInboxEmail(userId, compose) {
   const sent = account.provider === "gmail"
     ? await sendGmailComposeMessage(accessToken, account, compose)
     : await sendMicrosoftComposeMessage(accessToken, account, compose);
+  await upsertEmailIndexEntry(userId, {
+    emailAccountId: account.id,
+    accountEmail: account.email,
+    provider: account.provider,
+    emailId: sent?.id ?? crypto.randomUUID(),
+    threadId: sent?.threadId ?? compose.threadId ?? sent?.id ?? "",
+    mailbox: "sent",
+    direction: "sent",
+    fromEmail: account.email,
+    fromName: account.displayName || account.email,
+    toEmails: compose.to,
+    subject: compose.subject,
+    snippet: compose.bodyText.slice(0, 300),
+    labels: ["Sent"],
+    receivedAt: new Date(),
+    isRead: true,
+    hasAttachments: compose.attachments.length > 0,
+    respondingToEmailId: compose.replyToEmailId || null,
+    metadata: {
+      sendType: compose.replyToEmailId ? "reply" : compose.forwardFromEmailId ? "forward" : "sent",
+      replyToEmailId: compose.replyToEmailId || null,
+      forwardFromEmailId: compose.forwardFromEmailId || null,
+    },
+  });
 
   await emitWebhookEvent(userId, "email.sent", {
     to: splitAddressList(compose.to),
@@ -722,6 +651,13 @@ async function relabelInboxMessages(userId, action) {
         added: [targetLabel.name],
         removed: sourceLabel && sourceLabel.id !== targetLabel.id ? [sourceLabel.name] : [],
         source: "inbox",
+      });
+      await updateEmailIndexLabels(userId, {
+        accountId: account.id,
+        emailId: message.emailId,
+        mailbox: message.mailbox || "",
+        nextMailbox: account.provider === "gmail" ? "" : targetSync.providerLabelId,
+        labels: [targetLabel.name],
       });
       results.push({ ...message, ok: true });
     } catch (error) {
@@ -816,6 +752,13 @@ async function setInboxMessagesLabel(userId, action) {
         removed: removedLabelNames,
         source: "inbox",
       });
+      await updateEmailIndexLabels(userId, {
+        accountId: account.id,
+        emailId: message.emailId,
+        mailbox: message.mailbox || "",
+        nextMailbox: account.provider === "gmail" ? "" : targetSync?.providerLabelId || account.metadata?.defaultMailbox || "INBOX",
+        labels: targetLabel ? [targetLabel.name] : [],
+      });
       results.push({
         ...message,
         ok: true,
@@ -847,22 +790,8 @@ async function deleteInboxMessages(userId, messages) {
     }
 
     try {
-      if (account.provider === "gmail") {
-        const accessToken = await getValidEmailAccountAccessToken(account);
-        await trashGmailMessage(accessToken, message.emailId);
-      } else if (isImapBackedProvider(account.provider)) {
-        const accessToken = await getImapAccessToken(account);
-        await moveImapInboxMessageToTrash({ account, accessToken, emailId: message.emailId, sourceMailbox: message.mailbox });
-      } else {
-        throw new Error(`${account.provider} delete is not implemented yet`);
-      }
-
-      await emitWebhookEvent(userId, "email.deleted", {
-        emailId: message.emailId,
-        accountEmail: account.email,
-        provider: account.provider,
-        source: "inbox",
-      });
+      await deleteEmailIndexEntries(userId, [message]);
+      queueProviderDelete(userId, account, message);
       results.push({ ...message, ok: true });
     } catch (error) {
       results.push({ ...message, ok: false, error: error.message });
@@ -884,6 +813,71 @@ async function deleteInboxMessages(userId, messages) {
     failed,
     results,
   };
+}
+
+async function archiveInboxMessages(userId, messages) {
+  const archivedRows = await archiveEmailIndexEntries(userId, messages);
+  const archivedKeys = new Set(archivedRows.map((message) => `${message.accountId}:${message.id}:${message.mailbox ?? ""}`));
+  const results = messages.map((message) => ({
+    ...message,
+    ok: archivedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`),
+    error: archivedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`) ? undefined : "Message was not found",
+  }));
+  const archived = results.filter((result) => result.ok).length;
+  const failed = results.filter((result) => !result.ok);
+
+  await logSystemEvent(userId, {
+    category: "email",
+    eventName: "email.archived",
+    status: failed.length > 0 ? (archived > 0 ? "warning" : "error") : "success",
+    message: `${archived} email${archived === 1 ? "" : "s"} archived${failed.length ? `; ${failed.length} failed` : ""}.`,
+    payload: { archived, failed, messages },
+  });
+
+  return {
+    archived,
+    failed,
+    results,
+  };
+}
+
+function queueProviderDelete(userId, account, message) {
+  void deleteProviderMessage(userId, account, message).catch((error) => {
+    console.warn(`Background provider delete failed for ${account.email} ${message.emailId}:`, error.message);
+    void logSystemEvent(userId, {
+      category: "email",
+      eventName: "email.provider_delete_failed",
+      status: "error",
+      message: `Provider delete failed for ${account.email}: ${error.message}`,
+      payload: { emailId: message.emailId, accountEmail: account.email, provider: account.provider, error: error.message },
+    }).catch(() => {});
+  });
+}
+
+async function deleteProviderMessage(userId, account, message) {
+  if (account.provider === "gmail") {
+    const accessToken = await getValidEmailAccountAccessToken(account);
+    await trashGmailMessage(accessToken, message.emailId);
+  } else if (isImapBackedProvider(account.provider)) {
+    const accessToken = await getImapAccessToken(account);
+    await moveImapInboxMessageToTrash({ account, accessToken, emailId: message.emailId, sourceMailbox: message.mailbox });
+  } else {
+    throw new Error(`${account.provider} delete is not implemented yet`);
+  }
+
+  await emitWebhookEvent(userId, "email.deleted", {
+    emailId: message.emailId,
+    accountEmail: account.email,
+    provider: account.provider,
+    source: "inbox",
+  });
+  await logSystemEvent(userId, {
+    category: "email",
+    eventName: "email.provider_delete_completed",
+    status: "success",
+    message: `Provider delete completed for ${account.email}.`,
+    payload: { emailId: message.emailId, accountEmail: account.email, provider: account.provider },
+  });
 }
 
 async function getInboxAccounts(userId, accountIds = []) {
@@ -1358,6 +1352,7 @@ function parseInboxListQuery(query) {
     ok: true,
     query: {
       labelId,
+      archivedOnly: query.archived === "true",
       accountIds: parseCsv(query.accounts),
       pageToken: typeof query.pageToken === "string" ? query.pageToken : "",
       search: typeof query.search === "string" ? query.search.trim() : "",
@@ -1396,7 +1391,7 @@ function parseInboxDetailQuery(query) {
 }
 
 function parseLabelCountsQuery(query) {
-  return { accountIds: parseCsv(query.accounts) };
+  return { accountIds: parseCsv(query.accounts), archivedOnly: query.archived === "true" };
 }
 
 function parseComposeInput(body) {
@@ -1408,6 +1403,7 @@ function parseComposeInput(body) {
     subject: typeof body?.subject === "string" ? body.subject.trim() : "",
     bodyText: typeof body?.bodyText === "string" ? body.bodyText : "",
     replyToEmailId: typeof body?.replyToEmailId === "string" ? body.replyToEmailId.trim() : "",
+    forwardFromEmailId: typeof body?.forwardFromEmailId === "string" ? body.forwardFromEmailId.trim() : "",
     threadId: typeof body?.threadId === "string" ? body.threadId.trim() : "",
     attachments: Array.isArray(body?.attachments)
       ? body.attachments

@@ -13,6 +13,7 @@ import {
 import {
   BarChart3,
   BookOpen,
+  Archive,
   ArrowDown,
   ArrowUp,
   Check,
@@ -374,7 +375,7 @@ function ensureSystemMcpClient(clients: AiMcpClientConfig[]): AiMcpClientConfig[
 }
 
 type InboxSort = "newest" | "oldest" | "sender" | "subject";
-type InboxMode = "inbox" | "drafts" | "sent";
+type InboxMode = "inbox" | "drafts" | "sent" | "archive";
 
 const INBOX_ALL_LABEL_ID = "__all__";
 const INBOX_PAGE_DONE = "__done__";
@@ -1615,7 +1616,7 @@ function InboxPage({
   useEffect(() => {
     const isSearchActive = committedInboxSearch.trim().length > 0;
     const activeAccountIds = isSearchActive ? accounts.map((account) => account.id) : selectedAccountIds;
-    if (activeAccountIds.length === 0 || (!isSearchActive && inboxMode === "inbox" && !selectedLabelId)) {
+    if (activeAccountIds.length === 0 || (!isSearchActive && isLabelFilteredInboxMode(inboxMode) && !selectedLabelId)) {
       setMessages([]);
       setNextPageToken(null);
       return;
@@ -1657,7 +1658,7 @@ function InboxPage({
   }, [isAccountMenuOpen]);
 
   useEffect(() => {
-    if (inboxMode !== "inbox" || selectedAccountIds.length === 0 || labels.length === 0) {
+    if (!isLabelFilteredInboxMode(inboxMode) || selectedAccountIds.length === 0 || labels.length === 0) {
       setLabelCounts({});
       setIsCountsLoading(false);
       return;
@@ -1666,7 +1667,11 @@ function InboxPage({
     async function loadCounts() {
       setIsCountsLoading(true);
       try {
-        const response = await fetch(`/api/inbox/label-counts?accounts=${encodeURIComponent(selectedAccountIds.join(","))}`, {
+        const params = new URLSearchParams({ accounts: selectedAccountIds.join(",") });
+        if (inboxMode === "archive") {
+          params.set("archived", "true");
+        }
+        const response = await fetch(`/api/inbox/label-counts?${params.toString()}`, {
           credentials: "include",
         });
         const data = await response.json();
@@ -1809,7 +1814,7 @@ function InboxPage({
     const activeSearch = committedInboxSearch.trim();
     const isSearchActive = activeSearch.length > 0;
     const activeAccountIds = isSearchActive ? accounts.map((account) => account.id) : selectedAccountIds;
-    if (activeAccountIds.length === 0 || (!isSearchActive && inboxMode === "inbox" && !selectedLabelId)) {
+    if (activeAccountIds.length === 0 || (!isSearchActive && isLabelFilteredInboxMode(inboxMode) && !selectedLabelId)) {
       return;
     }
 
@@ -1834,7 +1839,7 @@ function InboxPage({
 
     try {
       const endpoint = isSearchActive ? "/api/inbox/search" : inboxMode === "drafts" ? "/api/inbox/drafts" : inboxMode === "sent" ? "/api/inbox/sent" : "/api/inbox/messages";
-      const isAllLabels = !isSearchActive && inboxMode === "inbox" && selectedLabelId === INBOX_ALL_LABEL_ID;
+      const isAllLabels = !isSearchActive && isLabelFilteredInboxMode(inboxMode) && selectedLabelId === INBOX_ALL_LABEL_ID;
       const currentPageState = reset ? {} : decodeInboxPageToken(nextPageToken);
       const targets = reset
         ? activeAccountIds.flatMap((accountId) => {
@@ -1865,7 +1870,7 @@ function InboxPage({
                 providerPageToken,
               };
             })
-            .filter((target) => target.accountId && (isSearchActive || inboxMode !== "inbox" || target.labelId));
+            .filter((target) => target.accountId && (isSearchActive || !isLabelFilteredInboxMode(inboxMode) || target.labelId));
 
       if (reset) {
         setMessageLoadProgress({ completed: 0, total: targets.length });
@@ -1930,7 +1935,7 @@ function InboxPage({
       }
     } catch {
       if (messageRequestIdRef.current === requestId) {
-        setError(`Could not load ${inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "inbox messages"}.`);
+        setError(`Could not load ${getInboxModeDescription(inboxMode)}.`);
         if (!reset) {
           setNextPageToken(null);
         }
@@ -2170,7 +2175,7 @@ function InboxPage({
       const updatedKeys = new Set(successfulUpdates.map(getInboxMessageKey));
       const nextLabelName = typeof data.label?.name === "string" ? data.label.name : "";
       const currentLabelName = labels.find((label) => label.id === selectedLabelId)?.name ?? "";
-      const shouldRemoveFromCurrentInboxView = inboxMode === "inbox" && currentLabelName && currentLabelName !== nextLabelName;
+      const shouldRemoveFromCurrentInboxView = isLabelFilteredInboxMode(inboxMode) && currentLabelName && currentLabelName !== nextLabelName;
 
       updateCountsForDirectLabelChange(successfulUpdates, nextLabelName);
       setMessages((current) =>
@@ -2255,6 +2260,60 @@ function InboxPage({
     }
   }
 
+  async function archiveSelectedMessages(messagesToArchive = selectedMessages) {
+    if (messagesToArchive.length === 0) {
+      return;
+    }
+
+    setIsBulkActionRunning(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/inbox/messages/archive", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: messagesToArchive.map(messageToBulkPayload) }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error ?? "Could not archive messages.");
+        showInboxToast(data.error ?? "Could not archive messages.", "error");
+        return;
+      }
+
+      const successfulArchives = Array.isArray(data.results)
+        ? messagesToArchive.filter((message) =>
+            data.results.some((result: { accountId: string; emailId: string; mailbox?: string; ok: boolean }) =>
+              result.ok &&
+              result.accountId === message.accountId &&
+              result.emailId === message.id &&
+              (result.mailbox ?? "") === (message.mailbox ?? ""),
+            ),
+          )
+        : messagesToArchive;
+      const archivedKeys = new Set(successfulArchives.map(getInboxMessageKey));
+
+      decrementCountsForMessages(successfulArchives);
+      setMessages((current) => current.filter((message) => !archivedKeys.has(getInboxMessageKey(message))));
+      setSelectedMessageKeys((current) => current.filter((key) => !archivedKeys.has(key)));
+      if (successfulArchives.length > 0) {
+        showInboxToast(`${successfulArchives.length} message${successfulArchives.length === 1 ? "" : "s"} archived.`);
+      }
+      if (data.failed?.length) {
+        setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be archived.`);
+        showInboxToast(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be archived.`, "error");
+      }
+      if (successfulArchives.length === selectedMessages.length) {
+        setIsMobileEditMode(false);
+      }
+    } catch {
+      setError("Could not archive messages.");
+      showInboxToast("Could not archive messages.", "error");
+    } finally {
+      setIsBulkActionRunning(false);
+    }
+  }
+
   function openReplyComposer(detail: InboxMessageDetail | null, summary: InboxMessage) {
     setComposeInitial({
       accountId: summary.accountId,
@@ -2311,11 +2370,11 @@ function InboxPage({
             </Button>
             <button
               className="min-w-0 flex-1 truncate rounded-full border border-white/70 bg-white/60 px-4 py-2 text-center text-sm font-semibold text-zinc-950 shadow-sm backdrop-blur-xl disabled:cursor-default"
-              disabled={inboxMode !== "inbox"}
+              disabled={!isLabelFilteredInboxMode(inboxMode)}
               onClick={() => setIsMobileLabelPickerOpen(true)}
               type="button"
             >
-              {inboxMode === "inbox"
+              {isLabelFilteredInboxMode(inboxMode)
                 ? selectedLabelId === INBOX_ALL_LABEL_ID ? "All" : selectedLabel?.name || "Choose label"
                 : inboxMode === "drafts" ? "Drafts" : "Sent"}
             </button>
@@ -2340,17 +2399,31 @@ function InboxPage({
         <Plus className="h-5 w-5" />
       </Button> : null}
       {isMobileEditMode && selectedMessages.length > 0 ? (
-        <Button
-          aria-label="Delete selected emails"
-          className="fixed bottom-5 right-5 z-40 h-14 w-14 rounded-full border-red-200/80 bg-red-50/80 text-red-600 shadow-xl shadow-red-900/10 backdrop-blur-xl hover:bg-red-100/90 hover:text-red-700 md:hidden"
-          disabled={isBulkActionRunning || isLabelActionRunning}
-          onClick={() => void deleteSelectedMessages()}
-          size="icon"
-          type="button"
-          variant="outline"
-        >
-          {isBulkActionRunning ? <Loader /> : <Trash2 className="h-5 w-5" />}
-        </Button>
+        <div className="fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/70 bg-white/70 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:hidden">
+          <Button
+            aria-label="Archive selected emails"
+            className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
+            disabled={isBulkActionRunning || isLabelActionRunning}
+            onClick={() => void archiveSelectedMessages()}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
+            {isBulkActionRunning ? <Loader /> : <Archive className="h-5 w-5" />}
+          </Button>
+          <div className="h-8 w-px bg-zinc-200/80" />
+          <Button
+            aria-label="Delete selected emails"
+            className="h-12 w-12 rounded-full border-transparent bg-white/35 text-red-600 hover:bg-red-50/80 hover:text-red-700"
+            disabled={isBulkActionRunning || isLabelActionRunning}
+            onClick={() => void deleteSelectedMessages()}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
+            {isBulkActionRunning ? <Loader /> : <Trash2 className="h-5 w-5" />}
+          </Button>
+        </div>
       ) : null}
 
       {accountsNeedingRefresh.length > 0 ? (
@@ -2389,8 +2462,8 @@ function InboxPage({
         </div>
       ) : null}
 
-      <div className={cn("grid min-w-0 gap-4 xl:gap-5", inboxMode === "inbox" ? "xl:grid-cols-[260px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
-        {inboxMode === "inbox" ? (
+      <div className={cn("grid min-w-0 gap-4 xl:gap-5", isLabelFilteredInboxMode(inboxMode) ? "xl:grid-cols-[260px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
+        {isLabelFilteredInboxMode(inboxMode) ? (
         <div className="hidden self-start xl:sticky xl:top-20 xl:z-20 xl:block">
           <Card className="flex max-h-[calc(100vh-6rem)] flex-col overflow-hidden">
             <CardHeader>
@@ -2453,7 +2526,7 @@ function InboxPage({
                   value={inboxSearch}
                 />
                 <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
-                {inboxMode === "inbox" ? (
+                {isLabelFilteredInboxMode(inboxMode) ? (
                 <label className="block xl:hidden">
                   <span className="sr-only">Label filter</span>
                   <select
@@ -2512,21 +2585,42 @@ function InboxPage({
                       onChange={(labelId) => void setMessagesLabel(selectedMessages, labelId)}
                       value={selectedMessagesLabelValue}
                     />
-                    <Button disabled={isBulkActionRunning || isLabelActionRunning} onClick={() => void deleteSelectedMessages()} type="button" variant="outline">
+                    <Button
+                      aria-label="Archive selected emails"
+                      className="h-10 w-10 border-white/70 bg-white/60 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/80"
+                      disabled={isBulkActionRunning || isLabelActionRunning}
+                      onClick={() => void archiveSelectedMessages()}
+                      size="icon"
+                      type="button"
+                      variant="outline"
+                    >
+                      {isBulkActionRunning ? <Loader /> : <Archive className="h-4 w-4" />}
+                    </Button>
+                    <Button
+                      aria-label="Delete selected emails"
+                      className="h-10 w-10 border-red-200/80 bg-red-50/75 text-red-600 shadow-sm backdrop-blur-xl hover:bg-red-100/90 hover:text-red-700"
+                      disabled={isBulkActionRunning || isLabelActionRunning}
+                      onClick={() => void deleteSelectedMessages()}
+                      size="icon"
+                      type="button"
+                      variant="outline"
+                    >
                       {isBulkActionRunning ? <Loader /> : <Trash2 className="h-4 w-4" />}
-                      Delete
                     </Button>
                   </>
                 ) : null}
                 <Button
+                  aria-label="Compose email"
+                  className="h-10 w-10 rounded-full border-white/70 bg-white/60 text-zinc-900 shadow-sm backdrop-blur-xl hover:bg-white/80"
                   onClick={() => {
                     setComposeInitial(null);
                     setIsComposeOpen(true);
                   }}
+                  size="icon"
                   type="button"
+                  variant="outline"
                 >
                   <Plus className="h-4 w-4" />
-                  Compose
                 </Button>
               </div>
               </CardContent>
@@ -2541,7 +2635,7 @@ function InboxPage({
               <div className="min-w-0">
                 <CardTitle>{isInboxSearchActive ? "Search results" : "Email"}</CardTitle>
                 <CardDescription>
-                  {filteredMessages.length} loaded {isInboxSearchActive ? "matches" : inboxMode === "drafts" ? "drafts" : inboxMode === "sent" ? "sent messages" : "messages"}
+                  {filteredMessages.length} loaded {isInboxSearchActive ? "matches" : getInboxModeDescription(inboxMode)}
                 </CardDescription>
               </div>
               <label className="flex shrink-0 items-center gap-2 text-sm text-zinc-500">
@@ -2578,7 +2672,7 @@ function InboxPage({
                 <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
                   {isInboxSearchActive
                     ? "No emails matched that search."
-                    : inboxMode === "drafts" ? "No drafts found." : inboxMode === "sent" ? "No sent messages found." : "No messages found for this label."}
+                    : inboxMode === "drafts" ? "No drafts found." : inboxMode === "sent" ? "No sent messages found." : inboxMode === "archive" ? "No archived messages found for this label." : "No messages found for this label."}
                 </p>
               ) : (
                 filteredMessages.map((message) => (
@@ -2853,16 +2947,18 @@ function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode:
     { id: "inbox", label: "Inbox" },
     { id: "drafts", label: "Drafts" },
     { id: "sent", label: "Sent" },
+    { id: "archive", label: "Archive" },
   ];
   const selectedIndex = options.findIndex((option) => option.id === mode);
 
   return (
-    <div className="relative inline-grid h-10 w-full grid-cols-3 rounded-md border border-zinc-200 bg-[#f7f7f7] p-1 shadow-sm backdrop-blur-xl md:w-72">
+    <div className="relative inline-grid h-10 w-full grid-cols-4 rounded-md border border-zinc-200 bg-[#f7f7f7] p-1 shadow-sm backdrop-blur-xl md:w-96">
       <span
         className={cn(
-          "absolute bottom-1 left-1 top-1 w-[calc((100%-0.5rem)/3)] rounded-md bg-white shadow-sm transition-transform duration-300 ease-out",
+          "absolute bottom-1 left-1 top-1 w-[calc((100%-0.5rem)/4)] rounded-md bg-white shadow-sm transition-transform duration-300 ease-out",
           selectedIndex === 1 && "translate-x-full",
           selectedIndex === 2 && "translate-x-[200%]",
+          selectedIndex === 3 && "translate-x-[300%]",
         )}
       />
       {options.map((option) => (
@@ -3190,6 +3286,15 @@ function InboxMessageRow({
                 </span>
               ) : null}
             </div>
+            {message.labels.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {message.labels.slice(0, 3).map((label) => (
+                  <Badge className="w-fit bg-blue-50 text-blue-700" key={label}>
+                    {label}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
             <div className="mt-1 flex min-w-0 items-center gap-3">
               <p className="min-w-0 flex-1 truncate text-base text-zinc-500">{message.snippet || "No preview available."}</p>
               <p className="shrink-0 text-sm font-semibold text-zinc-500">{formatInboxListDate(message.date)}</p>
@@ -4007,7 +4112,7 @@ function InboxComposeModal({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [savedMessage, setSavedMessage] = useState("");
   const bodyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const aiInstructionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const replyContext = initial?.replyContext ?? null;
@@ -4058,13 +4163,11 @@ function InboxComposeModal({
     event.preventDefault();
     setIsSaving(true);
     setError(null);
-    setSaved(false);
+    setSavedMessage("");
 
     try {
-      const response = await fetch(
-        isExistingDraft ? `/api/inbox/drafts/${encodeURIComponent(initial?.draftId || "")}` : "/api/inbox/send",
-        {
-        method: isExistingDraft ? "PUT" : "POST",
+      const response = await fetch("/api/inbox/send", {
+        method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -4082,14 +4185,54 @@ function InboxComposeModal({
       });
       const data = await response.json();
       if (!response.ok) {
-        setError(data.error ?? (isExistingDraft ? "Could not save draft." : "Could not send email."));
+        setError(data.error ?? "Could not send email.");
         return;
       }
-      setSaved(true);
-      onSaved?.(isExistingDraft ? "draft" : "sent");
+      setSavedMessage("Email sent.");
+      onSaved?.("sent");
       onClose();
     } catch {
-      setError(isExistingDraft ? "Could not save draft." : "Could not send email.");
+      setError("Could not send email.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function saveDraft() {
+    setIsSaving(true);
+    setError(null);
+    setSavedMessage("");
+
+    try {
+      const response = await fetch(
+        isExistingDraft ? `/api/inbox/drafts/${encodeURIComponent(initial?.draftId || "")}` : "/api/inbox/compose",
+        {
+          method: isExistingDraft ? "PUT" : "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            accountId,
+            to,
+            cc,
+            bcc,
+            subject,
+            bodyText,
+            attachments,
+            replyToEmailId: replyContext?.emailId || "",
+            threadId: replyContext?.threadId || initial?.threadId || "",
+            mailbox: initial?.mailbox || "",
+          }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error ?? "Could not save draft.");
+        return;
+      }
+      setSavedMessage("Draft saved.");
+      onSaved?.("draft");
+    } catch {
+      setError("Could not save draft.");
     } finally {
       setIsSaving(false);
     }
@@ -4163,8 +4306,8 @@ function InboxComposeModal({
                     <Sparkles className="h-4 w-4" />
                   </Button>
                 ) : null}
-                <Button aria-label={isExistingDraft ? "Save draft" : "Send email"} disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} form={composeFormId} size="icon" type="submit" variant="ghost">
-                  {isSaving ? <Loader /> : isExistingDraft ? <Save className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+                <Button aria-label="Send email" disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} form={composeFormId} size="icon" type="submit" variant="ghost">
+                  {isSaving ? <Loader /> : <Send className="h-4 w-4" />}
                 </Button>
               </div>
             ) : (
@@ -4234,7 +4377,7 @@ function InboxComposeModal({
         ) : (
         <form className="space-y-4" id={composeFormId} onSubmit={submitEmail}>
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-          {saved ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{isExistingDraft ? "Draft saved." : "Email sent."}</p> : null}
+          {savedMessage ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{savedMessage}</p> : null}
           {replyContext ? (
             <div className="rounded-xl border border-zinc-200 bg-white/60 p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-zinc-200 pb-3">
@@ -4359,8 +4502,12 @@ function InboxComposeModal({
                 AI Draft
               </Button>
             ) : null}
+            <Button disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} onClick={() => void saveDraft()} type="button" variant="outline">
+              <Save className="h-4 w-4" />
+              {isSaving ? "Saving..." : "Save"}
+            </Button>
             <Button disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} type="submit">
-              {isSaving ? (isExistingDraft ? "Saving..." : "Sending...") : (isExistingDraft ? "Save draft" : "Send email")}
+              {isSaving ? "Sending..." : "Send email"}
             </Button>
           </div>
         </form>
@@ -11666,6 +11813,10 @@ function buildInboxMessageParams({
   if (inboxMode === "inbox") {
     params.set("labelId", labelId);
   }
+  if (inboxMode === "archive") {
+    params.set("labelId", labelId);
+    params.set("archived", "true");
+  }
   if (search) {
     params.set("search", search);
   }
@@ -11772,7 +11923,14 @@ function getInboxModeDescription(mode: InboxMode) {
   if (mode === "sent") {
     return "sent messages";
   }
+  if (mode === "archive") {
+    return "archived messages";
+  }
   return "inbox messages";
+}
+
+function isLabelFilteredInboxMode(mode: InboxMode) {
+  return mode === "inbox" || mode === "archive";
 }
 
 function getCommonMessageLabelId(messages: InboxMessage[], labels: Label[]) {

@@ -514,7 +514,14 @@ export async function fetchImapEmailContextById(account, emailId, subject = "", 
     }
 
     await client.mailboxOpen(found.mailbox);
-    const message = await client.fetchOne(String(found.uid), { uid: true, envelope: true, source: true }, { uid: true });
+    const message = await client.fetchOne(String(found.uid), {
+      uid: true,
+      envelope: true,
+      flags: true,
+      bodyStructure: true,
+      internalDate: true,
+      source: true,
+    }, { uid: true });
     if (!message) {
       return null;
     }
@@ -531,6 +538,9 @@ export async function fetchImapEmailContextById(account, emailId, subject = "", 
       subject: message.envelope?.subject ?? "",
       snippet: bodyText.slice(0, 300),
       bodyText,
+      receivedAt: (message.internalDate ?? message.envelope?.date ?? new Date()).toISOString(),
+      isRead: hasImapFlag(message.flags, "\\Seen"),
+      hasAttachments: collectImapAttachments(message.bodyStructure).length > 0,
     };
   }, accessToken);
 }

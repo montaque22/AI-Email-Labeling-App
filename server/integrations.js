@@ -10,6 +10,7 @@ import {
   getValidEmailAccountAccessToken,
   isImapBackedProvider,
 } from "./email-accounts.js";
+import { upsertEmailIndexEntry, updateEmailIndexLabels } from "./email-index.js";
 import {
   createImapDraft,
   fetchImapEmailContextById,
@@ -720,6 +721,34 @@ async function modifyMessageLabels(req, res, action) {
       accountEmail: account.email,
     });
     if (action === "add") {
+      await upsertEmailIndexEntry(req.integrationUser.id, {
+        emailAccountId: account.id,
+        accountEmail: account.email,
+        provider: account.provider,
+        emailId: input.emailId,
+        threadId: emailContext?.email?.threadId || input.emailId,
+        mailbox: account.provider === "gmail" ? "" : labels.labels[0]?.providerLabelId || "",
+        direction: "inbox",
+        fromEmail: emailContext?.email?.fromEmail || "",
+        fromName: emailContext?.email?.fromName || emailContext?.email?.fromEmail || "",
+        toEmails: emailContext?.email?.to || account.email,
+        subject: emailContext?.email?.subject || "",
+        snippet: emailContext?.email?.snippet || "",
+        labels: labels.labels.map((label) => label.name),
+        receivedAt: emailContext?.email?.receivedAt || new Date(),
+        isRead: emailContext?.email?.isRead !== false,
+        hasAttachments: Boolean(emailContext?.email?.hasAttachments),
+        metadata: { source: "integration" },
+      });
+    } else {
+      await updateEmailIndexLabels(req.integrationUser.id, {
+        accountId: account.id,
+        emailId: input.emailId,
+        mailbox: null,
+        labels: [],
+      });
+    }
+    if (action === "add") {
       await recordMetricEvent(req.integrationUser.id, "email_labeled", {
         emailId: input.emailId,
         accountEmail: account.email,
@@ -913,6 +942,26 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
       accessToken,
     });
   }
+  await upsertEmailIndexEntry(userId, {
+    emailAccountId: messageTarget.account.id,
+    accountEmail: messageTarget.account.email,
+    provider: messageTarget.account.provider,
+    emailId,
+    threadId: messageTarget.email?.threadId || emailId,
+    mailbox: messageTarget.account.provider === "gmail" ? "" : labels.labels[0]?.providerLabelId || "",
+    direction: "inbox",
+    fromEmail: messageTarget.email?.fromEmail || "",
+    fromName: messageTarget.email?.fromName || messageTarget.email?.fromEmail || "",
+    toEmails: messageTarget.email?.to || messageTarget.account.email,
+    subject: messageTarget.email?.subject || subject || "",
+    snippet: messageTarget.email?.snippet || "",
+    labels: labels.labels.map((label) => label.name),
+    receivedAt: messageTarget.email?.receivedAt || new Date(),
+    isRead: messageTarget.email?.isRead !== false,
+    hasAttachments: Boolean(messageTarget.email?.hasAttachments),
+    respondingToEmailId: null,
+    metadata: { source },
+  });
 
   await recordMetricEvent(userId, "email_labeled", {
     emailId,
@@ -1263,6 +1312,9 @@ function normalizeRfc822MessageId(value = "") {
 function gmailMessageToRuleSearchResult(message, fallbackEmailId) {
   const headers = getGmailHeaders(message);
   const fromEmail = extractEmailAddress(headers.from || "");
+  const receivedAt = message.internalDate
+    ? new Date(Number(message.internalDate)).toISOString()
+    : new Date(headers.date || Date.now()).toISOString();
 
   return {
     emailId: message.id || fallbackEmailId,
@@ -1272,6 +1324,9 @@ function gmailMessageToRuleSearchResult(message, fallbackEmailId) {
     to: formatEmailList(headers.to || ""),
     subject: headers.subject || "",
     snippet: extractGmailTextBody(message.payload) || message.snippet || "",
+    receivedAt,
+    isRead: !Array.isArray(message.labelIds) || !message.labelIds.includes("UNREAD"),
+    hasAttachments: false,
   };
 }
 
@@ -1291,6 +1346,9 @@ async function findConnectedMessageById(userId, emailId, subject) {
         const message = await fetchGmailMessageFullByAnyId(accessToken, emailId);
         const headers = getGmailHeaders(message);
         const bodyText = extractGmailTextBody(message.payload) || message.snippet || "";
+        const receivedAt = message.internalDate
+          ? new Date(Number(message.internalDate)).toISOString()
+          : new Date(headers.date || Date.now()).toISOString();
         matches.push({
           account,
           subject: getProviderMessageSubject(account.provider, message),
@@ -1305,6 +1363,9 @@ async function findConnectedMessageById(userId, emailId, subject) {
             subject: headers.subject || "",
             snippet: bodyText.slice(0, 300),
             bodyText,
+            receivedAt,
+            isRead: !Array.isArray(message.labelIds) || !message.labelIds.includes("UNREAD"),
+            hasAttachments: false,
           },
         });
       } else {
@@ -1360,6 +1421,9 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
         const message = await fetchGmailMessageFullByAnyId(accessToken, emailId);
         const headers = getGmailHeaders(message);
         const bodyText = extractGmailTextBody(message.payload) || message.snippet || "";
+        const receivedAt = message.internalDate
+          ? new Date(Number(message.internalDate)).toISOString()
+          : new Date(headers.date || Date.now()).toISOString();
         matches.push({
           account,
           email: {
@@ -1373,6 +1437,9 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
             subject: headers.subject || "",
             snippet: bodyText.slice(0, 300),
             bodyText,
+            receivedAt,
+            isRead: !Array.isArray(message.labelIds) || !message.labelIds.includes("UNREAD"),
+            hasAttachments: false,
           },
         });
       } else {
