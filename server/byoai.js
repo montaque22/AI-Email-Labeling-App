@@ -828,19 +828,38 @@ async function getAllowedAiLabelNames(userId) {
 async function generateComposeSuggestion(userId, request) {
   await assertAiEnabled(userId);
   const bundle = await getRenderedAiPromptBundle(userId);
+  const activeMcpClients = await buildActivatedAiMcpClients(userId);
+  const availableToolNames = new Set(activeMcpClients.flatMap((client) => client.selectedTools));
+  const requiredTools = normalizeRequiredTools(request.requiredTools, availableToolNames);
   const originalBody = simplifyBody(request.message?.bodyText || htmlToText(request.message?.bodyHtml) || request.message?.snippet || "");
   const context = request.message
     ? `You are drafting a reply AS THE APP USER, not as the sender of the original email. The original email below is the message you must respond to. Do not write from the perspective of the original sender. Do not sign as the original sender. Write the reply as the recipient/client responding back to the original sender.\n\nOriginal email to respond to:\nSubject: ${request.message.subject || "(no subject)"}\nFrom original sender: ${request.message.from || "Unknown"}\nOriginal email body:\n${originalBody}`
     : "This is a brand new email, not a reply. There is no original email context.";
   const draftLabel = request.message ? "Current reply draft written by the app user" : "Current email draft written by the app user";
   const instructionLabel = request.message ? "User instruction for how the app user's reply should be written" : "User instruction for how the app user's email should be written";
+  const toolInstruction = buildComposeToolInstruction(requiredTools);
   const aiResponse = await callBestAvailableAi(userId, {
-    systemPrompt: `${bundle["draft-reply"].markdown}\n\nReturn only the drafted email body text. Do not include explanations, markdown fences, subject lines, or metadata. For replies, always write as the app user replying to the original sender, never as the original sender.`,
-    userPrompt: `${context}\n\n${draftLabel}:\n${request.currentBody || "(empty)"}\n\n${instructionLabel}:\n${request.prompt}`,
+    systemPrompt: `${bundle["draft-reply"].markdown}\n\nYou are a helpful personal email assistant. Your task is isolated to finding information in the user's connected emails when needed and crafting replies or new email bodies based on the user's request. Use available tools when the user asks you to look up, find, verify, retrieve, or insert information from email. If the user includes a [Use tool: tool_name] directive, you MUST call that tool before writing the draft. Use tool results as supporting context, but return only the final drafted email body text.\n\n${toolInstruction}\n\nReturn only the drafted email body text. Do not include explanations, markdown fences, subject lines, or metadata. For replies, always write as the app user replying to the original sender, never as the original sender.`,
+    userPrompt: `${context}\n\n${draftLabel}:\n${request.currentBody || "(empty)"}\n\n${instructionLabel}:\n${request.prompt}\n\n${toolInstruction}`,
     responseShape: "text",
   });
 
   return cleanAiTextResponse(aiResponse);
+}
+
+function normalizeRequiredTools(requiredTools, availableToolNames) {
+  return [...new Set((Array.isArray(requiredTools) ? requiredTools : [])
+    .filter((name) => typeof name === "string")
+    .map((name) => name.trim())
+    .filter((name) => availableToolNames.has(name)))];
+}
+
+function buildComposeToolInstruction(requiredTools) {
+  if (!requiredTools.length) {
+    return "No tool is explicitly required by the user. You may still use available email-search tools when needed to satisfy the request.";
+  }
+
+  return `Required tool directives: ${requiredTools.map((name) => `[Use tool: ${name}]`).join(", ")}. You MUST call each listed tool at least once before drafting the final response. If a required tool cannot answer the request, explain that limitation only if it is necessary in the drafted email body.`;
 }
 
 async function findEmailTarget(userId, request) {
@@ -1188,6 +1207,9 @@ function parseAiEmailRequest(body) {
 function parseComposeSuggestionInput(body) {
   const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
   const currentBody = typeof body?.currentBody === "string" ? body.currentBody : "";
+  const requiredTools = Array.isArray(body?.requiredTools)
+    ? body.requiredTools.filter((name) => typeof name === "string").map((name) => name.trim()).filter(Boolean)
+    : [];
   const message = body?.message && typeof body.message === "object" && !Array.isArray(body.message)
     ? {
         subject: typeof body.message.subject === "string" ? body.message.subject : "",
@@ -1208,7 +1230,7 @@ function parseComposeSuggestionInput(body) {
     return { ok: false, error: "Current draft is too long for AI composer." };
   }
 
-  return { ok: true, request: { prompt, currentBody, message } };
+  return { ok: true, request: { prompt, currentBody, message, requiredTools } };
 }
 
 function parsePlatformInput(body) {

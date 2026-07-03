@@ -374,6 +374,32 @@ function ensureSystemMcpClient(clients: AiMcpClientConfig[]): AiMcpClientConfig[
   ];
 }
 
+function getActiveAiToolsFromConfig(config: Partial<ByoAiConfig>): AiMcpTool[] {
+  if (!config.aiEnabled || !config.mcpClientEnabled) {
+    return [];
+  }
+
+  const hasConnectedOpenAi = (config.platforms ?? []).some((platform) => platform.status === "connected" && platform.provider === "openai");
+  const toolsByName = new Map<string, AiMcpTool>();
+  for (const client of ensureSystemMcpClient(config.mcpClients ?? [])) {
+    if (!client.enabled || client.status !== "connected") {
+      continue;
+    }
+    if (client.isSystem && !hasConnectedOpenAi) {
+      continue;
+    }
+
+    const selectedTools = new Set(client.selectedTools);
+    for (const tool of client.tools) {
+      if (selectedTools.has(tool.name) && !toolsByName.has(tool.name)) {
+        toolsByName.set(tool.name, tool);
+      }
+    }
+  }
+
+  return [...toolsByName.values()];
+}
+
 type InboxSort = "newest" | "oldest" | "sender" | "subject";
 type InboxMode = "inbox" | "drafts" | "sent" | "archive";
 
@@ -1535,6 +1561,7 @@ function InboxPage({
   const [isCountsLoading, setIsCountsLoading] = useState(false);
   const [toast, setToast] = useState<InboxToast | null>(null);
   const [isByoAiActive, setIsByoAiActive] = useState(false);
+  const [activeAiTools, setActiveAiTools] = useState<AiMcpTool[]>([]);
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const [isMobileLabelPickerOpen, setIsMobileLabelPickerOpen] = useState(false);
   const [isMobileEditMode, setIsMobileEditMode] = useState(false);
@@ -1573,6 +1600,7 @@ function InboxPage({
         setAccounts(loadedAccounts);
         setSelectedAccountIds(loadedAccounts.map((account: EmailAccount) => account.id));
         setIsByoAiActive(Boolean(byoAiResponse.ok && byoAiData.aiEnabled));
+        setActiveAiTools(byoAiResponse.ok ? getActiveAiToolsFromConfig(byoAiData) : []);
         void checkInboxAccountTokenStatuses(loadedAccounts);
       } catch {
         setError("Could not load Inbox setup.");
@@ -2811,6 +2839,7 @@ function InboxPage({
         <>
           <div className="md:hidden">
             <InboxComposeModal
+              activeTools={activeAiTools}
               accounts={accounts}
               initial={composeInitial}
               isByoAiActive={isByoAiActive}
@@ -2828,6 +2857,7 @@ function InboxPage({
           </div>
           <div className="hidden md:block">
             <InboxComposeModal
+              activeTools={activeAiTools}
               accounts={accounts}
               initial={composeInitial}
               isByoAiActive={isByoAiActive}
@@ -4081,6 +4111,7 @@ function InboxRuleModal({
 }
 
 function InboxComposeModal({
+  activeTools,
   accounts,
   initial,
   isByoAiActive,
@@ -4089,6 +4120,7 @@ function InboxComposeModal({
   privacyMode,
   variant = "modal",
 }: {
+  activeTools: AiMcpTool[];
   accounts: EmailAccount[];
   initial: Partial<InboxComposeDraft> | null;
   isByoAiActive: boolean;
@@ -4108,6 +4140,8 @@ function InboxComposeModal({
   const [isOriginalMessageExpanded, setIsOriginalMessageExpanded] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
   const [aiMessages, setAiMessages] = useState<Array<{ id: number; role: "user" | "assistant"; text: string }>>([]);
+  const [isToolPickerOpen, setIsToolPickerOpen] = useState(false);
+  const [toolPickerQuery, setToolPickerQuery] = useState("");
   const [isGeneratingAiSuggestion, setIsGeneratingAiSuggestion] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4119,6 +4153,9 @@ function InboxComposeModal({
   const isExistingDraft = Boolean(initial?.draftId);
   const isPush = variant === "push";
   const composeFormId = `inbox-compose-form-${variant}`;
+  const filteredToolOptions = activeTools
+    .filter((tool) => tool.name.toLowerCase().includes(toolPickerQuery.toLowerCase()))
+    .slice(0, 8);
 
   useEffect(() => {
     resizeBodyTextarea();
@@ -4133,6 +4170,22 @@ function InboxComposeModal({
       setIsAiDraftOpen(false);
     }
   }, [isByoAiActive]);
+
+  useEffect(() => {
+    if (!isAiDraftOpen) {
+      return;
+    }
+
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, [isAiDraftOpen]);
 
   function resizeBodyTextarea() {
     const textarea = bodyTextareaRef.current;
@@ -4157,6 +4210,30 @@ function InboxComposeModal({
     const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
     textarea.style.height = `${nextHeight}px`;
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }
+
+  function updateAiInstruction(value: string) {
+    setAiInstruction(value);
+    const match = value.match(/(^|\s)#([A-Za-z0-9_-]*)$/);
+    setToolPickerQuery(match?.[2] ?? "");
+    setIsToolPickerOpen(Boolean(match && activeTools.length > 0));
+  }
+
+  function insertToolDirective(tool: AiMcpTool) {
+    setAiInstruction((current) => {
+      const directive = `[Use tool: ${tool.name}]`;
+      const next = current.match(/(^|\s)#([A-Za-z0-9_-]*)$/)
+        ? current.replace(/(^|\s)#([A-Za-z0-9_-]*)$/, (_match, prefix) => `${prefix}${directive} `)
+        : `${current}${current.endsWith(" ") || !current ? "" : " "}${directive} `;
+      window.requestAnimationFrame(() => aiInstructionTextareaRef.current?.focus());
+      return next;
+    });
+    setIsToolPickerOpen(false);
+    setToolPickerQuery("");
+  }
+
+  function extractRequiredToolNames(prompt: string) {
+    return [...prompt.matchAll(/\[Use tool:\s*([A-Za-z0-9_+.:/-]+)]/g)].map((match) => match[1]);
   }
 
   async function submitEmail(event: FormEvent<HTMLFormElement>) {
@@ -4258,6 +4335,7 @@ function InboxComposeModal({
           prompt,
           currentBody: bodyText,
           message: replyContext,
+          requiredTools: extractRequiredToolNames(prompt),
         }),
       });
       const data = await response.json();
@@ -4276,8 +4354,8 @@ function InboxComposeModal({
   }
 
   return (
-    <div className={cn("fixed inset-0 z-50", isPush ? "flex flex-col bg-[#f7f7f7] md:hidden" : "flex items-center justify-center bg-slate-950/20 p-4")}>
-      <div className={cn(isPush ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]")}>
+    <div className={cn("fixed inset-0 z-50", isPush ? "flex h-[100dvh] w-screen flex-col overflow-hidden bg-[#f7f7f7] md:hidden" : "flex items-center justify-center overflow-hidden bg-slate-950/20 p-4")}>
+      <div className={cn(isPush ? "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden" : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]")}>
         <div className={cn(
           isPush
             ? cn("min-h-0 flex-1 bg-transparent", isAiDraftOpen ? "flex flex-col overflow-hidden p-0" : "overflow-y-auto p-4 pb-28")
@@ -4286,7 +4364,7 @@ function InboxComposeModal({
           <div className={cn(
             "mb-4 flex items-center justify-between gap-4",
             isPush && (isAiDraftOpen
-              ? "z-10 mb-0 shrink-0 border-b border-zinc-200 bg-white/75 px-2 py-2 backdrop-blur-xl"
+              ? "sticky top-0 z-20 mb-0 shrink-0 border-b border-zinc-200 bg-white/85 px-2 py-2 backdrop-blur-xl"
               : "sticky -top-4 z-10 -mx-4 -mt-4 border-b border-zinc-200 bg-white/75 px-2 py-2 backdrop-blur-xl"),
           )}>
             {isPush ? (
@@ -4351,13 +4429,43 @@ function InboxComposeModal({
                 ))}
               {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
             </div>
-            <div className="shrink-0 bg-white/35 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 backdrop-blur-xl">
+            <div className="relative shrink-0 bg-white/35 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 backdrop-blur-xl">
+              {isToolPickerOpen && filteredToolOptions.length > 0 ? (
+                <div className="absolute bottom-[calc(100%+0.5rem)] left-3 right-3 z-30 overflow-hidden rounded-xl border border-white/70 bg-white/90 shadow-2xl shadow-slate-900/15 backdrop-blur-xl">
+                  <div className="max-h-64 overflow-y-auto p-1">
+                    {filteredToolOptions.map((tool) => (
+                      <button
+                        className="flex w-full cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-zinc-100/70"
+                        key={tool.name}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => insertToolDirective(tool)}
+                        type="button"
+                      >
+                        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-zinc-950">{tool.name}</span>
+                          <span className="line-clamp-2 text-xs leading-5 text-zinc-500">{tool.description || "Available AI tool."}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <div className="flex items-center gap-2">
                 <textarea
                   className="min-h-10 min-w-0 flex-1 resize-none rounded-md border border-zinc-200 bg-white/45 px-3 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400 shadow-sm backdrop-blur-xl focus:border-zinc-400"
                   maxLength={1000}
-                  onChange={(event) => setAiInstruction(event.target.value)}
+                  onBlur={() => window.setTimeout(() => setIsToolPickerOpen(false), 120)}
+                  onChange={(event) => updateAiInstruction(event.target.value)}
+                  onFocus={() => {
+                    if (aiInstruction.match(/(^|\s)#([A-Za-z0-9_-]*)$/) && activeTools.length > 0) {
+                      setIsToolPickerOpen(true);
+                    }
+                  }}
                   onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      setIsToolPickerOpen(false);
+                    }
                     if (event.key === "Enter" && !event.shiftKey && aiInstruction.trim() && !isGeneratingAiSuggestion) {
                       event.preventDefault();
                       void generateAiSuggestion();
