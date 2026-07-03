@@ -147,6 +147,18 @@ While deletion is running, Emailable disables the affected messages and delete a
 
 Provider behavior can vary. Some providers immediately move mail to Trash. Others may mark it deleted or remove it from the current folder depending on server settings.
 
+## Archive emails
+
+Archiving hides a message from the normal Inbox list without deleting it.
+
+You can archive messages from:
+
+- The bulk action bar after selecting one or more messages.
+- The desktop email detail view using the archive icon between Delete and Reply.
+- The mobile email detail view using the archive icon between Delete and Reply.
+
+Archived messages can be viewed from the **Archive** category in the Inbox mode selector. Search can still include archived messages when they match the search terms.
+
 ## Compose and reply
 
 Use **Compose** to write a new message from a connected account.

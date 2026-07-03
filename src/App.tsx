@@ -2324,6 +2324,10 @@ function InboxPage({
       decrementCountsForMessages(successfulArchives);
       setMessages((current) => current.filter((message) => !archivedKeys.has(getInboxMessageKey(message))));
       setSelectedMessageKeys((current) => current.filter((key) => !archivedKeys.has(key)));
+      if (selectedMessage && archivedKeys.has(getInboxMessageKey(selectedMessage))) {
+        setSelectedMessage(null);
+        setMessageDetail(null);
+      }
       if (successfulArchives.length > 0) {
         showInboxToast(`${successfulArchives.length} message${successfulArchives.length === 1 ? "" : "s"} archived.`);
       }
@@ -2762,6 +2766,7 @@ function InboxPage({
               detail={messageDetail}
               error={detailError}
               isDeleting={deletingMessageKeys.includes(getInboxMessageKey(selectedMessage))}
+              isArchiving={isBulkActionRunning}
               isLoading={isDetailLoading}
               isLabelActionRunning={isLabelActionRunning}
               labels={labels}
@@ -2770,6 +2775,7 @@ function InboxPage({
                 setMessageDetail(null);
               }}
               onDelete={(message) => void deleteSelectedMessages([message])}
+              onArchive={(message) => void archiveSelectedMessages([message])}
               onEditRule={(message) => setRuleEditorMessage(message)}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
               onReply={(detail, summary) => openReplyComposer(detail, summary)}
@@ -2783,6 +2789,7 @@ function InboxPage({
               detail={messageDetail}
               error={detailError}
               isDeleting={deletingMessageKeys.includes(getInboxMessageKey(selectedMessage))}
+              isArchiving={isBulkActionRunning}
               isLoading={isDetailLoading}
               isLabelActionRunning={isLabelActionRunning}
               labels={labels}
@@ -2791,6 +2798,7 @@ function InboxPage({
                 setMessageDetail(null);
               }}
               onDelete={(message) => void deleteSelectedMessages([message])}
+              onArchive={(message) => void archiveSelectedMessages([message])}
               onEditRule={(message) => setRuleEditorMessage(message)}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
               onReply={(detail, summary) => openReplyComposer(detail, summary)}
@@ -3316,6 +3324,10 @@ function InboxMessageRow({
                 </span>
               ) : null}
             </div>
+            <div className="mt-1 flex min-w-0 items-center gap-3">
+              <p className="min-w-0 flex-1 truncate text-base text-zinc-500">{message.snippet || "No preview available."}</p>
+              <p className="shrink-0 text-sm font-semibold text-zinc-500">{formatInboxListDate(message.date)}</p>
+            </div>
             {message.labels.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {message.labels.slice(0, 3).map((label) => (
@@ -3325,10 +3337,6 @@ function InboxMessageRow({
                 ))}
               </div>
             ) : null}
-            <div className="mt-1 flex min-w-0 items-center gap-3">
-              <p className="min-w-0 flex-1 truncate text-base text-zinc-500">{message.snippet || "No preview available."}</p>
-              <p className="shrink-0 text-sm font-semibold text-zinc-500">{formatInboxListDate(message.date)}</p>
-            </div>
           </div>
         </div>
       </div>
@@ -3431,10 +3439,12 @@ function RuleLabelSelectionRows({
 function InboxMessagePushView({
   detail,
   error,
+  isArchiving,
   isDeleting,
   isLoading,
   isLabelActionRunning,
   labels,
+  onArchive,
   onClose,
   onDelete,
   onEditRule,
@@ -3446,10 +3456,12 @@ function InboxMessagePushView({
 }: {
   detail: InboxMessageDetail | null;
   error: string | null;
+  isArchiving: boolean;
   isDeleting: boolean;
   isLoading: boolean;
   isLabelActionRunning: boolean;
   labels: Label[];
+  onArchive: (message: InboxMessage) => void;
   onClose: () => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
@@ -3470,11 +3482,14 @@ function InboxMessagePushView({
         </Button>
         <div className="min-w-0 flex-1" />
         <div className="flex shrink-0 items-center gap-1">
-          <Button aria-label="Reply" onClick={() => onReply(detail, summary)} size="icon" type="button" variant="ghost">
-            <Reply className="h-4 w-4" />
-          </Button>
           <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" disabled={isDeleting} onClick={() => onDelete(summary)} size="icon" type="button" variant="ghost">
             {isDeleting ? <Loader /> : <Trash2 className="h-4 w-4" />}
+          </Button>
+          <Button aria-label="Archive email" disabled={isArchiving || isDeleting} onClick={() => onArchive(summary)} size="icon" type="button" variant="ghost">
+            {isArchiving ? <Loader /> : <Archive className="h-4 w-4" />}
+          </Button>
+          <Button aria-label="Reply" onClick={() => onReply(detail, summary)} size="icon" type="button" variant="ghost">
+            <Reply className="h-4 w-4" />
           </Button>
         </div>
       </div>
@@ -3602,10 +3617,12 @@ function LabelActionSelect({
 function InboxMessageModal({
   detail,
   error,
+  isArchiving,
   isDeleting,
   isLoading,
   isLabelActionRunning,
   labels,
+  onArchive,
   onClose,
   onDelete,
   onEditRule,
@@ -3617,10 +3634,12 @@ function InboxMessageModal({
 }: {
   detail: InboxMessageDetail | null;
   error: string | null;
+  isArchiving: boolean;
   isDeleting: boolean;
   isLoading: boolean;
   isLabelActionRunning: boolean;
   labels: Label[];
+  onArchive: (message: InboxMessage) => void;
   onClose: () => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
@@ -3667,6 +3686,11 @@ function InboxMessageModal({
                   {isDeleting ? <Loader /> : <Trash2 className="h-4 w-4" />}
                 </Button>
               </Tooltip>
+              <Tooltip side="bottom" text="Archive email">
+                <Button aria-label="Archive email" disabled={isArchiving || isDeleting} onClick={() => onArchive(summary)} size="icon" type="button" variant="outline">
+                  {isArchiving ? <Loader /> : <Archive className="h-4 w-4" />}
+                </Button>
+              </Tooltip>
               <Tooltip side="bottom" text="Reply">
                 <Button aria-label="Reply" onClick={() => onReply(detail, summary)} size="icon" type="button" variant="outline">
                   <Reply className="h-4 w-4" />
@@ -3691,7 +3715,7 @@ function InboxMessageModal({
 }
 
 function InboxThreadConversation({ detail, privacyMode }: { detail: InboxMessageDetail; privacyMode: boolean }) {
-  const messages: InboxThreadMessage[] = detail.threadMessages?.length
+  const messages: InboxThreadMessage[] = (detail.threadMessages?.length
     ? detail.threadMessages
     : [{
         id: detail.id,
@@ -3707,7 +3731,7 @@ function InboxThreadConversation({ detail, privacyMode }: { detail: InboxMessage
         bodyText: detail.bodyText,
         bodyHtml: detail.bodyHtml,
         attachments: detail.attachments,
-      }];
+      }]).slice().sort((left, right) => new Date(right.date || 0).getTime() - new Date(left.date || 0).getTime());
 
   return (
     <div className="space-y-4">
@@ -4358,17 +4382,17 @@ function InboxComposeModal({
       <div className={cn(isPush ? "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden" : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]")}>
         <div className={cn(
           isPush
-            ? cn("min-h-0 flex-1 bg-transparent", isAiDraftOpen ? "flex flex-col overflow-hidden p-0" : "overflow-y-auto p-4 pb-28")
+            ? "flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
             : "max-h-[calc(92vh-2rem)] overflow-y-auto rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60",
         )}>
           <div className={cn(
             "mb-4 flex items-center justify-between gap-4",
             isPush && (isAiDraftOpen
-              ? "sticky top-0 z-20 mb-0 shrink-0 border-b border-zinc-200 bg-white/85 px-2 py-2 backdrop-blur-xl"
-              : "sticky -top-4 z-10 -mx-4 -mt-4 border-b border-zinc-200 bg-white/75 px-2 py-2 backdrop-blur-xl"),
+              ? "z-20 mb-0 h-16 shrink-0 border-b border-zinc-200 bg-white/90 px-2 py-2 backdrop-blur-xl"
+              : "z-20 mb-0 h-16 shrink-0 border-b border-zinc-200 bg-white/90 px-2 py-2 backdrop-blur-xl"),
           )}>
             {isPush ? (
-              <Button aria-label="Back to email" onClick={onClose} size="icon" type="button" variant="ghost">
+              <Button aria-label={isAiDraftOpen ? "Back to email draft" : "Back to Inbox"} onClick={isAiDraftOpen ? () => setIsAiDraftOpen(false) : onClose} size="icon" type="button" variant="ghost">
                 <ChevronLeft className="h-5 w-5" />
               </Button>
             ) : (
@@ -4377,7 +4401,9 @@ function InboxComposeModal({
             <h3 className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-zinc-950">
               {isAiDraftOpen ? "AI Draft" : isExistingDraft ? "Edit draft" : replyContext ? "Reply" : "New email"}
             </h3>
-            {isPush ? (
+            {isPush && isAiDraftOpen ? (
+              <span className="w-10" />
+            ) : isPush ? (
               <div className="flex items-center gap-1">
                 {isByoAiActive ? (
                   <Button aria-label="AI Draft" onClick={() => setIsAiDraftOpen(true)} size="icon" type="button" variant="ghost">
@@ -4483,7 +4509,7 @@ function InboxComposeModal({
             </div>
           </div>
         ) : (
-        <form className="space-y-4" id={composeFormId} onSubmit={submitEmail}>
+        <form className={cn("space-y-4", isPush && "min-h-0 flex-1 overflow-y-auto p-4 pb-28")} id={composeFormId} onSubmit={submitEmail}>
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           {savedMessage ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{savedMessage}</p> : null}
           {replyContext ? (

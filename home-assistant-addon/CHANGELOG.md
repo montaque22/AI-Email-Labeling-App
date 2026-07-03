@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.63
+
+- Added archive actions to mobile and desktop email detail views.
+- Updated Inbox documentation for archive behavior.
+
 ## 0.1.62
 
 - Added archived email browsing to the Inbox mode selector.
