@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.64
+
+- Added a PWA update prompt and offline/out-of-sync warning.
+- Prevented API and Inbox data from being cached by the app or browser.
+- Added mobile Inbox pull-to-refresh.
+- Added a link action menu for hyperlinks inside rendered email messages.
+- Added the Technithusiast Community link to the README.
+
 ## 0.1.63
 
 - Added archive actions to mobile and desktop email detail views.

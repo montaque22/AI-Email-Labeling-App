@@ -77,6 +77,14 @@ app.use((req, _res, next) => {
   next();
 });
 
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+  next();
+});
+
 function stripHomeAssistantIngressPath(url) {
   const match = url.match(/^\/api\/hassio_ingress\/[^/]+(?=\/)/);
   if (!match) {

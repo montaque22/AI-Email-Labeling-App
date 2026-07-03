@@ -1,4 +1,5 @@
-import { FormEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentType, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentType, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
+import { registerSW } from "virtual:pwa-register";
 import {
   Cell,
   Line,
@@ -22,6 +23,7 @@ import {
   ChevronRight,
   Copy,
   Download,
+  ExternalLink,
   FileCheck2,
   Gauge,
   GripVertical,
@@ -405,6 +407,19 @@ type InboxMode = "inbox" | "drafts" | "sent" | "archive";
 
 const INBOX_ALL_LABEL_ID = "__all__";
 const INBOX_PAGE_DONE = "__done__";
+const MOBILE_PULL_REFRESH_THRESHOLD = 76;
+
+function fetchNoStore(input: RequestInfo | URL, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("Cache-Control", "no-cache");
+
+  return fetch(input, {
+    ...init,
+    cache: "no-store",
+    credentials: init.credentials ?? "include",
+    headers,
+  });
+}
 
 type InboxRuleStatus = {
   emailId: string;
@@ -504,6 +519,11 @@ type InboxToast = {
   type: "success" | "error";
 };
 
+type EmailLinkAction = {
+  href: string;
+  label: string;
+};
+
 const LABEL_NAME_MAX_LENGTH = 25;
 const LABEL_DESCRIPTION_MAX_LENGTH = 200;
 const LABEL_NAME_PATTERN = /^[A-Za-z0-9 _-]+$/;
@@ -560,6 +580,7 @@ export function App() {
   const [ruleToOpen, setRuleToOpen] = useState<string | null>(null);
   const [ruleInitialFilter, setRuleInitialFilter] = useState<RulePendingFilter | null>(null);
   const user = homeAssistantUser ?? (session.data?.user ? mapAuthUser(session.data.user) : null);
+  const pwaUpdate = usePwaUpdatePrompt();
 
   useEffect(() => {
     void completeEmailAccountOAuthCallbackFromAppShell();
@@ -642,26 +663,167 @@ export function App() {
     return <LoadingScreen />;
   }
 
-  return user ? (
-    <AuthenticatedLayout
-      activePage={activePage}
-      onNavigate={navigate}
-      onOpenRuleReview={openRuleReview}
-      onOpenPendingRuleReview={openPendingRuleReview}
-      onSignOut={async () => {
-        if (homeAssistantUser) {
+  return (
+    <>
+      {user ? (
+        <AuthenticatedLayout
+          activePage={activePage}
+          onNavigate={navigate}
+          onOpenRuleReview={openRuleReview}
+          onOpenPendingRuleReview={openPendingRuleReview}
+          onSignOut={async () => {
+            if (homeAssistantUser) {
+              return;
+            }
+            await authClient.signOut();
+            await session.refetch();
+            navigate("overview");
+          }}
+          ruleInitialFilter={ruleInitialFilter}
+          ruleToOpen={ruleToOpen}
+          user={user}
+        />
+      ) : (
+        <HomePage onAuthSuccess={() => session.refetch()} />
+      )}
+      <PwaUpdatePrompt {...pwaUpdate} />
+    </>
+  );
+}
+
+function usePwaUpdatePrompt() {
+  const [isUpdateAvailable, setIsUpdateAvailable] = useState(false);
+  const [isOffline, setIsOffline] = useState(() => typeof navigator !== "undefined" ? !navigator.onLine : false);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const updateServiceWorkerRef = useRef<ReturnType<typeof registerSW> | null>(null);
+
+  useEffect(() => {
+    function handleOnline() {
+      setIsOffline(false);
+    }
+
+    function handleOffline() {
+      setIsOffline(true);
+    }
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || updateServiceWorkerRef.current) {
+      return;
+    }
+
+    updateServiceWorkerRef.current = registerSW({
+      immediate: true,
+      onNeedRefresh() {
+        setIsUpdateAvailable(true);
+      },
+      onRegisteredSW(_swUrl, registration) {
+        if (!registration) {
           return;
         }
-        await authClient.signOut();
-        await session.refetch();
-        navigate("overview");
-      }}
-      ruleInitialFilter={ruleInitialFilter}
-      ruleToOpen={ruleToOpen}
-      user={user}
-    />
-  ) : (
-    <HomePage onAuthSuccess={() => session.refetch()} />
+
+        const checkForUpdates = () => {
+          if (navigator.onLine) {
+            void registration.update();
+          }
+        };
+        const intervalId = window.setInterval(checkForUpdates, 60 * 60 * 1000);
+
+        document.addEventListener("visibilitychange", checkForUpdates);
+        window.addEventListener("focus", checkForUpdates);
+        checkForUpdates();
+
+        return () => {
+          window.clearInterval(intervalId);
+          document.removeEventListener("visibilitychange", checkForUpdates);
+          window.removeEventListener("focus", checkForUpdates);
+        };
+      },
+      onRegisterError(error) {
+        console.error("PWA registration failed:", error);
+      },
+    });
+  }, []);
+
+  async function applyUpdate() {
+    if (!updateServiceWorkerRef.current) {
+      window.location.reload();
+      return;
+    }
+
+    setIsUpdating(true);
+    await updateServiceWorkerRef.current(true);
+  }
+
+  return {
+    applyUpdate,
+    dismissUpdate: () => setIsUpdateAvailable(false),
+    isOffline,
+    isUpdateAvailable,
+    isUpdating,
+  };
+}
+
+function PwaUpdatePrompt({
+  applyUpdate,
+  dismissUpdate,
+  isOffline,
+  isUpdateAvailable,
+  isUpdating,
+}: {
+  applyUpdate: () => Promise<void>;
+  dismissUpdate: () => void;
+  isOffline: boolean;
+  isUpdateAvailable: boolean;
+  isUpdating: boolean;
+}) {
+  if (!isOffline && !isUpdateAvailable) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-x-3 bottom-4 z-[80] mx-auto max-w-md rounded-2xl border border-white/70 bg-white/85 p-3 text-sm text-zinc-700 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:bottom-6 md:right-6 md:left-auto md:mx-0">
+      {isUpdateAvailable ? (
+        <div className="flex items-start gap-3">
+          <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-zinc-950">Update available</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">A newer version of Emailable is ready. Refresh to stay in sync.</p>
+            <div className="mt-3 flex flex-wrap justify-end gap-2">
+              <Button disabled={isUpdating} onClick={dismissUpdate} size="sm" type="button" variant="ghost">
+                Later
+              </Button>
+              <Button disabled={isUpdating} onClick={() => void applyUpdate()} size="sm" type="button">
+                {isUpdating ? "Updating..." : "Reload"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start gap-3">
+          <WifiOffIcon />
+          <div>
+            <p className="font-semibold text-zinc-950">You are offline</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">Some inbox and API actions may be out of sync until the connection returns.</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WifiOffIcon() {
+  return (
+    <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-300 bg-amber-100 text-[10px] font-bold text-amber-700">
+      !
+    </span>
   );
 }
 
@@ -1565,10 +1727,15 @@ function InboxPage({
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const [isMobileLabelPickerOpen, setIsMobileLabelPickerOpen] = useState(false);
   const [isMobileEditMode, setIsMobileEditMode] = useState(false);
+  const [mobilePullDistance, setMobilePullDistance] = useState(0);
+  const [isMobilePullRefreshing, setIsMobilePullRefreshing] = useState(false);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreInFlightRef = useRef(false);
   const messageRequestIdRef = useRef(0);
   const searchSuggestionRequestIdRef = useRef(0);
+  const mobilePullStartYRef = useRef<number | null>(null);
+  const mobilePullActiveRef = useRef(false);
+  const lastAutoRefreshAtRef = useRef(0);
 
   useEffect(() => {
     async function loadBootstrap() {
@@ -1577,9 +1744,9 @@ function InboxPage({
 
       try {
         const [labelsResponse, accountsResponse, byoAiResponse] = await Promise.all([
-          fetch("/api/labels", { credentials: "include" }),
-          fetch("/api/email-accounts", { credentials: "include" }),
-          fetch("/api/byoai/config", { credentials: "include" }),
+          fetchNoStore("/api/labels"),
+          fetchNoStore("/api/email-accounts"),
+          fetchNoStore("/api/byoai/config"),
         ]);
         const labelsData = await labelsResponse.json();
         const accountsData = await accountsResponse.json();
@@ -1692,28 +1859,7 @@ function InboxPage({
       return;
     }
 
-    async function loadCounts() {
-      setIsCountsLoading(true);
-      try {
-        const params = new URLSearchParams({ accounts: selectedAccountIds.join(",") });
-        if (inboxMode === "archive") {
-          params.set("archived", "true");
-        }
-        const response = await fetch(`/api/inbox/label-counts?${params.toString()}`, {
-          credentials: "include",
-        });
-        const data = await response.json();
-        if (response.ok) {
-          setLabelCounts(data.counts ?? {});
-        }
-      } catch {
-        setLabelCounts({});
-      } finally {
-        setIsCountsLoading(false);
-      }
-    }
-
-    void loadCounts();
+    void loadLabelCounts();
   }, [inboxMode, labels.length, selectedAccountIds.join(",")]);
 
   useEffect(() => {
@@ -1774,6 +1920,52 @@ function InboxPage({
     };
   }, [selectedMessage, ruleEditorMessage, isComposeOpen, isMobileFilterOpen, isMobileLabelPickerOpen]);
 
+  useEffect(() => {
+    function refreshWhenVisible() {
+      const now = Date.now();
+      if (
+        document.visibilityState !== "visible" ||
+        now - lastAutoRefreshAtRef.current < 30_000 ||
+        selectedMessage ||
+        ruleEditorMessage ||
+        isComposeOpen ||
+        isMobileFilterOpen ||
+        isMobileLabelPickerOpen ||
+        accounts.length === 0 ||
+        isLoading ||
+        isLoadingMore
+      ) {
+        return;
+      }
+
+      lastAutoRefreshAtRef.current = now;
+      void refreshInboxData();
+    }
+
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    window.addEventListener("focus", refreshWhenVisible);
+    window.addEventListener("pageshow", refreshWhenVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.removeEventListener("focus", refreshWhenVisible);
+      window.removeEventListener("pageshow", refreshWhenVisible);
+    };
+  }, [
+    accounts.length,
+    selectedMessage,
+    ruleEditorMessage,
+    isComposeOpen,
+    isMobileFilterOpen,
+    isMobileLabelPickerOpen,
+    isLoading,
+    isLoadingMore,
+    inboxMode,
+    selectedLabelId,
+    selectedAccountIds.join(","),
+    sort,
+    committedInboxSearch,
+  ]);
+
   const filteredMessages = messages;
   const selectedLabel = labels.find((label) => label.id === selectedLabelId) ?? null;
   const allLabelCount = getInboxAllLabelCount(labels, labelCounts);
@@ -1798,7 +1990,7 @@ function InboxPage({
         search: query,
         sort,
       });
-      const response = await fetch(`/api/inbox/search?${params.toString()}`, { credentials: "include" });
+      const response = await fetchNoStore(`/api/inbox/search?${params.toString()}`);
       const data = await response.json();
       if (searchSuggestionRequestIdRef.current !== requestId) {
         return;
@@ -1836,6 +2028,104 @@ function InboxPage({
 
   function selectInboxSearchSuggestion(message: InboxMessage) {
     commitInboxSearch(getInboxSearchSuggestionValue(message));
+  }
+
+  async function loadLabelCounts() {
+    setIsCountsLoading(true);
+    try {
+      const params = new URLSearchParams({ accounts: selectedAccountIds.join(",") });
+      if (inboxMode === "archive") {
+        params.set("archived", "true");
+      }
+      const response = await fetchNoStore(`/api/inbox/label-counts?${params.toString()}`);
+      const data = await response.json();
+      if (response.ok) {
+        setLabelCounts(data.counts ?? {});
+      }
+    } catch {
+      setLabelCounts({});
+    } finally {
+      setIsCountsLoading(false);
+    }
+  }
+
+  async function refreshInboxData() {
+    if (isLoading || isLoadingMore || isMobilePullRefreshing) {
+      return;
+    }
+
+    setIsMobilePullRefreshing(true);
+    try {
+      await Promise.all([
+        loadMessages({ reset: true }),
+        isLabelFilteredInboxMode(inboxMode) && selectedAccountIds.length > 0 && labels.length > 0
+          ? loadLabelCounts()
+          : Promise.resolve(),
+        accounts.length > 0 ? checkInboxAccountTokenStatuses(accounts) : Promise.resolve(),
+      ]);
+    } finally {
+      setIsMobilePullRefreshing(false);
+      setMobilePullDistance(0);
+      mobilePullActiveRef.current = false;
+      mobilePullStartYRef.current = null;
+    }
+  }
+
+  function canStartMobilePullRefresh(target: EventTarget | null) {
+    if (window.matchMedia("(min-width: 768px)").matches) {
+      return false;
+    }
+    if (isLoading || isLoadingMore || isMobilePullRefreshing || selectedMessage || ruleEditorMessage || isComposeOpen || isMobileFilterOpen || isMobileLabelPickerOpen) {
+      return false;
+    }
+    if ((target as HTMLElement | null)?.closest("button, input, textarea, select, a, [role='button']")) {
+      return false;
+    }
+    return window.scrollY <= 0;
+  }
+
+  function handleMobilePullStart(event: ReactTouchEvent<HTMLDivElement>) {
+    if (!canStartMobilePullRefresh(event.target)) {
+      mobilePullStartYRef.current = null;
+      mobilePullActiveRef.current = false;
+      return;
+    }
+
+    mobilePullStartYRef.current = event.touches[0]?.clientY ?? null;
+    mobilePullActiveRef.current = false;
+  }
+
+  function handleMobilePullMove(event: ReactTouchEvent<HTMLDivElement>) {
+    const startY = mobilePullStartYRef.current;
+    if (startY === null) {
+      return;
+    }
+
+    const currentY = event.touches[0]?.clientY ?? startY;
+    const distance = currentY - startY;
+    if (distance <= 0 || window.scrollY > 0) {
+      setMobilePullDistance(0);
+      mobilePullActiveRef.current = false;
+      return;
+    }
+
+    const dampedDistance = Math.min(112, Math.round(distance * 0.45));
+    if (dampedDistance > 8) {
+      mobilePullActiveRef.current = true;
+      event.preventDefault();
+    }
+    setMobilePullDistance(dampedDistance);
+  }
+
+  function handleMobilePullEnd() {
+    if (mobilePullActiveRef.current && mobilePullDistance >= MOBILE_PULL_REFRESH_THRESHOLD) {
+      void refreshInboxData();
+      return;
+    }
+
+    setMobilePullDistance(0);
+    mobilePullActiveRef.current = false;
+    mobilePullStartYRef.current = null;
   }
 
   async function loadMessages({ reset }: { reset: boolean }) {
@@ -1921,7 +2211,7 @@ function InboxPage({
         });
 
         try {
-          const response = await fetch(`${endpoint}?${params.toString()}`, { credentials: "include" });
+          const response = await fetchNoStore(`${endpoint}?${params.toString()}`);
           const data = await response.json();
 
           if (!response.ok) {
@@ -1998,7 +2288,7 @@ function InboxPage({
         params.set("mailbox", message.mailbox);
       }
 
-      const response = await fetch(`/api/inbox/message?${params.toString()}`, { credentials: "include" });
+      const response = await fetchNoStore(`/api/inbox/message?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) {
         const messageError = data.error ?? "Could not load email.";
@@ -2366,7 +2656,13 @@ function InboxPage({
   }
 
   return (
-    <div className="space-y-6 pt-20 md:pt-0">
+    <div
+      className="space-y-6 pt-20 md:pt-0"
+      onTouchCancel={handleMobilePullEnd}
+      onTouchEnd={handleMobilePullEnd}
+      onTouchMove={handleMobilePullMove}
+      onTouchStart={handleMobilePullStart}
+    >
       {toast ? <InboxToastMessage toast={toast} /> : null}
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
@@ -2415,6 +2711,32 @@ function InboxPage({
             </Button>
           </>
         )}
+      </div>
+
+      <div
+        aria-hidden={!isMobilePullRefreshing && mobilePullDistance === 0}
+        className="pointer-events-none fixed inset-x-0 top-16 z-30 flex justify-center md:hidden"
+        style={{
+          opacity: isMobilePullRefreshing || mobilePullDistance > 0 ? 1 : 0,
+          transform: `translateY(${isMobilePullRefreshing ? 10 : Math.max(0, mobilePullDistance - 44)}px)`,
+          transition: mobilePullActiveRef.current ? "none" : "opacity 180ms ease, transform 180ms ease",
+        }}
+      >
+        <div className="flex h-9 min-w-9 items-center justify-center rounded-full border border-white/70 bg-white/80 px-3 text-xs font-medium text-zinc-600 shadow-lg shadow-slate-900/10 backdrop-blur-xl">
+          {isMobilePullRefreshing ? (
+            <>
+              <Loader />
+              <span className="ml-2">Refreshing</span>
+            </>
+          ) : mobilePullDistance >= MOBILE_PULL_REFRESH_THRESHOLD ? (
+            "Release to refresh"
+          ) : (
+            <RefreshCw
+              className="h-4 w-4 text-zinc-500"
+              style={{ transform: `rotate(${Math.min(180, mobilePullDistance * 2)}deg)` }}
+            />
+          )}
+        </div>
       </div>
 
       {!isMobileEditMode ? <Button
@@ -3473,6 +3795,7 @@ function InboxMessagePushView({
 }) {
   const rule = detail?.rule ?? summary.rule ?? null;
   const replyCount = detail?.replyCount ?? summary.replyCount ?? 0;
+  const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
 
   return (
     <section className="fixed inset-0 z-50 flex flex-col bg-[#f7f7f7] text-zinc-950 md:hidden">
@@ -3518,9 +3841,10 @@ function InboxMessagePushView({
           {isLoading ? <p className="rounded-xl border border-white/70 bg-white/60 p-4 text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
-          {detail ? <InboxThreadConversation detail={detail} privacyMode={privacyMode} /> : null}
+          {detail ? <InboxThreadConversation detail={detail} onLinkAction={setLinkAction} privacyMode={privacyMode} /> : null}
         </div>
       </div>
+      {linkAction ? <EmailLinkActionSheet link={linkAction} onClose={() => setLinkAction(null)} /> : null}
     </section>
   );
 }
@@ -3652,6 +3976,7 @@ function InboxMessageModal({
   const rule = detail?.rule ?? summary.rule ?? null;
   const currentLabelId = getCommonMessageLabelId([summary], labels);
   const replyCount = detail?.replyCount ?? summary.replyCount ?? 0;
+  const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
@@ -3705,16 +4030,25 @@ function InboxMessageModal({
           {isLoading ? <p className="text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           {detail ? (
-            <InboxThreadConversation detail={detail} privacyMode={privacyMode} />
+            <InboxThreadConversation detail={detail} onLinkAction={setLinkAction} privacyMode={privacyMode} />
           ) : null}
           </div>
         </div>
       </div>
+      {linkAction ? <EmailLinkActionSheet link={linkAction} onClose={() => setLinkAction(null)} /> : null}
     </div>
   );
 }
 
-function InboxThreadConversation({ detail, privacyMode }: { detail: InboxMessageDetail; privacyMode: boolean }) {
+function InboxThreadConversation({
+  detail,
+  onLinkAction,
+  privacyMode,
+}: {
+  detail: InboxMessageDetail;
+  onLinkAction: (link: EmailLinkAction) => void;
+  privacyMode: boolean;
+}) {
   const messages: InboxThreadMessage[] = (detail.threadMessages?.length
     ? detail.threadMessages
     : [{
@@ -3749,7 +4083,7 @@ function InboxThreadConversation({ detail, privacyMode }: { detail: InboxMessage
           </div>
           <div className="min-w-0 overflow-hidden border-t border-zinc-200/80 bg-white/80 p-4">
             {message.bodyHtml ? (
-              <AutoSizeEmailFrame html={message.bodyHtml} title={`Thread message ${messageIndex + 1}`} />
+              <AutoSizeEmailFrame html={message.bodyHtml} onLinkAction={onLinkAction} title={`Thread message ${messageIndex + 1}`} />
             ) : (
               <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-zinc-700">{message.bodyText || "No body content."}</pre>
             )}
@@ -3773,19 +4107,93 @@ function InboxThreadConversation({ detail, privacyMode }: { detail: InboxMessage
   );
 }
 
-function AutoSizeEmailFrame({ html, title }: { html: string; title: string }) {
+function EmailLinkActionSheet({ link, onClose }: { link: EmailLinkAction; onClose: () => void }) {
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(link.href);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = link.href;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    onClose();
+  }
+
+  function openLink() {
+    window.open(link.href, "_blank", "noopener,noreferrer");
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/20 p-3 sm:items-center">
+      <button aria-label="Close link menu" className="absolute inset-0 cursor-default" onClick={onClose} type="button" />
+      <div className="relative w-full max-w-sm overflow-hidden rounded-2xl border border-white/70 bg-white/90 p-4 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl">
+        <div className="mb-4">
+          <p className="text-sm font-semibold text-zinc-950">Open link?</p>
+          <p className="mt-1 max-h-20 overflow-y-auto break-all text-xs leading-5 text-zinc-500">{link.href}</p>
+        </div>
+        <div className="grid gap-2">
+          <Button className="justify-start" onClick={() => void copyLink()} type="button" variant="outline">
+            <Copy className="h-4 w-4" />
+            Copy link
+          </Button>
+          <Button className="justify-start" onClick={openLink} type="button">
+            <ExternalLink className="h-4 w-4" />
+            Open in web browser
+          </Button>
+          <Button onClick={onClose} type="button" variant="ghost">
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AutoSizeEmailFrame({ html, onLinkAction, title }: { html: string; onLinkAction: (link: EmailLinkAction) => void; title: string }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [height, setHeight] = useState(700);
   const srcDoc = buildResponsiveEmailHtml(html);
 
   function resizeFrame() {
     const frame = frameRef.current;
-    const documentElement = frame?.contentDocument?.documentElement;
-    const body = frame?.contentDocument?.body;
+    const frameDocument = frame?.contentDocument;
+    const documentElement = frameDocument?.documentElement;
+    const body = frameDocument?.body;
     const nextHeight = Math.max(documentElement?.scrollHeight ?? 0, body?.scrollHeight ?? 0, 320);
     if (nextHeight) {
       setHeight(nextHeight);
     }
+
+    if (frameDocument) {
+      frameDocument.addEventListener("click", handleFrameClick);
+    }
+  }
+
+  function handleFrameClick(event: globalThis.MouseEvent) {
+    const target = event.target as HTMLElement | null;
+    const anchor = target?.closest("a[href]") as HTMLAnchorElement | null;
+    if (!anchor) {
+      return;
+    }
+
+    const href = anchor.href || anchor.getAttribute("href") || "";
+    if (!isUserOpenableEmailLink(href)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    onLinkAction({
+      href,
+      label: anchor.textContent?.trim() || href,
+    });
   }
 
   return (
@@ -3800,6 +4208,10 @@ function AutoSizeEmailFrame({ html, title }: { html: string; title: string }) {
       title={title}
     />
   );
+}
+
+function isUserOpenableEmailLink(href: string) {
+  return /^https?:\/\//i.test(href) || /^mailto:/i.test(href) || /^tel:/i.test(href);
 }
 
 function buildResponsiveEmailHtml(html: string) {
