@@ -4619,6 +4619,7 @@ function InboxComposeModal({
   const [aiError, setAiError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState("");
   const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
+  const [aiDraftViewport, setAiDraftViewport] = useState({ height: 0, offsetTop: 0 });
   const bodyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const aiInstructionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const replyContext = initial?.replyContext ?? null;
@@ -4658,6 +4659,31 @@ function InboxComposeModal({
       document.documentElement.style.overflow = previousHtmlOverflow;
     };
   }, [isAiDraftOpen]);
+
+  useEffect(() => {
+    if (!isPush || !isAiDraftOpen) {
+      return;
+    }
+
+    function syncAiDraftViewport() {
+      const viewport = window.visualViewport;
+      setAiDraftViewport({
+        height: Math.round(viewport?.height ?? window.innerHeight),
+        offsetTop: Math.round(viewport?.offsetTop ?? 0),
+      });
+    }
+
+    syncAiDraftViewport();
+    window.visualViewport?.addEventListener("resize", syncAiDraftViewport);
+    window.visualViewport?.addEventListener("scroll", syncAiDraftViewport);
+    window.addEventListener("resize", syncAiDraftViewport);
+
+    return () => {
+      window.visualViewport?.removeEventListener("resize", syncAiDraftViewport);
+      window.visualViewport?.removeEventListener("scroll", syncAiDraftViewport);
+      window.removeEventListener("resize", syncAiDraftViewport);
+    };
+  }, [isPush, isAiDraftOpen]);
 
   function resizeBodyTextarea() {
     const textarea = bodyTextareaRef.current;
@@ -4887,8 +4913,14 @@ function InboxComposeModal({
 
   if (isPush && isAiDraftOpen) {
     return (
-      <section className="fixed inset-0 z-[100] flex h-[100dvh] w-screen flex-col overflow-hidden overscroll-none bg-[#f7f7f7] text-zinc-950 md:hidden">
-        <header className="fixed inset-x-0 top-0 z-20 flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 bg-white/95 px-2 backdrop-blur-xl">
+      <section
+        className="fixed inset-x-0 top-0 z-[100] flex w-screen flex-col overflow-hidden overscroll-none bg-[#f7f7f7] text-zinc-950 md:hidden"
+        style={{
+          height: aiDraftViewport.height ? `${aiDraftViewport.height}px` : "100dvh",
+          transform: aiDraftViewport.offsetTop ? `translateY(${aiDraftViewport.offsetTop}px)` : undefined,
+        }}
+      >
+        <header className="relative z-20 flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 bg-white/95 px-2 backdrop-blur-xl">
           <Button aria-label="Back to email draft" onClick={() => setIsAiDraftOpen(false)} size="icon" type="button" variant="ghost">
             <ChevronLeft className="h-5 w-5" />
           </Button>
@@ -4897,7 +4929,7 @@ function InboxComposeModal({
         </header>
 
         <main className={cn(
-          "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-[calc(env(safe-area-inset-bottom)+4.75rem)] pt-[4.5rem]",
+          "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4",
           aiMessages.length > 0 || aiError ? "space-y-3" : "flex items-center justify-center",
         )}>
           {aiMessages.length === 0 && !aiError ? (
@@ -4949,7 +4981,7 @@ function InboxComposeModal({
           {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
         </main>
 
-        <footer className="fixed inset-x-0 bottom-0 z-20 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 shadow-[0_-12px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+        <footer className="relative z-20 shrink-0 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 shadow-[0_-12px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl">
           <div className="relative">
             {isToolPickerOpen && filteredToolOptions.length > 0 ? (
               <div className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 z-30 overflow-hidden rounded-xl border border-white/70 bg-white/95 shadow-2xl shadow-slate-900/15 backdrop-blur-xl">

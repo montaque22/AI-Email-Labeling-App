@@ -185,6 +185,10 @@ The user can describe how the message should be written. For replies, Emailable 
 
 The generated response can be reviewed and applied to the email body before the message is sent or saved.
 
+When MCP Client is active and tools are selected, AI Draft also supports a tool picker. Type `#` in the AI Draft prompt to choose from available tools. Selecting a tool inserts a readable instruction such as `[Use tool: find_email]`, which tells Emailable that the AI request should require that tool. This is useful when a reply needs information from another email, such as an order number or previous conversation.
+
+If the `#` tool picker does not appear, check that BYOAI is active, MCP Client is active, and at least one tool is selected in **Artificial Intelligence > BYOAI > MCP Client**. Saved MCP servers are not enough by themselves; the MCP Client activation switch must be on before Emailable attaches tools to AI Draft or AI labeling requests.
+
 ## MCP Client tools
 
 BYOAI can make selected tools from connected MCP servers available during supported AI requests. This can let the AI look up external information or trigger approved actions while labeling an email or crafting a reply.

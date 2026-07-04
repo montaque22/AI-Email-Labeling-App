@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.68
+
+- Fixed the mobile AI Draft screen so the header and prompt input stay pinned while the keyboard is open.
+- Documented that AI Draft tool picking requires BYOAI and MCP Client activation with selected tools.
+
 ## 0.1.67
 
 - Removed the remaining desktop modal clipping that could hide the AI Draft tool helper popup.

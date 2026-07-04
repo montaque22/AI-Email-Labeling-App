@@ -123,6 +123,27 @@ When the MCP Client is active, Emailable:
 
 Tools are provided through each AI platform's native tool or MCP mechanism. Emailable does not paste tool descriptions into the system prompt as a substitute for actual tool calling.
 
+Important caveat: connected MCP servers and selected tools are not used until the MCP Client section is activated. If MCP Client is off, Emailable keeps the saved server settings, but it does not attach those tools to AI Label, AI Reply, AI Draft, or polling requests.
+
+## AI Draft tool picker
+
+When BYOAI is active, MCP Client is active, and at least one tool is selected, AI Draft includes a tool picker.
+
+Type `#` in the AI Draft prompt to open the picker. Choose a tool to insert a readable marker such as:
+
+```text
+[Use tool: find_email]
+```
+
+The marker tells Emailable that the AI request should require that selected tool. For example, while replying to a customer, you could type `#`, choose `find_email`, and ask Emailable to find an order number from a previous email before writing the reply.
+
+If no picker appears, check these items in order:
+
+1. BYOAI is activated.
+2. MCP Client is activated.
+3. The **System MCP Tools** row or another MCP server has at least one selected tool.
+4. The current AI provider supports tools for the request.
+
 ## AI labeling example
 
 Suppose an external MCP server provides `lookup_customer_risk`.
