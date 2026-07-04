@@ -5013,7 +5013,9 @@ function InboxComposeModal({
         <div className={cn(
           isPush
             ? "flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
-            : "max-h-[calc(92vh-2rem)] overflow-y-auto rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60",
+            : isAiDraftOpen
+              ? "max-h-[calc(92vh-2rem)] overflow-visible rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60"
+              : "max-h-[calc(92vh-2rem)] overflow-y-auto rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60",
         )}>
           <div className={cn(
             "mb-4 flex items-center justify-between gap-4",
@@ -5103,7 +5105,10 @@ function InboxComposeModal({
             </div>
             <div className="relative shrink-0 bg-white/35 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 backdrop-blur-xl">
               {isToolPickerOpen && filteredToolOptions.length > 0 ? (
-                <div className="absolute bottom-[calc(100%+0.5rem)] left-3 right-3 z-30 overflow-hidden rounded-xl border border-white/70 bg-white/90 shadow-2xl shadow-slate-900/15 backdrop-blur-xl">
+                <div className="absolute bottom-[calc(100%+0.5rem)] left-3 right-3 z-[110] overflow-hidden rounded-xl border border-white/70 bg-white/95 shadow-2xl shadow-slate-900/15 backdrop-blur-xl">
+                  <div className="border-b border-zinc-200/70 px-3 py-2 text-xs font-medium uppercase tracking-normal text-zinc-500">
+                    Available tools
+                  </div>
                   <div className="max-h-64 overflow-y-auto p-1">
                     {filteredToolOptions.map((tool) => (
                       <button

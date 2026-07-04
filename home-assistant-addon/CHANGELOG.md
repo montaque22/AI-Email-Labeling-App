@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.66
+
+- Fixed the desktop AI Draft tool helper popup so it appears above the composer instead of being clipped by the modal.
+
 ## 0.1.65
 
 - Render email HTML in the app DOM with sanitization instead of iframes so hyperlink actions work consistently.
