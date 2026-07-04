@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.67
+
+- Removed the remaining desktop modal clipping that could hide the AI Draft tool helper popup.
+
 ## 0.1.66
 
 - Fixed the desktop AI Draft tool helper popup so it appears above the composer instead of being clipped by the modal.

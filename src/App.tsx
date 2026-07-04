@@ -5009,7 +5009,13 @@ function InboxComposeModal({
   return (
     <>
     <div className={cn("fixed inset-0 z-50", isPush ? "flex h-[100dvh] w-screen flex-col overflow-hidden bg-[#f7f7f7] md:hidden" : "flex items-center justify-center overflow-hidden bg-slate-950/20 p-4")}>
-      <div className={cn(isPush ? "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden" : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]")}>
+      <div className={cn(
+        isPush
+          ? "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden"
+          : isAiDraftOpen
+            ? "max-h-[92vh] w-full max-w-5xl overflow-visible rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]"
+            : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]",
+      )}>
         <div className={cn(
           isPush
             ? "flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
@@ -5053,7 +5059,7 @@ function InboxComposeModal({
             )}
           </div>
         {isAiDraftOpen ? (
-          <div className={cn("flex flex-col overflow-hidden", isPush ? "min-h-0 flex-1" : "min-h-[560px]")}>
+          <div className={cn("flex flex-col", isPush ? "min-h-0 flex-1 overflow-hidden" : "min-h-[560px] overflow-visible")}>
             <div className={cn("min-h-0 flex-1 overflow-y-auto p-4", aiMessages.length > 0 || aiError ? "space-y-3" : "flex items-center justify-center")}>
               {aiMessages.length === 0 && !aiError ? (
                 <div className="mx-auto max-w-xs text-center">
