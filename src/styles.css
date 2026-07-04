@@ -100,3 +100,64 @@ select,
   backdrop-filter: blur(22px) saturate(145%);
   -webkit-backdrop-filter: blur(22px) saturate(145%);
 }
+
+.emailable-email-html {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.emailable-email-html *,
+.emailable-email-html *::before,
+.emailable-email-html *::after {
+  box-sizing: border-box;
+  max-width: 100%;
+}
+
+.emailable-email-html img,
+.emailable-email-html video,
+.emailable-email-html canvas,
+.emailable-email-html svg {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+.emailable-email-html table {
+  width: 100% !important;
+  max-width: 100% !important;
+  table-layout: auto !important;
+  border-collapse: collapse;
+}
+
+.emailable-email-html td,
+.emailable-email-html th {
+  max-width: 100% !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+}
+
+.emailable-email-html pre,
+.emailable-email-html code {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+}
+
+.emailable-email-html a {
+  color: #1d4ed8;
+  cursor: pointer;
+  overflow-wrap: anywhere !important;
+  text-decoration: underline;
+  text-decoration-color: rgba(29, 78, 216, 0.35);
+  text-underline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .emailable-email-html {
+    font-size: 16px;
+    line-height: 1.45;
+  }
+
+  .emailable-email-html [width],
+  .emailable-email-html [style*="width"] {
+    max-width: 100% !important;
+  }
+}

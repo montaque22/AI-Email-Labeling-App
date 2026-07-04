@@ -3006,7 +3006,7 @@ function InboxPage({
                 </select>
               </label>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className={cn("space-y-3", isMobileEditMode && "pb-28 md:pb-6")}>
               <div className="hidden justify-start md:flex">
                 {filteredMessages.length > 0 ? (
                   <button
@@ -3608,8 +3608,8 @@ function InboxMessageRow({
       <div className="relative overflow-hidden md:hidden">
         <div
           className={cn(
-            "relative flex w-full touch-pan-y items-start gap-3 bg-white/45 px-4 py-3 text-left transition duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] will-change-transform",
-            isEditMode ? "cursor-pointer" : "cursor-pointer",
+            "relative w-full touch-pan-y bg-white/45 py-3 text-left transition duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] will-change-transform",
+            isEditMode ? "grid cursor-pointer grid-cols-[3.25rem_minmax(0,1fr)] items-center gap-2 px-3" : "flex cursor-pointer items-start gap-3 px-4",
             pressState === "pressing" ? "scale-[0.975] bg-white/65 shadow-inner" : null,
             pressState === "popped" ? "scale-[1.025] bg-white/80 shadow-lg" : null,
           )}
@@ -3623,22 +3623,23 @@ function InboxMessageRow({
           tabIndex={0}
         >
           {isEditMode ? (
-            <GlassCheckbox
-              checked={isSelected}
-              onChange={onToggle}
-              onClick={(event) => event.stopPropagation()}
-              className="self-center"
-            />
+            <div className="flex h-full min-h-24 items-center justify-center self-stretch">
+              <GlassCheckbox
+                checked={isSelected}
+                onChange={onToggle}
+                onClick={(event) => event.stopPropagation()}
+              />
+            </div>
           ) : null}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start justify-between gap-3">
-              <p className="flex min-w-0 items-center gap-2 truncate text-base font-bold text-zinc-950">
+          <div className="min-w-0 overflow-hidden">
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+              <p className="flex min-w-0 items-center gap-2 overflow-hidden text-base font-bold text-zinc-950">
                 {!message.isRead ? <span aria-label="Unread" className="h-2 w-2 shrink-0 rounded-full bg-blue-500" title="Unread" /> : null}
                 <span className="min-w-0 truncate">{message.sender || message.from || "Unknown sender"}</span>
               </p>
               {message.hasAttachments ? <Download className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" /> : null}
             </div>
-            <div className="mt-1 flex min-w-0 items-center gap-2">
+            <div className="mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
               <p className="min-w-0 truncate text-base text-zinc-950">{message.subject || "(no subject)"}</p>
               {replyCount > 0 ? (
                 <span className="inline-flex h-6 min-w-8 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white/70 px-2 text-sm font-semibold text-zinc-700 shadow-sm backdrop-blur-xl">
@@ -3646,7 +3647,7 @@ function InboxMessageRow({
                 </span>
               ) : null}
             </div>
-            <div className="mt-1 flex min-w-0 items-center gap-3">
+            <div className="mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
               <p className="min-w-0 flex-1 truncate text-base text-zinc-500">{message.snippet || "No preview available."}</p>
               <p className="shrink-0 text-sm font-semibold text-zinc-500">{formatInboxListDate(message.date)}</p>
             </div>
@@ -4083,9 +4084,9 @@ function InboxThreadConversation({
           </div>
           <div className="min-w-0 overflow-hidden border-t border-zinc-200/80 bg-white/80 p-4">
             {message.bodyHtml ? (
-              <AutoSizeEmailFrame html={message.bodyHtml} onLinkAction={onLinkAction} title={`Thread message ${messageIndex + 1}`} />
+              <SanitizedEmailHtml html={message.bodyHtml} onLinkAction={onLinkAction} />
             ) : (
-              <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-zinc-700">{message.bodyText || "No body content."}</pre>
+              <PlainTextEmailBody onLinkAction={onLinkAction} text={message.bodyText || "No body content."} />
             )}
           </div>
           {message.attachments.length > 0 ? (
@@ -4105,6 +4106,73 @@ function InboxThreadConversation({
       ))}
     </div>
   );
+}
+
+function PlainTextEmailBody({ text, onLinkAction }: { text: string; onLinkAction: (link: EmailLinkAction) => void }) {
+  const parts = splitPlainTextEmailLinks(text);
+
+  return (
+    <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-zinc-700">
+      {parts.map((part, index) => {
+        if (part.type === "text") {
+          return <span key={`text-${index}`}>{part.value}</span>;
+        }
+
+        return (
+          <button
+            className="inline cursor-pointer break-all text-left text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900"
+            key={`link-${part.href}-${index}`}
+            onClick={() => onLinkAction({ href: part.href, label: part.value })}
+            type="button"
+          >
+            {part.value}
+          </button>
+        );
+      })}
+    </pre>
+  );
+}
+
+function splitPlainTextEmailLinks(text: string): Array<{ type: "text"; value: string } | { type: "link"; value: string; href: string }> {
+  const linkPattern = /((?:https?:\/\/|mailto:|tel:)[^\s<>"']+|www\.[^\s<>"']+)/gi;
+  const parts: Array<{ type: "text"; value: string } | { type: "link"; value: string; href: string }> = [];
+  let lastIndex = 0;
+
+  for (const match of text.matchAll(linkPattern)) {
+    const rawMatch = match[0];
+    const index = match.index ?? 0;
+    const { label, trailing } = trimTrailingLinkPunctuation(rawMatch);
+
+    if (index > lastIndex) {
+      parts.push({ type: "text", value: text.slice(lastIndex, index) });
+    }
+
+    const href = /^www\./i.test(label) ? `https://${label}` : label;
+    if (isUserOpenableEmailLink(href)) {
+      parts.push({ type: "link", value: label, href });
+    } else {
+      parts.push({ type: "text", value: label });
+    }
+
+    if (trailing) {
+      parts.push({ type: "text", value: trailing });
+    }
+    lastIndex = index + rawMatch.length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push({ type: "text", value: text.slice(lastIndex) });
+  }
+
+  return parts.length ? parts : [{ type: "text", value: text }];
+}
+
+function trimTrailingLinkPunctuation(value: string) {
+  const match = value.match(/^(.+?)([),.;!?]+)?$/);
+  return {
+    label: match?.[1] || value,
+    trailing: match?.[2] || "",
+  };
 }
 
 function EmailLinkActionSheet({ link, onClose }: { link: EmailLinkAction; onClose: () => void }) {
@@ -4156,27 +4224,14 @@ function EmailLinkActionSheet({ link, onClose }: { link: EmailLinkAction; onClos
   );
 }
 
-function AutoSizeEmailFrame({ html, onLinkAction, title }: { html: string; onLinkAction: (link: EmailLinkAction) => void; title: string }) {
-  const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const [height, setHeight] = useState(700);
-  const srcDoc = buildResponsiveEmailHtml(html);
+function isUserOpenableEmailLink(href: string) {
+  return /^https?:\/\//i.test(href) || /^mailto:/i.test(href) || /^tel:/i.test(href);
+}
 
-  function resizeFrame() {
-    const frame = frameRef.current;
-    const frameDocument = frame?.contentDocument;
-    const documentElement = frameDocument?.documentElement;
-    const body = frameDocument?.body;
-    const nextHeight = Math.max(documentElement?.scrollHeight ?? 0, body?.scrollHeight ?? 0, 320);
-    if (nextHeight) {
-      setHeight(nextHeight);
-    }
+function SanitizedEmailHtml({ html, onLinkAction }: { html: string; onLinkAction: (link: EmailLinkAction) => void }) {
+  const sanitizedHtml = useMemo(() => sanitizeEmailHtmlForDom(html), [html]);
 
-    if (frameDocument) {
-      frameDocument.addEventListener("click", handleFrameClick);
-    }
-  }
-
-  function handleFrameClick(event: globalThis.MouseEvent) {
+  function handleClick(event: ReactMouseEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement | null;
     const anchor = target?.closest("a[href]") as HTMLAnchorElement | null;
     if (!anchor) {
@@ -4185,6 +4240,8 @@ function AutoSizeEmailFrame({ html, onLinkAction, title }: { html: string; onLin
 
     const href = anchor.href || anchor.getAttribute("href") || "";
     if (!isUserOpenableEmailLink(href)) {
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
@@ -4197,113 +4254,91 @@ function AutoSizeEmailFrame({ html, onLinkAction, title }: { html: string; onLin
   }
 
   return (
-    <iframe
-      className="w-full rounded-xl bg-white"
-      onLoad={resizeFrame}
-      ref={frameRef}
-      sandbox="allow-same-origin"
-      scrolling="no"
-      srcDoc={srcDoc}
-      style={{ height }}
-      title={title}
+    <div
+      className="emailable-email-html min-w-0 max-w-full overflow-hidden rounded-xl bg-white text-sm leading-6 text-zinc-800"
+      dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+      onClick={handleClick}
     />
   );
 }
 
-function isUserOpenableEmailLink(href: string) {
-  return /^https?:\/\//i.test(href) || /^mailto:/i.test(href) || /^tel:/i.test(href);
-}
-
-function buildResponsiveEmailHtml(html: string) {
-  const responsiveStyle = `
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      html,
-      body {
-        box-sizing: border-box;
-        margin: 0;
-        min-width: 0 !important;
-        max-width: 100% !important;
-        overflow-x: hidden !important;
-        overflow-wrap: anywhere;
-        word-break: normal;
-      }
-
-      *,
-      *::before,
-      *::after {
-        box-sizing: inherit;
-      }
-
-      img,
-      video,
-      canvas,
-      svg {
-        max-width: 100% !important;
-        height: auto !important;
-      }
-
-      table,
-      tbody,
-      tr,
-      td,
-      th,
-      div,
-      section,
-      article,
-      main,
-      p {
-        max-width: 100% !important;
-      }
-
-      table {
-        width: 100% !important;
-        table-layout: auto !important;
-      }
-
-      td,
-      th {
-        overflow-wrap: anywhere !important;
-        word-break: normal !important;
-      }
-
-      pre,
-      code {
-        white-space: pre-wrap !important;
-        overflow-wrap: anywhere !important;
-      }
-
-      a {
-        overflow-wrap: anywhere !important;
-      }
-
-      @media (max-width: 640px) {
-        body {
-          font-size: 16px;
-          line-height: 1.45;
-        }
-
-        [width],
-        [style*="width"] {
-          max-width: 100% !important;
-        }
-      }
-    </style>
-  `;
-
-  if (/<head[\s>]/i.test(html)) {
-    return html.replace(/<head([^>]*)>/i, `<head$1>${responsiveStyle}`);
+function sanitizeEmailHtmlForDom(html: string) {
+  if (typeof window === "undefined" || typeof DOMParser === "undefined") {
+    return "";
   }
 
-  return `
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    ${responsiveStyle}
-  </head>
-  <body>${html}</body>
-</html>`;
+  const parser = new DOMParser();
+  const parsedDocument = parser.parseFromString(String(html || ""), "text/html");
+  const blockedSelectors = [
+    "script",
+    "style",
+    "iframe",
+    "object",
+    "embed",
+    "applet",
+    "base",
+    "meta",
+    "link",
+    "form",
+    "input",
+    "button",
+    "textarea",
+    "select",
+    "option",
+  ].join(",");
+
+  parsedDocument.querySelectorAll(blockedSelectors).forEach((node) => node.remove());
+
+  parsedDocument.querySelectorAll<HTMLElement>("*").forEach((element) => {
+    for (const attribute of Array.from(element.attributes)) {
+      const attributeName = attribute.name.toLowerCase();
+      const attributeValue = attribute.value.trim();
+
+      if (attributeName.startsWith("on")) {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+
+      if (attributeName === "srcdoc" || attributeName === "srcset") {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+
+      if (["href", "src", "xlink:href", "action", "formaction"].includes(attributeName) && isUnsafeEmailHtmlUrl(attributeValue)) {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+
+      if (attributeName === "style") {
+        element.setAttribute(attribute.name, sanitizeEmailStyleAttribute(attributeValue));
+      }
+    }
+
+    if (element.tagName.toLowerCase() === "a") {
+      const anchor = element as HTMLAnchorElement;
+      const href = anchor.getAttribute("href") || "";
+      if (!isUserOpenableEmailLink(href)) {
+        anchor.removeAttribute("href");
+      } else {
+        anchor.setAttribute("rel", "noopener noreferrer");
+      }
+      anchor.removeAttribute("target");
+    }
+  });
+
+  return parsedDocument.body.innerHTML;
+}
+
+function isUnsafeEmailHtmlUrl(value: string) {
+  return /^(?:javascript|data:text\/html|vbscript):/i.test(value);
+}
+
+function sanitizeEmailStyleAttribute(value: string) {
+  return value
+    .split(";")
+    .map((part) => part.trim())
+    .filter((part) => part && !/expression\s*\(|javascript:|url\s*\(\s*['"]?\s*(?:javascript|data:text\/html|vbscript):/i.test(part))
+    .join("; ");
 }
 
 function InboxRuleBadge({ compact = false, onClick, rule }: { compact?: boolean; onClick?: () => void; rule?: InboxRuleStatus | null }) {
@@ -4575,7 +4610,7 @@ function InboxComposeModal({
   const [isAiDraftOpen, setIsAiDraftOpen] = useState(false);
   const [isOriginalMessageExpanded, setIsOriginalMessageExpanded] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
-  const [aiMessages, setAiMessages] = useState<Array<{ id: number; role: "user" | "assistant"; text: string }>>([]);
+  const [aiMessages, setAiMessages] = useState<Array<{ id: number; isLoading?: boolean; role: "user" | "assistant"; text: string }>>([]);
   const [isToolPickerOpen, setIsToolPickerOpen] = useState(false);
   const [toolPickerQuery, setToolPickerQuery] = useState("");
   const [isGeneratingAiSuggestion, setIsGeneratingAiSuggestion] = useState(false);
@@ -4583,6 +4618,7 @@ function InboxComposeModal({
   const [error, setError] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState("");
+  const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
   const bodyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const aiInstructionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const replyContext = initial?.replyContext ?? null;
@@ -4648,20 +4684,66 @@ function InboxComposeModal({
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
   }
 
-  function updateAiInstruction(value: string) {
+  function findActiveToolToken(value: string, cursorPosition = value.length) {
+    const beforeCursor = value.slice(0, cursorPosition);
+    const tokenStart = beforeCursor.lastIndexOf("#");
+    if (tokenStart === -1) {
+      return null;
+    }
+
+    const textBeforeHash = beforeCursor.slice(0, tokenStart);
+    const previousCharacter = textBeforeHash.charAt(textBeforeHash.length - 1);
+    if (previousCharacter && !/\s/.test(previousCharacter)) {
+      return null;
+    }
+
+    const tokenText = beforeCursor.slice(tokenStart + 1);
+    if (!/^[A-Za-z0-9_-]*$/.test(tokenText)) {
+      return null;
+    }
+
+    const afterCursor = value.slice(cursorPosition);
+    const nextCharacter = afterCursor.charAt(0);
+    if (nextCharacter && !/\s/.test(nextCharacter)) {
+      return null;
+    }
+
+    return {
+      end: cursorPosition,
+      query: tokenText,
+      start: tokenStart,
+    };
+  }
+
+  function updateToolPickerForCursor(value = aiInstruction) {
+    const textarea = aiInstructionTextareaRef.current;
+    const cursorPosition = textarea?.selectionStart ?? value.length;
+    const token = findActiveToolToken(value, cursorPosition);
+    setToolPickerQuery(token?.query ?? "");
+    setIsToolPickerOpen(Boolean(token && activeTools.length > 0));
+  }
+
+  function updateAiInstruction(value: string, cursorPosition?: number | null) {
     setAiInstruction(value);
-    const match = value.match(/(^|\s)#([A-Za-z0-9_-]*)$/);
-    setToolPickerQuery(match?.[2] ?? "");
-    setIsToolPickerOpen(Boolean(match && activeTools.length > 0));
+    const token = findActiveToolToken(value, cursorPosition ?? value.length);
+    setToolPickerQuery(token?.query ?? "");
+    setIsToolPickerOpen(Boolean(token && activeTools.length > 0));
   }
 
   function insertToolDirective(tool: AiMcpTool) {
     setAiInstruction((current) => {
+      const textarea = aiInstructionTextareaRef.current;
+      const cursorPosition = textarea?.selectionStart ?? current.length;
+      const token = findActiveToolToken(current, cursorPosition);
       const directive = `[Use tool: ${tool.name}]`;
-      const next = current.match(/(^|\s)#([A-Za-z0-9_-]*)$/)
-        ? current.replace(/(^|\s)#([A-Za-z0-9_-]*)$/, (_match, prefix) => `${prefix}${directive} `)
+      const next = token
+        ? `${current.slice(0, token.start)}${directive} ${current.slice(token.end)}`
         : `${current}${current.endsWith(" ") || !current ? "" : " "}${directive} `;
-      window.requestAnimationFrame(() => aiInstructionTextareaRef.current?.focus());
+      const nextCursorPosition = token ? token.start + directive.length + 1 : next.length;
+      window.requestAnimationFrame(() => {
+        aiInstructionTextareaRef.current?.focus();
+        aiInstructionTextareaRef.current?.setSelectionRange(nextCursorPosition, nextCursorPosition);
+      });
       return next;
     });
     setIsToolPickerOpen(false);
@@ -4759,7 +4841,13 @@ function InboxComposeModal({
 
     setIsGeneratingAiSuggestion(true);
     setAiError(null);
-    setAiMessages((current) => [...current, { id: Date.now(), role: "user", text: prompt }]);
+    const userMessageId = Date.now();
+    const loadingMessageId = userMessageId + 1;
+    setAiMessages((current) => [
+      ...current,
+      { id: userMessageId, role: "user", text: prompt },
+      { id: loadingMessageId, isLoading: true, role: "assistant", text: "Thinking..." },
+    ]);
     setAiInstruction("");
 
     try {
@@ -4778,18 +4866,148 @@ function InboxComposeModal({
 
       if (!response.ok) {
         setAiError(data.error ?? "Could not draft with AI.");
+        setAiMessages((current) => current.filter((message) => message.id !== loadingMessageId));
         return;
       }
 
-      setAiMessages((current) => [...current, { id: Date.now() + 1, role: "assistant", text: data.bodyText ?? "" }]);
+      setAiMessages((current) =>
+        current.map((message) =>
+          message.id === loadingMessageId
+            ? { id: loadingMessageId, role: "assistant", text: data.bodyText ?? "" }
+            : message,
+        ),
+      );
     } catch {
       setAiError("Could not draft with AI.");
+      setAiMessages((current) => current.filter((message) => message.id !== loadingMessageId));
     } finally {
       setIsGeneratingAiSuggestion(false);
     }
   }
 
+  if (isPush && isAiDraftOpen) {
+    return (
+      <section className="fixed inset-0 z-[100] flex h-[100dvh] w-screen flex-col overflow-hidden overscroll-none bg-[#f7f7f7] text-zinc-950 md:hidden">
+        <header className="fixed inset-x-0 top-0 z-20 flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 bg-white/95 px-2 backdrop-blur-xl">
+          <Button aria-label="Back to email draft" onClick={() => setIsAiDraftOpen(false)} size="icon" type="button" variant="ghost">
+            <ChevronLeft className="h-5 w-5" />
+          </Button>
+          <h3 className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-zinc-950">AI Draft</h3>
+          <span className="w-10" />
+        </header>
+
+        <main className={cn(
+          "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-[calc(env(safe-area-inset-bottom)+4.75rem)] pt-[4.5rem]",
+          aiMessages.length > 0 || aiError ? "space-y-3" : "flex items-center justify-center",
+        )}>
+          {aiMessages.length === 0 && !aiError ? (
+            <div className="mx-auto max-w-xs text-center">
+              <p className="text-sm font-medium text-zinc-900">Ask AI to help draft this message.</p>
+              <p className="mt-2 text-sm leading-6 text-zinc-500">
+                Describe the tone or key points, then apply the response you like to the email body.
+              </p>
+            </div>
+          ) : null}
+          {aiMessages.map((message) => (
+            <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")} key={message.id}>
+              {message.role === "assistant" ? (
+                <button
+                  className={cn(
+                    "max-w-[85%] whitespace-pre-wrap rounded-xl border border-white/70 bg-white/70 px-4 py-3 text-left text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl transition",
+                    message.isLoading ? "cursor-default" : "cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/80",
+                  )}
+                  disabled={message.isLoading}
+                  onClick={() => {
+                    if (message.isLoading) {
+                      return;
+                    }
+                    setBodyText(message.text);
+                    setIsAiDraftOpen(false);
+                  }}
+                  title="Apply this draft"
+                  type="button"
+                >
+                  {message.isLoading ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader />
+                      {message.text}
+                    </span>
+                  ) : (
+                    <>
+                      {message.text}
+                      <span className="mt-2 block text-xs font-medium text-emerald-700">Click to apply</span>
+                    </>
+                  )}
+                </button>
+              ) : (
+                <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border border-white/70 bg-white/70 px-4 py-3 text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl">
+                  {message.text}
+                </div>
+              )}
+            </div>
+          ))}
+          {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
+        </main>
+
+        <footer className="fixed inset-x-0 bottom-0 z-20 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 shadow-[0_-12px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+          <div className="relative">
+            {isToolPickerOpen && filteredToolOptions.length > 0 ? (
+              <div className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 z-30 overflow-hidden rounded-xl border border-white/70 bg-white/95 shadow-2xl shadow-slate-900/15 backdrop-blur-xl">
+                <div className="max-h-64 overflow-y-auto p-1">
+                  {filteredToolOptions.map((tool) => (
+                    <button
+                      className="flex w-full cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-zinc-100/70"
+                      key={tool.name}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => insertToolDirective(tool)}
+                      type="button"
+                    >
+                      <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" />
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-zinc-950">{tool.name}</span>
+                        <span className="line-clamp-2 text-xs leading-5 text-zinc-500">{tool.description || "Available AI tool."}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <div className="flex items-end gap-2">
+              <textarea
+                className="min-h-10 min-w-0 flex-1 resize-none rounded-md border border-zinc-200 bg-white/60 px-3 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400 shadow-sm backdrop-blur-xl focus:border-zinc-400"
+                maxLength={1000}
+                onBlur={() => window.setTimeout(() => setIsToolPickerOpen(false), 120)}
+                onChange={(event) => updateAiInstruction(event.target.value, event.target.selectionStart)}
+                onClick={() => updateToolPickerForCursor()}
+                onFocus={() => updateToolPickerForCursor()}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setIsToolPickerOpen(false);
+                  }
+                  if (event.key === "Enter" && !event.shiftKey && aiInstruction.trim() && !isGeneratingAiSuggestion) {
+                    event.preventDefault();
+                    void generateAiSuggestion();
+                  }
+                }}
+                onKeyUp={() => updateToolPickerForCursor()}
+                onSelect={() => updateToolPickerForCursor()}
+                placeholder={replyContext ? "Ask AI how to draft this reply..." : "Ask AI how to draft this email..."}
+                ref={aiInstructionTextareaRef}
+                rows={1}
+                value={aiInstruction}
+              />
+              <Button className="h-10 w-10 shrink-0 border border-white/70 bg-white/65 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/85" disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} size="icon" type="button" variant="outline">
+                {isGeneratingAiSuggestion ? <Loader /> : <Send className="h-4 w-4" />}
+              </Button>
+            </div>
+          </div>
+        </footer>
+      </section>
+    );
+  }
+
   return (
+    <>
     <div className={cn("fixed inset-0 z-50", isPush ? "flex h-[100dvh] w-screen flex-col overflow-hidden bg-[#f7f7f7] md:hidden" : "flex items-center justify-center overflow-hidden bg-slate-950/20 p-4")}>
       <div className={cn(isPush ? "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden" : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]")}>
         <div className={cn(
@@ -4847,16 +5065,32 @@ function InboxComposeModal({
                   <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")} key={message.id}>
                     {message.role === "assistant" ? (
                       <button
-                        className="max-w-[85%] cursor-pointer whitespace-pre-wrap rounded-xl border border-white/70 bg-white/65 px-4 py-3 text-left text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl transition hover:border-emerald-200 hover:bg-emerald-50/80"
+                        className={cn(
+                          "max-w-[85%] whitespace-pre-wrap rounded-xl border border-white/70 bg-white/65 px-4 py-3 text-left text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl transition",
+                          message.isLoading ? "cursor-default" : "cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/80",
+                        )}
+                        disabled={message.isLoading}
                         onClick={() => {
+                          if (message.isLoading) {
+                            return;
+                          }
                           setBodyText(message.text);
                           setIsAiDraftOpen(false);
                         }}
                         title="Apply this draft"
                         type="button"
                       >
-                        {message.text}
-                        <span className="mt-2 block text-xs font-medium text-emerald-700">Click to apply</span>
+                        {message.isLoading ? (
+                          <span className="inline-flex items-center gap-2">
+                            <Loader />
+                            {message.text}
+                          </span>
+                        ) : (
+                          <>
+                            {message.text}
+                            <span className="mt-2 block text-xs font-medium text-emerald-700">Click to apply</span>
+                          </>
+                        )}
                       </button>
                     ) : (
                       <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border border-white/70 bg-white/65 px-4 py-3 text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl">
@@ -4894,12 +5128,9 @@ function InboxComposeModal({
                   className="min-h-10 min-w-0 flex-1 resize-none rounded-md border border-zinc-200 bg-white/45 px-3 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400 shadow-sm backdrop-blur-xl focus:border-zinc-400"
                   maxLength={1000}
                   onBlur={() => window.setTimeout(() => setIsToolPickerOpen(false), 120)}
-                  onChange={(event) => updateAiInstruction(event.target.value)}
-                  onFocus={() => {
-                    if (aiInstruction.match(/(^|\s)#([A-Za-z0-9_-]*)$/) && activeTools.length > 0) {
-                      setIsToolPickerOpen(true);
-                    }
-                  }}
+                  onChange={(event) => updateAiInstruction(event.target.value, event.target.selectionStart)}
+                  onClick={() => updateToolPickerForCursor()}
+                  onFocus={() => updateToolPickerForCursor()}
                   onKeyDown={(event) => {
                     if (event.key === "Escape") {
                       setIsToolPickerOpen(false);
@@ -4909,6 +5140,8 @@ function InboxComposeModal({
                       void generateAiSuggestion();
                     }
                   }}
+                  onKeyUp={() => updateToolPickerForCursor()}
+                  onSelect={() => updateToolPickerForCursor()}
                   placeholder={replyContext ? "Ask AI how to draft this reply..." : "Ask AI how to draft this email..."}
                   ref={aiInstructionTextareaRef}
                   rows={1}
@@ -4950,11 +5183,9 @@ function InboxComposeModal({
               {isOriginalMessageExpanded ? (
                 <div className="max-h-[46vh] min-h-64 overflow-y-auto rounded-lg border border-white/70 bg-white/80 p-3">
                   {replyContext.bodyHtml ? (
-                    <iframe className="h-[520px] w-full rounded bg-white" sandbox="" srcDoc={replyContext.bodyHtml} title="Original email body" />
+                    <SanitizedEmailHtml html={replyContext.bodyHtml} onLinkAction={setLinkAction} />
                   ) : (
-                    <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-zinc-700">
-                      {replyContext.bodyText || replyContext.snippet || "No message preview available."}
-                    </pre>
+                    <PlainTextEmailBody onLinkAction={setLinkAction} text={replyContext.bodyText || replyContext.snippet || "No message preview available."} />
                   )}
                 </div>
               ) : (
@@ -5061,6 +5292,8 @@ function InboxComposeModal({
         </div>
       </div>
     </div>
+    {linkAction ? <EmailLinkActionSheet link={linkAction} onClose={() => setLinkAction(null)} /> : null}
+    </>
   );
 }
 

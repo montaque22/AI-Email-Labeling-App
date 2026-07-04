@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.65
+
+- Render email HTML in the app DOM with sanitization instead of iframes so hyperlink actions work consistently.
+- Improved mobile Inbox select mode so checkboxes no longer overlap message content.
+- Tightened mobile Inbox row truncation to prevent horizontal text glitches.
+
 ## 0.1.64
 
 - Added a PWA update prompt and offline/out-of-sync warning.
