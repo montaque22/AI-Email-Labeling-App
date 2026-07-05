@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.69
+
+- Added the desktop AI Helper chat panel with visible-email context and compose assistance.
+- Updated AI Helper to use BYOAI provider tool integrations for agent-style email questions.
+- Updated `find_email` to search indexed email first and provider accounts only when requested.
+- Improved `query_email_rules` handling for simple field aliases such as `from` and `subject`.
+- Added desktop floating Inbox actions and slide animations for selection controls.
+
 ## 0.1.68
 
 - Fixed the mobile AI Draft screen so the header and prompt input stay pinned while the keyboard is open.

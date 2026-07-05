@@ -333,7 +333,7 @@ const SYSTEM_MCP_TOOLS: AiMcpTool[] = [
   },
   {
     name: "find_email",
-    description: "Find connected-account emails by optional email id, subject, from, and to fields.",
+    description: "Find emails by optional email id, subject, from, and to fields. Searches the indexed database first; provider-wide connected-account search is optional.",
     inputSchema: null,
   },
 ];
@@ -517,6 +517,20 @@ type InboxToast = {
   id: number;
   message: string;
   type: "success" | "error";
+};
+
+type InboxAiChatMessage = {
+  id: number;
+  role: "assistant" | "user";
+  text: string;
+  draftBody?: string;
+  subjectSuggestion?: string;
+  options?: Array<{
+    label: string;
+    sublabel?: string;
+    value: string;
+    type: "account" | "contact";
+  }>;
 };
 
 type EmailLinkAction = {
@@ -1724,6 +1738,9 @@ function InboxPage({
   const [toast, setToast] = useState<InboxToast | null>(null);
   const [isByoAiActive, setIsByoAiActive] = useState(false);
   const [activeAiTools, setActiveAiTools] = useState<AiMcpTool[]>([]);
+  const [isAiHelperOpen, setIsAiHelperOpen] = useState(false);
+  const [composeRevision, setComposeRevision] = useState(0);
+  const [isBulkActionBarRendered, setIsBulkActionBarRendered] = useState(false);
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const [isMobileLabelPickerOpen, setIsMobileLabelPickerOpen] = useState(false);
   const [isMobileEditMode, setIsMobileEditMode] = useState(false);
@@ -2297,7 +2314,7 @@ function InboxPage({
       }
 
       if (inboxMode === "drafts") {
-        setComposeInitial({
+        openComposeDraft({
           accountId: message.accountId,
           draftId: message.draftId || message.id,
           mailbox: message.mailbox || "",
@@ -2308,7 +2325,6 @@ function InboxPage({
           subject: data.message.subject || "",
           bodyText: data.message.bodyText || "",
         });
-        setIsComposeOpen(true);
       } else {
         setMessageDetail(data.message);
       }
@@ -2335,8 +2351,19 @@ function InboxPage({
   }
 
   const selectedMessages = messages.filter((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
+  const hasSelectedMessages = selectedMessages.length > 0;
   const allVisibleSelected = filteredMessages.length > 0 && filteredMessages.every((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
   const selectedMessagesLabelValue = getCommonMessageLabelId(selectedMessages, labels);
+
+  useEffect(() => {
+    if (hasSelectedMessages) {
+      setIsBulkActionBarRendered(true);
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setIsBulkActionBarRendered(false), 190);
+    return () => window.clearTimeout(timeout);
+  }, [hasSelectedMessages]);
 
   function enterMobileEditMode(message?: InboxMessage) {
     setIsMobileEditMode(true);
@@ -2636,8 +2663,14 @@ function InboxPage({
     }
   }
 
+  function openComposeDraft(draft: Partial<InboxComposeDraft> | null) {
+    setComposeInitial(draft);
+    setComposeRevision((current) => current + 1);
+    setIsComposeOpen(true);
+  }
+
   function openReplyComposer(detail: InboxMessageDetail | null, summary: InboxMessage) {
-    setComposeInitial({
+    openComposeDraft({
       accountId: summary.accountId,
       to: detail?.from || summary.from,
       subject: normalizeReplySubject(detail?.subject || summary.subject),
@@ -2652,7 +2685,6 @@ function InboxPage({
         bodyHtml: detail?.bodyHtml || "",
       },
     });
-    setIsComposeOpen(true);
   }
 
   return (
@@ -2741,10 +2773,9 @@ function InboxPage({
 
       {!isMobileEditMode ? <Button
         aria-label="Compose email"
-        className="fixed bottom-5 right-5 z-40 h-14 w-14 rounded-full border-white/70 bg-white/70 shadow-xl shadow-slate-900/15 backdrop-blur-xl md:hidden"
+        className="fixed bottom-5 right-5 z-40 h-14 w-14 rounded-full border-white/70 bg-white/70 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85"
         onClick={() => {
-          setComposeInitial(null);
-          setIsComposeOpen(true);
+          openComposeDraft(null);
         }}
         size="icon"
         type="button"
@@ -2752,8 +2783,20 @@ function InboxPage({
       >
         <Plus className="h-5 w-5" />
       </Button> : null}
-      {isMobileEditMode && selectedMessages.length > 0 ? (
-        <div className="fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/70 bg-white/70 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:hidden">
+      {isByoAiActive ? (
+        <Button
+          aria-label="Open AI helper"
+          className="fixed bottom-24 right-5 z-40 hidden h-14 w-14 rounded-full border-white/70 bg-white/70 text-zinc-900 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85 md:flex"
+          onClick={() => setIsAiHelperOpen(true)}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
+          <Sparkles className="h-5 w-5" />
+        </Button>
+      ) : null}
+      {isBulkActionBarRendered ? (
+        <div className="inbox-floating-actions fixed bottom-5 left-1/2 z-40 flex items-center gap-1 rounded-full border border-white/70 bg-white/70 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl" data-state={hasSelectedMessages ? "open" : "closed"}>
           <Button
             aria-label="Archive selected emails"
             className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
@@ -2931,7 +2974,7 @@ function InboxPage({
               </div>
               <div className="ml-auto flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
                 {selectedMessages.length > 0 ? (
-                  <>
+                  <div className="flex items-center gap-2">
                     <LabelActionSelect
                       disabled={isBulkActionRunning || isLabelActionRunning}
                       isLoading={isLabelActionRunning}
@@ -2939,43 +2982,8 @@ function InboxPage({
                       onChange={(labelId) => void setMessagesLabel(selectedMessages, labelId)}
                       value={selectedMessagesLabelValue}
                     />
-                    <Button
-                      aria-label="Archive selected emails"
-                      className="h-10 w-10 border-white/70 bg-white/60 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/80"
-                      disabled={isBulkActionRunning || isLabelActionRunning}
-                      onClick={() => void archiveSelectedMessages()}
-                      size="icon"
-                      type="button"
-                      variant="outline"
-                    >
-                      {isBulkActionRunning ? <Loader /> : <Archive className="h-4 w-4" />}
-                    </Button>
-                    <Button
-                      aria-label="Delete selected emails"
-                      className="h-10 w-10 border-red-200/80 bg-red-50/75 text-red-600 shadow-sm backdrop-blur-xl hover:bg-red-100/90 hover:text-red-700"
-                      disabled={isBulkActionRunning || isLabelActionRunning}
-                      onClick={() => void deleteSelectedMessages()}
-                      size="icon"
-                      type="button"
-                      variant="outline"
-                    >
-                      {isBulkActionRunning ? <Loader /> : <Trash2 className="h-4 w-4" />}
-                    </Button>
-                  </>
+                  </div>
                 ) : null}
-                <Button
-                  aria-label="Compose email"
-                  className="h-10 w-10 rounded-full border-white/70 bg-white/60 text-zinc-900 shadow-sm backdrop-blur-xl hover:bg-white/80"
-                  onClick={() => {
-                    setComposeInitial(null);
-                    setIsComposeOpen(true);
-                  }}
-                  size="icon"
-                  type="button"
-                  variant="outline"
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
               </div>
               </CardContent>
             </Card>
@@ -3081,6 +3089,19 @@ function InboxPage({
         />
       ) : null}
 
+      {isAiHelperOpen && isByoAiActive ? (
+        <InboxAiHelperPanel
+          accounts={accounts}
+          contextMessages={filteredMessages.slice(0, 30)}
+          inboxMode={inboxMode}
+          labels={labels}
+          onClose={() => setIsAiHelperOpen(false)}
+          onOpenComposeDraft={openComposeDraft}
+          privacyMode={privacyMode}
+          selectedMessages={selectedMessages}
+        />
+      ) : null}
+
       {selectedMessage && !ruleEditorMessage ? (
         <>
           <div className="md:hidden">
@@ -3169,6 +3190,7 @@ function InboxPage({
         <>
           <div className="md:hidden">
             <InboxComposeModal
+              key={`mobile-compose-${composeRevision}`}
               activeTools={activeAiTools}
               accounts={accounts}
               initial={composeInitial}
@@ -3187,6 +3209,7 @@ function InboxPage({
           </div>
           <div className="hidden md:block">
             <InboxComposeModal
+              key={`desktop-compose-${composeRevision}`}
               activeTools={activeAiTools}
               accounts={accounts}
               initial={composeInitial}
@@ -3205,6 +3228,419 @@ function InboxPage({
         </>
       ) : null}
     </div>
+  );
+}
+
+function InboxAiHelperPanel({
+  accounts,
+  contextMessages,
+  inboxMode,
+  labels,
+  onClose,
+  onOpenComposeDraft,
+  privacyMode,
+  selectedMessages,
+}: {
+  accounts: EmailAccount[];
+  contextMessages: InboxMessage[];
+  inboxMode: InboxMode;
+  labels: Label[];
+  onClose: () => void;
+  onOpenComposeDraft: (draft: Partial<InboxComposeDraft> | null) => void;
+  privacyMode: boolean;
+  selectedMessages: InboxMessage[];
+}) {
+  const [messages, setMessages] = useState<InboxAiChatMessage[]>([
+    {
+      id: 1,
+      role: "assistant",
+      text: "I can help search visible emails, look through your indexed mail, and draft a new email. Ask about what you see, or say something like “compose an email.”",
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [workflow, setWorkflow] = useState<{
+    draft: Partial<InboxComposeDraft>;
+    step: "idle" | "recipient" | "account" | "body";
+  }>({ draft: {}, step: "idle" });
+  const [isThinking, setIsThinking] = useState(false);
+  const activeContext = selectedMessages.length > 0 ? selectedMessages : contextMessages;
+  const selectedContextText = selectedMessages.length > 0
+    ? `${selectedMessages.length} selected email${selectedMessages.length === 1 ? "" : "s"}`
+    : `${contextMessages.length} visible email${contextMessages.length === 1 ? "" : "s"}`;
+
+  function addMessage(message: Omit<InboxAiChatMessage, "id">) {
+    setMessages((current) => [...current, { ...message, id: Date.now() + current.length }]);
+  }
+
+  function openComposeWithDraft(nextDraft: Partial<InboxComposeDraft> | null) {
+    const draft = {
+      accountId: nextDraft?.accountId || accounts[0]?.id || "",
+      to: nextDraft?.to ?? "",
+      cc: nextDraft?.cc ?? "",
+      bcc: nextDraft?.bcc ?? "",
+      subject: nextDraft?.subject ?? "",
+      bodyText: nextDraft?.bodyText ?? "",
+    };
+    onOpenComposeDraft(draft);
+    setWorkflow((current) => ({ ...current, draft }));
+    return draft;
+  }
+
+  function findContactOptions(query: string) {
+    const normalizedQuery = query.toLowerCase().trim();
+    const contacts = new Map<string, { email: string; name: string }>();
+    for (const message of [...selectedMessages, ...contextMessages]) {
+      const email = extractEmailAddressFromText(message.from) || extractEmailAddressFromText(message.sender);
+      if (!email) {
+        continue;
+      }
+      const name = extractDisplayNameFromText(message.from) || message.sender || email;
+      const searchable = `${name} ${email}`.toLowerCase();
+      if (!normalizedQuery || searchable.includes(normalizedQuery)) {
+        contacts.set(email.toLowerCase(), { email, name });
+      }
+    }
+
+    return [...contacts.values()].slice(0, 6).map((contact) => ({
+      label: contact.name,
+      sublabel: formatEmailForPrivacy(contact.email, privacyMode),
+      type: "contact" as const,
+      value: contact.email,
+    }));
+  }
+
+  function inferSearchScope(query: string): { cleanedQuery: string; labelId: string; mode: InboxMode | "search"; stateSpecific: boolean } {
+    const normalized = query.toLowerCase();
+    const label = labels.find((item) => normalized.includes(item.name.toLowerCase()));
+    const mode: InboxMode | "search" = /\b(archive|archived)\b/.test(normalized)
+      ? "archive"
+      : /\b(draft|drafts)\b/.test(normalized)
+        ? "drafts"
+        : /\b(sent|sent mail|sent emails|replies|reply|replied)\b/.test(normalized)
+          ? "sent"
+          : label
+            ? "inbox"
+            : "search";
+    const cleanedQuery = query
+      .replace(/\b(what|which|show|find|search|look|for|do|i|have|in|my|the|emails?|messages?|mail|archive|archived|drafts?|sent|inbox|label|labels|folder|folders)\b/gi, " ")
+      .replace(label?.name ?? "", " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return {
+      cleanedQuery,
+      labelId: label?.id || INBOX_ALL_LABEL_ID,
+      mode,
+      stateSpecific: mode !== "search",
+    };
+  }
+
+  async function searchIndexedMail(query: string) {
+    if (accounts.length === 0 || !query.trim()) {
+      return [];
+    }
+
+    const scope = inferSearchScope(query);
+    const accountIds = accounts.map((account) => account.id);
+    const search = scope.cleanedQuery;
+
+    if (scope.mode === "drafts" || scope.mode === "sent") {
+      const params = buildInboxMessageParams({
+        accountIds,
+        inboxMode: scope.mode,
+        labelId: "",
+        pageToken: null,
+        search,
+        sort: "newest",
+      });
+      const response = await fetchNoStore(`/api/inbox/${scope.mode}?${params.toString()}`);
+      const data = await response.json();
+      return response.ok ? (data.messages ?? []).slice(0, 5) as InboxMessage[] : [];
+    }
+
+    if (scope.mode === "archive" || scope.mode === "inbox") {
+      const targetLabels = scope.labelId === INBOX_ALL_LABEL_ID ? labels : labels.filter((label) => label.id === scope.labelId);
+      const results = await Promise.all(targetLabels.map(async (label) => {
+        const params = buildInboxMessageParams({
+          accountIds,
+          inboxMode: scope.mode === "archive" ? "archive" : "inbox",
+          labelId: label.id,
+          pageToken: null,
+          search,
+          sort: "newest",
+        });
+        const response = await fetchNoStore(`/api/inbox/messages?${params.toString()}`);
+        const data = await response.json();
+        return response.ok ? (data.messages ?? []) as InboxMessage[] : [];
+      }));
+      return sortInboxMessagesForClient(mergeInboxMessages([], results.flat()), "newest").slice(0, 5);
+    }
+
+    const params = buildInboxMessageParams({
+      accountIds,
+      inboxMode: "inbox",
+      labelId: "",
+      pageToken: null,
+      search,
+      sort: "newest",
+    });
+    const response = await fetchNoStore(`/api/inbox/search?${params.toString()}`);
+    const data = await response.json();
+    return response.ok ? (data.messages ?? []).slice(0, 5) as InboxMessage[] : [];
+  }
+
+  async function draftEmailBody(prompt: string, draft: Partial<InboxComposeDraft>) {
+    const contextSummary = activeContext
+      .slice(0, 8)
+      .map((message, index) => `${index + 1}. From ${message.from || message.sender}; Subject: ${message.subject}; Snippet: ${message.snippet}; Labels: ${message.labels.join(", ") || "none"}`)
+      .join("\n");
+    const response = await fetch("/api/byoai/compose-suggestion", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        currentBody: draft.bodyText || "",
+        message: null,
+        prompt: `You are helping from the Inbox AI helper. Active screen context: ${selectedContextText}.\n\nVisible or selected email context:\n${contextSummary || "(none)"}\n\nUser request:\n${prompt}`,
+        requiredTools: [],
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error ?? "Could not draft with AI.");
+    }
+    return String(data.bodyText ?? "").trim();
+  }
+
+  async function askAiHelper(prompt: string) {
+    const response = await fetch("/api/byoai/helper-chat", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contextDescription: selectedContextText,
+        contextMessages: activeContext.map((message) => ({
+          accountEmail: message.accountEmail,
+          date: message.date,
+          from: message.from,
+          labels: message.labels,
+          sender: message.sender,
+          snippet: message.snippet,
+          state: message.mailbox || getInboxModeDescription(inboxMode),
+          subject: message.subject,
+        })),
+        prompt,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error ?? "AI Helper could not answer that.");
+    }
+    return String(data.message ?? "").trim();
+  }
+
+  async function handleUserPrompt(prompt: string) {
+    const normalizedPrompt = prompt.toLowerCase();
+
+    if (workflow.step === "recipient") {
+      const typedEmail = extractEmailAddressFromText(prompt) || (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(prompt.trim()) ? prompt.trim() : "");
+      if (typedEmail) {
+        const nextDraft = openComposeWithDraft({ ...workflow.draft, to: typedEmail });
+        const accountOptions = accounts.map((account) => ({
+          label: account.email,
+          sublabel: providerLabel(account.provider),
+          type: "account" as const,
+          value: account.id,
+        }));
+        setWorkflow({ draft: nextDraft, step: "account" });
+        addMessage({ options: accountOptions, role: "assistant", text: "Which account should send it?" });
+        return;
+      }
+
+      const options = findContactOptions(prompt);
+      if (options.length > 0) {
+        addMessage({ options, role: "assistant", text: "I found these possible recipients. Choose one, or type the full email address." });
+      } else {
+        addMessage({ role: "assistant", text: "I could not find that person in the visible email context. Type the full email address, or give me another name to search in the visible messages." });
+      }
+      return;
+    }
+
+    if (workflow.step === "account") {
+      const numberMatch = prompt.trim().match(/^\d+$/);
+      const account = numberMatch
+        ? accounts[Number(numberMatch[0]) - 1]
+        : accounts.find((item) => `${item.email} ${item.provider}`.toLowerCase().includes(normalizedPrompt));
+      if (!account) {
+        addMessage({
+          options: accounts.map((item) => ({ label: item.email, sublabel: providerLabel(item.provider), type: "account", value: item.id })),
+          role: "assistant",
+          text: "Choose one of these sending accounts.",
+        });
+        return;
+      }
+      const nextDraft = openComposeWithDraft({ ...workflow.draft, accountId: account.id });
+      setWorkflow({ draft: nextDraft, step: "body" });
+      addMessage({ role: "assistant", text: "What should the email say? Tell me the goal, tone, and any details to include." });
+      return;
+    }
+
+    if (workflow.step === "body") {
+      setIsThinking(true);
+      try {
+        const bodyText = await draftEmailBody(prompt, workflow.draft);
+        const suggestedSubject = workflow.draft.subject || inferSubjectFromPrompt(prompt);
+        const nextDraft = { ...workflow.draft, bodyText, subject: suggestedSubject };
+        setWorkflow({ draft: nextDraft, step: "body" });
+        addMessage({
+          draftBody: bodyText,
+          role: "assistant",
+          subjectSuggestion: suggestedSubject,
+          text: `${bodyText}\n\nClick this message to apply it to the compose window.`,
+        });
+      } catch (error) {
+        addMessage({ role: "assistant", text: error instanceof Error ? error.message : "I could not draft that email." });
+      } finally {
+        setIsThinking(false);
+      }
+      return;
+    }
+
+    if (/\b(compose|write|new email|send an email|draft an email)\b/.test(normalizedPrompt)) {
+      const nextDraft = openComposeWithDraft(null);
+      setWorkflow({ draft: nextDraft, step: "recipient" });
+      addMessage({ role: "assistant", text: "I opened a new compose window. Who should this email go to? You can type a name from the current emails or a full email address." });
+      return;
+    }
+
+    setIsThinking(true);
+    try {
+      addMessage({ role: "assistant", text: await askAiHelper(prompt) });
+    } catch (error) {
+      addMessage({ role: "assistant", text: error instanceof Error ? error.message : "AI Helper could not answer that." });
+    } finally {
+      setIsThinking(false);
+    }
+  }
+
+  function handleOption(option: NonNullable<InboxAiChatMessage["options"]>[number]) {
+    if (option.type === "contact") {
+      const nextDraft = openComposeWithDraft({ ...workflow.draft, to: option.value });
+      const accountOptions = accounts.map((account) => ({
+        label: account.email,
+        sublabel: providerLabel(account.provider),
+        type: "account" as const,
+        value: account.id,
+      }));
+      setWorkflow({ draft: nextDraft, step: "account" });
+      addMessage({ role: "user", text: option.label });
+      addMessage({ options: accountOptions, role: "assistant", text: "Which account should send it?" });
+      return;
+    }
+
+    const account = accounts.find((item) => item.id === option.value);
+    const nextDraft = openComposeWithDraft({ ...workflow.draft, accountId: option.value });
+    setWorkflow({ draft: nextDraft, step: "body" });
+    addMessage({ role: "user", text: account?.email || option.label });
+    addMessage({ role: "assistant", text: "What should the email say? Tell me the goal, tone, and any details to include." });
+  }
+
+  function applyDraftMessage(message: InboxAiChatMessage) {
+    if (!message.draftBody) {
+      return;
+    }
+    const nextDraft = openComposeWithDraft({
+      ...workflow.draft,
+      bodyText: message.draftBody,
+      subject: message.subjectSuggestion || workflow.draft.subject || "",
+    });
+    setWorkflow({ draft: nextDraft, step: "body" });
+  }
+
+  function submitPrompt(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const prompt = input.trim();
+    if (!prompt || isThinking) {
+      return;
+    }
+    setInput("");
+    addMessage({ role: "user", text: prompt });
+    void handleUserPrompt(prompt);
+  }
+
+  return (
+    <aside className="inbox-ai-helper fixed bottom-24 right-5 top-20 z-40 hidden w-[420px] max-w-[calc(100vw-2.5rem)] flex-col rounded-2xl border border-white/70 bg-white/70 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:flex">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-zinc-950">AI Helper</p>
+          <p className="truncate text-xs text-zinc-500">{selectedContextText} in context</p>
+        </div>
+        <Button aria-label="Close AI helper" onClick={onClose} size="icon" type="button" variant="ghost">
+          <X className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+        {messages.map((message) => (
+          <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")} key={message.id}>
+            <div className={cn(
+              "min-w-0 max-w-[88%] rounded-xl border border-white/70 bg-white/65 px-3 py-2 text-sm leading-6 shadow-sm backdrop-blur-xl [overflow-wrap:anywhere]",
+              message.role === "user" && "bg-zinc-950/85 text-white",
+              message.draftBody && "cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/80",
+            )} onClick={() => applyDraftMessage(message)} role={message.draftBody ? "button" : undefined} tabIndex={message.draftBody ? 0 : undefined}>
+              <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{message.text}</p>
+              {message.options?.length ? (
+                <div className="mt-3 space-y-2">
+                  {message.options.map((option) => (
+                    <button
+                      className="block w-full rounded-lg border border-white/70 bg-white/70 px-3 py-2 text-left text-xs text-zinc-700 shadow-sm transition hover:bg-white"
+                      key={`${option.type}-${option.value}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleOption(option);
+                      }}
+                      type="button"
+                    >
+                      <span className="block font-medium text-zinc-950">{option.label}</span>
+                      {option.sublabel ? <span className="block truncate text-zinc-500">{option.sublabel}</span> : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ))}
+        {isThinking ? (
+          <div className="flex justify-start">
+            <div className="inline-flex items-center gap-2 rounded-xl border border-white/70 bg-white/65 px-3 py-2 text-sm text-zinc-600 shadow-sm backdrop-blur-xl">
+              <Loader />
+              Thinking...
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <form className="shrink-0 border-t border-white/70 p-3" onSubmit={submitPrompt}>
+        <div className="flex items-end gap-2 rounded-xl border border-white/70 bg-white/55 p-2 shadow-sm backdrop-blur-xl">
+          <textarea
+            className="min-h-10 max-h-28 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400"
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+            placeholder="Ask about email..."
+            rows={1}
+            value={input}
+          />
+          <Button disabled={isThinking || !input.trim()} size="icon" type="submit" variant="ghost">
+            <Send className="h-4 w-4" />
+          </Button>
+        </div>
+      </form>
+    </aside>
   );
 }
 
@@ -4913,127 +5349,129 @@ function InboxComposeModal({
 
   if (isPush && isAiDraftOpen) {
     return (
-      <section
-        className="fixed inset-x-0 top-0 z-[100] flex w-screen flex-col overflow-hidden overscroll-none bg-[#f7f7f7] text-zinc-950 md:hidden"
-        style={{
-          height: aiDraftViewport.height ? `${aiDraftViewport.height}px` : "100dvh",
-          transform: aiDraftViewport.offsetTop ? `translateY(${aiDraftViewport.offsetTop}px)` : undefined,
-        }}
-      >
-        <header className="relative z-20 flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 bg-white/95 px-2 backdrop-blur-xl">
-          <Button aria-label="Back to email draft" onClick={() => setIsAiDraftOpen(false)} size="icon" type="button" variant="ghost">
-            <ChevronLeft className="h-5 w-5" />
-          </Button>
-          <h3 className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-zinc-950">AI Draft</h3>
-          <span className="w-10" />
-        </header>
+      <section className="fixed inset-0 z-[100] overflow-hidden overscroll-none bg-[#f7f7f7] text-zinc-950 md:hidden">
+        <div
+          className="flex w-screen flex-col overflow-hidden bg-[#f7f7f7]"
+          style={{
+            height: aiDraftViewport.height ? `${aiDraftViewport.height}px` : "100dvh",
+            transform: aiDraftViewport.offsetTop ? `translateY(${aiDraftViewport.offsetTop}px)` : undefined,
+          }}
+        >
+          <header className="relative z-20 flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 bg-white/95 px-2 backdrop-blur-xl">
+            <Button aria-label="Back to email draft" onClick={() => setIsAiDraftOpen(false)} size="icon" type="button" variant="ghost">
+              <ChevronLeft className="h-5 w-5" />
+            </Button>
+            <h3 className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-zinc-950">AI Draft</h3>
+            <span className="w-10" />
+          </header>
 
-        <main className={cn(
-          "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4",
-          aiMessages.length > 0 || aiError ? "space-y-3" : "flex items-center justify-center",
-        )}>
-          {aiMessages.length === 0 && !aiError ? (
-            <div className="mx-auto max-w-xs text-center">
-              <p className="text-sm font-medium text-zinc-900">Ask AI to help draft this message.</p>
-              <p className="mt-2 text-sm leading-6 text-zinc-500">
-                Describe the tone or key points, then apply the response you like to the email body.
-              </p>
-            </div>
-          ) : null}
-          {aiMessages.map((message) => (
-            <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")} key={message.id}>
-              {message.role === "assistant" ? (
-                <button
-                  className={cn(
-                    "max-w-[85%] whitespace-pre-wrap rounded-xl border border-white/70 bg-white/70 px-4 py-3 text-left text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl transition",
-                    message.isLoading ? "cursor-default" : "cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/80",
-                  )}
-                  disabled={message.isLoading}
-                  onClick={() => {
-                    if (message.isLoading) {
-                      return;
-                    }
-                    setBodyText(message.text);
-                    setIsAiDraftOpen(false);
-                  }}
-                  title="Apply this draft"
-                  type="button"
-                >
-                  {message.isLoading ? (
-                    <span className="inline-flex items-center gap-2">
-                      <Loader />
-                      {message.text}
-                    </span>
-                  ) : (
-                    <>
-                      {message.text}
-                      <span className="mt-2 block text-xs font-medium text-emerald-700">Click to apply</span>
-                    </>
-                  )}
-                </button>
-              ) : (
-                <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border border-white/70 bg-white/70 px-4 py-3 text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl">
-                  {message.text}
-                </div>
-              )}
-            </div>
-          ))}
-          {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
-        </main>
-
-        <footer className="relative z-20 shrink-0 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 shadow-[0_-12px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl">
-          <div className="relative">
-            {isToolPickerOpen && filteredToolOptions.length > 0 ? (
-              <div className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 z-30 overflow-hidden rounded-xl border border-white/70 bg-white/95 shadow-2xl shadow-slate-900/15 backdrop-blur-xl">
-                <div className="max-h-64 overflow-y-auto p-1">
-                  {filteredToolOptions.map((tool) => (
-                    <button
-                      className="flex w-full cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-zinc-100/70"
-                      key={tool.name}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => insertToolDirective(tool)}
-                      type="button"
-                    >
-                      <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" />
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-medium text-zinc-950">{tool.name}</span>
-                        <span className="line-clamp-2 text-xs leading-5 text-zinc-500">{tool.description || "Available AI tool."}</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
+          <main className={cn(
+            "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4",
+            aiMessages.length > 0 || aiError ? "space-y-3" : "flex items-center justify-center",
+          )}>
+            {aiMessages.length === 0 && !aiError ? (
+              <div className="mx-auto max-w-xs text-center">
+                <p className="text-sm font-medium text-zinc-900">Ask AI to help draft this message.</p>
+                <p className="mt-2 text-sm leading-6 text-zinc-500">
+                  Describe the tone or key points, then apply the response you like to the email body.
+                </p>
               </div>
             ) : null}
-            <div className="flex items-end gap-2">
-              <textarea
-                className="min-h-10 min-w-0 flex-1 resize-none rounded-md border border-zinc-200 bg-white/60 px-3 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400 shadow-sm backdrop-blur-xl focus:border-zinc-400"
-                maxLength={1000}
-                onBlur={() => window.setTimeout(() => setIsToolPickerOpen(false), 120)}
-                onChange={(event) => updateAiInstruction(event.target.value, event.target.selectionStart)}
-                onClick={() => updateToolPickerForCursor()}
-                onFocus={() => updateToolPickerForCursor()}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    setIsToolPickerOpen(false);
-                  }
-                  if (event.key === "Enter" && !event.shiftKey && aiInstruction.trim() && !isGeneratingAiSuggestion) {
-                    event.preventDefault();
-                    void generateAiSuggestion();
-                  }
-                }}
-                onKeyUp={() => updateToolPickerForCursor()}
-                onSelect={() => updateToolPickerForCursor()}
-                placeholder={replyContext ? "Ask AI how to draft this reply..." : "Ask AI how to draft this email..."}
-                ref={aiInstructionTextareaRef}
-                rows={1}
-                value={aiInstruction}
-              />
-              <Button className="h-10 w-10 shrink-0 border border-white/70 bg-white/65 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/85" disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} size="icon" type="button" variant="outline">
-                {isGeneratingAiSuggestion ? <Loader /> : <Send className="h-4 w-4" />}
-              </Button>
+            {aiMessages.map((message) => (
+              <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")} key={message.id}>
+                {message.role === "assistant" ? (
+                  <button
+                    className={cn(
+                      "max-w-[85%] whitespace-pre-wrap rounded-xl border border-white/70 bg-white/70 px-4 py-3 text-left text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl transition",
+                      message.isLoading ? "cursor-default" : "cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/80",
+                    )}
+                    disabled={message.isLoading}
+                    onClick={() => {
+                      if (message.isLoading) {
+                        return;
+                      }
+                      setBodyText(message.text);
+                      setIsAiDraftOpen(false);
+                    }}
+                    title="Apply this draft"
+                    type="button"
+                  >
+                    {message.isLoading ? (
+                      <span className="inline-flex items-center gap-2">
+                        <Loader />
+                        {message.text}
+                      </span>
+                    ) : (
+                      <>
+                        {message.text}
+                        <span className="mt-2 block text-xs font-medium text-emerald-700">Click to apply</span>
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border border-white/70 bg-white/70 px-4 py-3 text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl">
+                    {message.text}
+                  </div>
+                )}
+              </div>
+            ))}
+            {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
+          </main>
+
+          <footer className="relative z-20 shrink-0 bg-white/95 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 shadow-[0_-12px_30px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+            <div className="relative">
+              {isToolPickerOpen && filteredToolOptions.length > 0 ? (
+                <div className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 z-30 overflow-hidden rounded-xl border border-white/70 bg-white/95 shadow-2xl shadow-slate-900/15 backdrop-blur-xl">
+                  <div className="max-h-64 overflow-y-auto p-1">
+                    {filteredToolOptions.map((tool) => (
+                      <button
+                        className="flex w-full cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-zinc-100/70"
+                        key={tool.name}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => insertToolDirective(tool)}
+                        type="button"
+                      >
+                        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-zinc-950">{tool.name}</span>
+                          <span className="line-clamp-2 text-xs leading-5 text-zinc-500">{tool.description || "Available AI tool."}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              <div className="flex items-end gap-2">
+                <textarea
+                  className="min-h-10 min-w-0 flex-1 resize-none rounded-md border border-zinc-200 bg-white/60 px-3 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400 shadow-sm backdrop-blur-xl focus:border-zinc-400"
+                  maxLength={1000}
+                  onBlur={() => window.setTimeout(() => setIsToolPickerOpen(false), 120)}
+                  onChange={(event) => updateAiInstruction(event.target.value, event.target.selectionStart)}
+                  onClick={() => updateToolPickerForCursor()}
+                  onFocus={() => updateToolPickerForCursor()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      setIsToolPickerOpen(false);
+                    }
+                    if (event.key === "Enter" && !event.shiftKey && aiInstruction.trim() && !isGeneratingAiSuggestion) {
+                      event.preventDefault();
+                      void generateAiSuggestion();
+                    }
+                  }}
+                  onKeyUp={() => updateToolPickerForCursor()}
+                  onSelect={() => updateToolPickerForCursor()}
+                  placeholder={replyContext ? "Ask AI how to draft this reply..." : "Ask AI how to draft this email..."}
+                  ref={aiInstructionTextareaRef}
+                  rows={1}
+                  value={aiInstruction}
+                />
+                <Button className="h-10 w-10 shrink-0 border border-white/70 bg-white/65 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/85" disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} size="icon" type="button" variant="outline">
+                  {isGeneratingAiSuggestion ? <Loader /> : <Send className="h-4 w-4" />}
+                </Button>
+              </div>
             </div>
-          </div>
-        </footer>
+          </footer>
+        </div>
       </section>
     );
   }
@@ -12751,6 +13189,22 @@ function getInboxModeDescription(mode: InboxMode) {
   return "inbox messages";
 }
 
+function describeInboxSearchScope(mode: InboxMode | "search") {
+  if (mode === "archive") {
+    return "archived email";
+  }
+  if (mode === "drafts") {
+    return "drafts";
+  }
+  if (mode === "sent") {
+    return "sent email";
+  }
+  if (mode === "inbox") {
+    return "labeled Inbox email";
+  }
+  return "indexed email";
+}
+
 function isLabelFilteredInboxMode(mode: InboxMode) {
   return mode === "inbox" || mode === "archive";
 }
@@ -12780,6 +13234,17 @@ function messageToBulkPayload(message: InboxMessage) {
 
 function normalizeReplySubject(subject: string) {
   return /^re:/i.test(subject) ? subject : `Re: ${subject || "(no subject)"}`;
+}
+
+function inferSubjectFromPrompt(prompt: string) {
+  const cleaned = prompt
+    .replace(/\s+/g, " ")
+    .replace(/\b(write|draft|compose|email|message|please|polite|short|friendly)\b/gi, "")
+    .trim();
+  if (!cleaned) {
+    return "";
+  }
+  return cleaned.length > 72 ? `${cleaned.slice(0, 69).trim()}...` : cleaned;
 }
 
 function normalizeReplySearchSubject(subject: string) {

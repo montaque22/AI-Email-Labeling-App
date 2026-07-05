@@ -242,12 +242,13 @@ function createMcpServer(userId) {
     "find_email",
     {
       title: "Find Email",
-      description: "Find emails across connected accounts using optional email id, subject, from, and to fields. The to field narrows the connected account.",
+      description: "Find emails using optional email id, subject, from, and to fields. Searches Emailable's indexed database first. Set searchConnectedAccounts to true only after the user agrees to a slower provider-wide connected-account search.",
       inputSchema: {
         emailId: z.string().optional().describe("Provider email/message id or RFC822 Message-ID."),
         subject: z.string().optional().describe("Subject text to search for."),
         from: z.string().optional().describe("Sender email address or display text to match."),
         to: z.string().optional().describe("Recipient/connected account email address to search in."),
+        searchConnectedAccounts: z.boolean().optional().describe("When true, search connected email providers if the indexed database does not contain a match. Use only after user confirmation."),
       },
     },
     async (input) => {

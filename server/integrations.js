@@ -10,7 +10,7 @@ import {
   getValidEmailAccountAccessToken,
   isImapBackedProvider,
 } from "./email-accounts.js";
-import { upsertEmailIndexEntry, updateEmailIndexLabels } from "./email-index.js";
+import { listEmailIndexEntries, mapEmailIndexRow, upsertEmailIndexEntry, updateEmailIndexLabels } from "./email-index.js";
 import {
   createImapDraft,
   fetchImapEmailContextById,
@@ -1163,9 +1163,15 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
   const subject = typeof payload.subject === "string" ? payload.subject.trim() : "";
   const from = typeof payload.from === "string" ? payload.from.trim().toLowerCase() : "";
   const to = typeof payload.to === "string" ? payload.to.trim().toLowerCase() : "";
+  const searchConnectedAccounts = Boolean(payload.searchConnectedAccounts);
 
   if (!emailId && !subject && !from && !to) {
     return [];
+  }
+
+  const indexedMatches = await findIndexedEmailsForMcp(userId, { emailId, subject, from, to });
+  if (indexedMatches.length > 0 || !searchConnectedAccounts) {
+    return indexedMatches;
   }
 
   if (emailId) {
@@ -1201,6 +1207,70 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
     }));
 }
 
+async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to }) {
+  const accounts = to
+    ? (await getConnectedEmailAccounts(userId)).filter((account) => account.email.toLowerCase() === to)
+    : await getConnectedEmailAccounts(userId);
+  if (to && accounts.length === 0) {
+    return [];
+  }
+  if (emailId) {
+    const values = [userId, emailId];
+    const accountCondition = accounts.length ? `and email_account_id = any($3::uuid[])` : "";
+    const result = await dbPool.query(
+      `
+        select *
+        from email_index
+        where user_id = $1
+          and (email_id = $2 or thread_id = $2)
+          ${accountCondition}
+        order by received_at desc
+        limit 10
+      `,
+      accounts.length ? [...values, accounts.map((account) => account.id)] : values,
+    );
+    return result.rows
+      .map(mapEmailIndexRow)
+      .filter((email) => !subject || normalizeComparableSubject(email.subject).includes(normalizeComparableSubject(subject)))
+      .filter((email) => !from || String(email.from || email.sender || "").toLowerCase().includes(from))
+      .map(indexedEmailToMcpResult);
+  }
+
+  const search = emailId || subject || from || to;
+  const result = await listEmailIndexEntries(userId, {
+    accountIds: accounts.map((account) => account.id),
+    includeArchived: true,
+    search,
+    sort: "newest",
+    limit: 20,
+  });
+
+  return result.messages
+    .filter((email) => !emailId || email.id === emailId || email.threadId === emailId)
+    .filter((email) => !subject || normalizeComparableSubject(email.subject).includes(normalizeComparableSubject(subject)))
+    .filter((email) => !from || String(email.from || email.sender || "").toLowerCase().includes(from))
+    .filter((email) => !to || String(email.accountEmail || "").toLowerCase() === to || String(email.to || "").toLowerCase().includes(to))
+    .slice(0, 10)
+    .map(indexedEmailToMcpResult);
+}
+
+function indexedEmailToMcpResult(email) {
+  return {
+    accountEmail: email.accountEmail,
+    provider: email.provider,
+    emailId: email.id,
+    threadId: email.threadId,
+    fromEmail: extractEmailAddressFromText(email.from) || email.from,
+    fromName: email.sender,
+    to: email.accountEmail,
+    subject: email.subject,
+    snippet: email.snippet,
+    labels: email.labels,
+    state: email.mailbox || email.direction || "indexed",
+    isRead: email.isRead,
+  };
+}
+
 function mcpEmailSearchResult(match) {
   return {
     accountEmail: match.account.email,
@@ -1218,6 +1288,12 @@ function mcpEmailSearchResult(match) {
 function emailMatchesFrom(email, from) {
   const normalized = String(from || "").toLowerCase();
   return String(email.fromEmail || "").toLowerCase().includes(normalized) || String(email.fromName || "").toLowerCase().includes(normalized);
+}
+
+function extractEmailAddressFromText(value = "") {
+  const angleMatch = String(value).match(/<([^>]+)>/);
+  const emailMatch = String(value).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return (angleMatch?.[1] ?? emailMatch?.[0] ?? "").trim();
 }
 
 async function searchGmailEmailsForRules(accessToken, { query, fromEmail = "" }, limit) {
@@ -2299,13 +2375,41 @@ export async function recordMetricEvent(userId, eventType, { emailId = null, acc
 
 export function buildEmailRuleQuery(query, parameterOffset = 2) {
   const values = [];
-  const parsed = buildEmailRuleQueryNode(query, values, parameterOffset);
+  const parsed = buildEmailRuleQueryNode(normalizeEmailRuleQueryInput(query), values, parameterOffset);
 
   if (!parsed.ok) {
     return parsed;
   }
 
   return { ok: true, sql: parsed.sql, values };
+}
+
+function normalizeEmailRuleQueryInput(query) {
+  if (!query || typeof query !== "object" || Array.isArray(query)) {
+    return query;
+  }
+  if (Array.isArray(query.rules) || Array.isArray(query.conditions) || "field" in query) {
+    return query;
+  }
+
+  const fieldAliases = {
+    from: "fromEmail",
+    sender: "fromEmail",
+    senderEmail: "fromEmail",
+    email: "fromEmail",
+    name: "fromName",
+    senderName: "fromName",
+    pending: "isPending",
+  };
+  const conditions = Object.entries(query)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([rawField, value]) => ({
+      field: fieldAliases[rawField] ?? rawField,
+      equivalence: typeof value === "boolean" ? "equals" : "contains",
+      value,
+    }));
+
+  return conditions.length === 1 ? conditions[0] : { operator: "AND", conditions };
 }
 
 function buildEmailRuleQueryNode(node, values, parameterOffset) {

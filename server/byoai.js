@@ -122,7 +122,7 @@ const SYSTEM_MCP_TOOLS = [
   },
   {
     name: "find_email",
-    description: "Find connected-account emails by optional email id, subject, from, and to fields.",
+    description: "Find emails by optional email id, subject, from, and to fields. Searches Emailable's indexed database first. Set searchConnectedAccounts to true only after the user agrees to a slower provider-wide connected-account search.",
     inputSchema: {
       type: "object",
       properties: {
@@ -130,6 +130,7 @@ const SYSTEM_MCP_TOOLS = [
         subject: { type: "string", description: "Subject text to search for." },
         from: { type: "string", description: "Sender email address or display text to match." },
         to: { type: "string", description: "Recipient/connected account email address to search in." },
+        searchConnectedAccounts: { type: "boolean", description: "When true, search connected email providers if the indexed database does not contain a match. Use only after user confirmation." },
       },
       additionalProperties: false,
     },
@@ -501,6 +502,20 @@ export function registerByoAiRoutes(app) {
     }
   });
 
+  app.post("/api/byoai/helper-chat", requireSession, async (req, res) => {
+    try {
+      const input = parseAiHelperChatInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      res.json({ message: await generateAiHelperChat(req.user.id, input.request) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   app.put("/api/byoai/mcp-client/settings", requireSession, async (req, res) => {
     try {
       const enabled = Boolean(req.body?.enabled);
@@ -841,6 +856,44 @@ async function generateComposeSuggestion(userId, request) {
   const aiResponse = await callBestAvailableAi(userId, {
     systemPrompt: `${bundle["draft-reply"].markdown}\n\nYou are a helpful personal email assistant. Your task is isolated to finding information in the user's connected emails when needed and crafting replies or new email bodies based on the user's request. Use available tools when the user asks you to look up, find, verify, retrieve, or insert information from email. If the user includes a [Use tool: tool_name] directive, you MUST call that tool before writing the draft. Use tool results as supporting context, but return only the final drafted email body text.\n\n${toolInstruction}\n\nReturn only the drafted email body text. Do not include explanations, markdown fences, subject lines, or metadata. For replies, always write as the app user replying to the original sender, never as the original sender.`,
     userPrompt: `${context}\n\n${draftLabel}:\n${request.currentBody || "(empty)"}\n\n${instructionLabel}:\n${request.prompt}\n\n${toolInstruction}`,
+    responseShape: "text",
+  });
+
+  return cleanAiTextResponse(aiResponse);
+}
+
+async function generateAiHelperChat(userId, request) {
+  await assertAiEnabled(userId);
+  const context = request.contextMessages
+    .slice(0, 30)
+    .map((message, index) => [
+      `${index + 1}. State: ${message.state || "visible"}`,
+      `Account: ${message.accountEmail || ""}`,
+      `From: ${message.from || message.sender || ""}`,
+      `Subject: ${message.subject || "(no subject)"}`,
+      `Labels: ${Array.isArray(message.labels) && message.labels.length ? message.labels.join(", ") : "none"}`,
+      `Date: ${message.date || ""}`,
+      `Snippet: ${message.snippet || ""}`,
+    ].join("\n"))
+    .join("\n\n");
+  const aiResponse = await callBestAvailableAi(userId, {
+    systemPrompt: [
+      "You are Emailable's AI Helper, an email-focused assistant acting as an agent for the app user.",
+      "You can answer questions about email, help compose or reply to emails, and use available tools when they help.",
+      "Emails visible on screen or selected by the user are active context and should be considered first.",
+      "You must understand email state. Inbox, sent, drafts, archive, labels, read/unread, and rules are meaningfully different states.",
+      "For questions about archived mail, sent mail, drafts, labels, or rules, use the appropriate tool or database-backed search result rather than guessing from visible inbox context.",
+      "When searching for emails, first use indexed/database-backed information through available tools. Only use provider-wide connected-account search when the user explicitly agrees, because it can be slower.",
+      "The find_email tool searches Emailable's indexed database first. Set searchConnectedAccounts to true only after the user asks or confirms that provider-wide search is okay.",
+      "The query_email_rules tool accepts structured query fields such as fromEmail, fromName, subject, and isPending.",
+      "Be concise and practical. If you need a user decision before taking the next step, ask one clear question.",
+    ].join("\n"),
+    userPrompt: [
+      `User request: ${request.prompt}`,
+      "",
+      `Active screen context (${request.contextDescription || "visible emails"}):`,
+      context || "(no visible or selected email context)",
+    ].join("\n"),
     responseShape: "text",
   });
 
@@ -1231,6 +1284,32 @@ function parseComposeSuggestionInput(body) {
   }
 
   return { ok: true, request: { prompt, currentBody, message, requiredTools } };
+}
+
+function parseAiHelperChatInput(body) {
+  const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
+  const contextDescription = typeof body?.contextDescription === "string" ? body.contextDescription.trim().slice(0, 200) : "";
+  const contextMessages = Array.isArray(body?.contextMessages)
+    ? body.contextMessages.slice(0, 30).filter((message) => message && typeof message === "object").map((message) => ({
+        accountEmail: typeof message.accountEmail === "string" ? message.accountEmail : "",
+        date: typeof message.date === "string" ? message.date : "",
+        from: typeof message.from === "string" ? message.from : "",
+        labels: Array.isArray(message.labels) ? message.labels.filter((label) => typeof label === "string").slice(0, 8) : [],
+        sender: typeof message.sender === "string" ? message.sender : "",
+        snippet: typeof message.snippet === "string" ? message.snippet.slice(0, 600) : "",
+        state: typeof message.state === "string" ? message.state : "",
+        subject: typeof message.subject === "string" ? message.subject : "",
+      }))
+    : [];
+
+  if (!prompt) {
+    return { ok: false, error: "Ask the AI Helper a question." };
+  }
+  if (prompt.length > 2000) {
+    return { ok: false, error: "AI Helper prompt must be 2,000 characters or less." };
+  }
+
+  return { ok: true, request: { contextDescription, contextMessages, prompt } };
 }
 
 function parsePlatformInput(body) {
