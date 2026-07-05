@@ -37,12 +37,12 @@ export const SYSTEM_MCP_TOOL_DEFINITIONS = [
   {
     name: "query_email_rules",
     title: "Query Email Rules",
-    description: "Query email rules using the same AND/OR and equivalence behavior as the REST Query Email Rules API.",
+    description: "Query Emailable email rules by fromEmail/from, fromName, subject, isPending/pending, AND/OR groups, and supported equivalence operators.",
   },
   {
     name: "find_email",
     title: "Find Email",
-    description: "Find connected-account emails by optional email id, subject, from, and to fields.",
+    description: "Search Emailable's indexed email database by id, subject, sender, account, label, archive/draft/sent/inbox state, read/unread status, and timestamps. Provider-wide connected-account search is optional.",
   },
 ];
 
@@ -242,12 +242,15 @@ function createMcpServer(userId) {
     "find_email",
     {
       title: "Find Email",
-      description: "Find emails using optional email id, subject, from, and to fields. Searches Emailable's indexed database first. Set searchConnectedAccounts to true only after the user agrees to a slower provider-wide connected-account search.",
+      description: "Search Emailable's indexed email database first for emails and counts by id, subject, from, to/account, label, archive/draft/sent/inbox state, read/unread status, and received/sent timestamps. Set searchConnectedAccounts to true only after the user agrees to a slower provider-wide connected-account search.",
       inputSchema: {
         emailId: z.string().optional().describe("Provider email/message id or RFC822 Message-ID."),
         subject: z.string().optional().describe("Subject text to search for."),
         from: z.string().optional().describe("Sender email address or display text to match."),
         to: z.string().optional().describe("Recipient/connected account email address to search in."),
+        state: z.string().optional().describe("Optional mailbox/state filter such as inbox, sent, drafts, archive, archived, read, unread, or a label/folder name."),
+        label: z.string().optional().describe("Optional Emailable label/folder name to filter by."),
+        limit: z.number().min(1).max(200).optional().describe("Maximum indexed results to return. Use a small limit for examples and a larger limit for counting."),
         searchConnectedAccounts: z.boolean().optional().describe("When true, search connected email providers if the indexed database does not contain a match. Use only after user confirmation."),
       },
     },

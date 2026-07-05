@@ -326,6 +326,7 @@ export function mapEmailIndexRow(row) {
     isRead: row.is_read !== false,
     labels: normalizeLabels(row.labels),
     hasAttachments: Boolean(row.has_attachments),
+    archived: Boolean(row.archived),
     replyCount: Number(row.reply_count || 0),
     respondingToEmailId: row.responding_to_email_id || null,
     direction: row.direction || "inbox",

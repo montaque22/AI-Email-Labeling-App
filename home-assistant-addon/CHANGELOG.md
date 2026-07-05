@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.70
+
+- Added session-backed AI Helper chat history so follow-up replies keep context.
+- Improved AI Helper autonomy with stronger agent instructions and a 10-tool-call escape hatch.
+- Expanded `find_email` with state, label, read/unread, and count-aware indexed search.
+- Updated MCP tool descriptions so AI providers can reason about archived, sent, draft, label, and rule queries.
+
 ## 0.1.69
 
 - Added the desktop AI Helper chat panel with visible-email context and compose assistance.

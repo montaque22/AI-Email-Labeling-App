@@ -1163,14 +1163,17 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
   const subject = typeof payload.subject === "string" ? payload.subject.trim() : "";
   const from = typeof payload.from === "string" ? payload.from.trim().toLowerCase() : "";
   const to = typeof payload.to === "string" ? payload.to.trim().toLowerCase() : "";
+  const state = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
+  const label = typeof payload.label === "string" ? payload.label.trim() : "";
+  const limit = Math.min(Math.max(Number(payload.limit) || 20, 1), 200);
   const searchConnectedAccounts = Boolean(payload.searchConnectedAccounts);
 
-  if (!emailId && !subject && !from && !to) {
-    return [];
+  if (!emailId && !subject && !from && !to && !state && !label) {
+    return { returned: 0, results: [], source: "indexed_database", totalMatches: 0 };
   }
 
-  const indexedMatches = await findIndexedEmailsForMcp(userId, { emailId, subject, from, to });
-  if (indexedMatches.length > 0 || !searchConnectedAccounts) {
+  const indexedMatches = await findIndexedEmailsForMcp(userId, { emailId, subject, from, to, state, label, limit });
+  if (indexedMatches.totalMatches > 0 || !searchConnectedAccounts) {
     return indexedMatches;
   }
 
@@ -1178,22 +1181,23 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
     try {
       const match = await findConnectedEmailContextById(userId, { emailId, accountEmail: to, subject });
       if (from && !emailMatchesFrom(match.email, from)) {
-        return [];
+        return { returned: 0, results: [], source: "connected_accounts", totalMatches: 0 };
       }
-      return [mcpEmailSearchResult(match)];
+      const results = [mcpEmailSearchResult(match)];
+      return { returned: results.length, results, source: "connected_accounts", totalMatches: results.length };
     } catch (error) {
       if (error.status === 404) {
-        return [];
+        return { returned: 0, results: [], source: "connected_accounts", totalMatches: 0 };
       }
       throw error;
     }
   }
 
   const candidates = await searchConnectedEmailsForRules(userId, { query: subject, accountEmail: to, fromEmail: from });
-  return candidates
+  const results = candidates
     .filter((email) => !subject || normalizeComparableSubject(email.subject).includes(normalizeComparableSubject(subject)))
     .filter((email) => !from || emailMatchesFrom(email, from))
-    .slice(0, 10)
+    .slice(0, limit)
     .map((email) => ({
       accountEmail: email.accountEmail,
       provider: email.provider,
@@ -1205,15 +1209,26 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
       subject: email.subject,
       snippet: email.snippet,
     }));
+  return { returned: results.length, results, source: "connected_accounts", totalMatches: results.length };
 }
 
-async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to }) {
+async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, state, label, limit = 20 }) {
   const accounts = to
     ? (await getConnectedEmailAccounts(userId)).filter((account) => account.email.toLowerCase() === to)
     : await getConnectedEmailAccounts(userId);
   if (to && accounts.length === 0) {
-    return [];
+    return { returned: 0, results: [], source: "indexed_database", totalMatches: 0 };
   }
+  const normalizedState = state || "";
+  const readFilter = normalizedState === "read" ? true : normalizedState === "unread" ? false : null;
+  const direction = normalizedState === "sent"
+    ? "sent"
+    : normalizedState === "draft" || normalizedState === "drafts"
+      ? "draft"
+      : "inbox";
+  const archivedOnly = normalizedState === "archive" || normalizedState === "archived";
+  const labelName = label || (!["", "inbox", "sent", "draft", "drafts", "archive", "archived", "read", "unread"].includes(normalizedState) ? normalizedState : "");
+
   if (emailId) {
     const values = [userId, emailId];
     const accountCondition = accounts.length ? `and email_account_id = any($3::uuid[])` : "";
@@ -1225,33 +1240,94 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to }) {
           and (email_id = $2 or thread_id = $2)
           ${accountCondition}
         order by received_at desc
-        limit 10
+        limit ${Math.min(limit, 200)}
       `,
       accounts.length ? [...values, accounts.map((account) => account.id)] : values,
     );
-    return result.rows
+    const results = result.rows
       .map(mapEmailIndexRow)
       .filter((email) => !subject || normalizeComparableSubject(email.subject).includes(normalizeComparableSubject(subject)))
       .filter((email) => !from || String(email.from || email.sender || "").toLowerCase().includes(from))
+      .filter((email) => readFilter === null || email.isRead === readFilter)
+      .filter((email) => !archivedOnly || email.archived === true)
+      .filter((email) => !labelName || email.labels.some((item) => item.toLowerCase() === labelName.toLowerCase()))
       .map(indexedEmailToMcpResult);
+    return { returned: results.length, results, source: "indexed_database", totalMatches: results.length };
   }
 
   const search = emailId || subject || from || to;
   const result = await listEmailIndexEntries(userId, {
     accountIds: accounts.map((account) => account.id),
-    includeArchived: true,
+    archivedOnly,
+    direction,
+    includeArchived: archivedOnly || normalizedState === "read" || normalizedState === "unread",
+    labelName,
     search,
     sort: "newest",
-    limit: 20,
+    limit,
   });
 
-  return result.messages
+  const filtered = result.messages
     .filter((email) => !emailId || email.id === emailId || email.threadId === emailId)
     .filter((email) => !subject || normalizeComparableSubject(email.subject).includes(normalizeComparableSubject(subject)))
     .filter((email) => !from || String(email.from || email.sender || "").toLowerCase().includes(from))
     .filter((email) => !to || String(email.accountEmail || "").toLowerCase() === to || String(email.to || "").toLowerCase().includes(to))
-    .slice(0, 10)
+    .filter((email) => readFilter === null || email.isRead === readFilter);
+  const totalMatches = await countIndexedEmailsForMcp(userId, {
+    accountIds: accounts.map((account) => account.id),
+    archivedOnly,
+    direction,
+    includeArchived: archivedOnly || normalizedState === "read" || normalizedState === "unread",
+    labelName,
+    readFilter,
+    search,
+  });
+  const results = filtered
+    .slice(0, limit)
     .map(indexedEmailToMcpResult);
+  return { returned: results.length, results, source: "indexed_database", totalMatches };
+}
+
+async function countIndexedEmailsForMcp(userId, { accountIds, archivedOnly, direction, includeArchived, labelName, readFilter, search }) {
+  const values = [userId];
+  const conditions = ["user_id = $1"];
+  if (accountIds.length) {
+    values.push(accountIds);
+    conditions.push(`email_account_id = any($${values.length}::uuid[])`);
+  }
+  if (direction) {
+    values.push(direction);
+    conditions.push(`direction = $${values.length}`);
+  }
+  if (labelName) {
+    values.push(labelName);
+    conditions.push(`$${values.length} = any(labels)`);
+  }
+  if (search) {
+    values.push(`%${escapeSqlLike(search)}%`);
+    const index = values.length;
+    conditions.push(`(
+      from_email ilike $${index} escape '\\'
+      or from_name ilike $${index} escape '\\'
+      or to_emails ilike $${index} escape '\\'
+      or subject ilike $${index} escape '\\'
+    )`);
+  }
+  if (archivedOnly) {
+    conditions.push("archived = true");
+  } else if (!includeArchived) {
+    conditions.push("archived = false");
+  }
+  if (readFilter !== null) {
+    values.push(readFilter);
+    conditions.push(`is_read = $${values.length}`);
+  }
+  const result = await dbPool.query(`select count(*)::int as count from email_index where ${conditions.join(" and ")}`, values);
+  return Number(result.rows[0]?.count || 0);
+}
+
+function escapeSqlLike(value) {
+  return String(value).replace(/[\\%_]/g, "\\$&");
 }
 
 function indexedEmailToMcpResult(email) {
@@ -1266,7 +1342,7 @@ function indexedEmailToMcpResult(email) {
     subject: email.subject,
     snippet: email.snippet,
     labels: email.labels,
-    state: email.mailbox || email.direction || "indexed",
+    state: email.archived ? "archive" : email.direction || email.mailbox || "indexed",
     isRead: email.isRead,
   };
 }

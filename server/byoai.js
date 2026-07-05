@@ -109,7 +109,7 @@ const SYSTEM_MCP_TOOLS = [
   },
   {
     name: "query_email_rules",
-    description: "Query email rules using AND/OR groups and supported equivalence operators.",
+    description: "Query Emailable email rules. Use this to inspect rule history, pending reviews, reviewed rules, or prior labeling decisions. The query object can use fromEmail/from/sender/email, fromName/name, subject, and isPending/pending; simple values are matched case-insensitively. Use an empty query object with a limit when the user asks for a broad count or summary.",
     inputSchema: {
       type: "object",
       properties: {
@@ -122,7 +122,7 @@ const SYSTEM_MCP_TOOLS = [
   },
   {
     name: "find_email",
-    description: "Find emails by optional email id, subject, from, and to fields. Searches Emailable's indexed database first. Set searchConnectedAccounts to true only after the user agrees to a slower provider-wide connected-account search.",
+    description: "Search Emailable's indexed email database first for emails and counts by id, subject, from, to/account, label, archive/draft/sent/inbox state, read/unread status, and received/sent timestamps. Use this for questions like how many emails are archived, what is in a label, what drafts exist, or whether a sender has recent mail. Set searchConnectedAccounts to true only after the user confirms a slower provider-wide connected-account search.",
     inputSchema: {
       type: "object",
       properties: {
@@ -130,6 +130,9 @@ const SYSTEM_MCP_TOOLS = [
         subject: { type: "string", description: "Subject text to search for." },
         from: { type: "string", description: "Sender email address or display text to match." },
         to: { type: "string", description: "Recipient/connected account email address to search in." },
+        state: { type: "string", description: "Optional mailbox/state filter such as inbox, sent, drafts, archive, archived, read, unread, or a label/folder name." },
+        label: { type: "string", description: "Optional Emailable label/folder name to filter by." },
+        limit: { type: "number", description: "Maximum indexed results to return. Use a small limit for examples and a larger limit for counting." },
         searchConnectedAccounts: { type: "boolean", description: "When true, search connected email providers if the indexed database does not contain a match. Use only after user confirmation." },
       },
       additionalProperties: false,
@@ -864,6 +867,10 @@ async function generateComposeSuggestion(userId, request) {
 
 async function generateAiHelperChat(userId, request) {
   await assertAiEnabled(userId);
+  const history = request.conversationHistory
+    .slice(-16)
+    .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.text}`)
+    .join("\n");
   const context = request.contextMessages
     .slice(0, 30)
     .map((message, index) => [
@@ -879,16 +886,21 @@ async function generateAiHelperChat(userId, request) {
   const aiResponse = await callBestAvailableAi(userId, {
     systemPrompt: [
       "You are Emailable's AI Helper, an email-focused assistant acting as an agent for the app user.",
-      "You can answer questions about email, help compose or reply to emails, and use available tools when they help.",
+      "You can answer questions about email, help compose or reply to emails, and use available tools whenever they are the reliable way to answer.",
+      "Keep conversational continuity. Interpret short follow-ups such as yes, sure, that one, do it, or continue using the previous assistant question and chat history.",
       "Emails visible on screen or selected by the user are active context and should be considered first.",
       "You must understand email state. Inbox, sent, drafts, archive, labels, read/unread, and rules are meaningfully different states.",
-      "For questions about archived mail, sent mail, drafts, labels, or rules, use the appropriate tool or database-backed search result rather than guessing from visible inbox context.",
-      "When searching for emails, first use indexed/database-backed information through available tools. Only use provider-wide connected-account search when the user explicitly agrees, because it can be slower.",
-      "The find_email tool searches Emailable's indexed database first. Set searchConnectedAccounts to true only after the user asks or confirms that provider-wide search is okay.",
-      "The query_email_rules tool accepts structured query fields such as fromEmail, fromName, subject, and isPending.",
+      "Do not answer state/count questions from visible context alone unless the user explicitly asks about only visible emails. For archived mail, sent mail, drafts, labels, read/unread status, or rule counts, use tools to query indexed/database-backed data.",
+      "Infer the right tool and fields from the user's wording. For example, archive or archived means search indexed email state/archive; drafts means draft state; sent means sent state; label names mean label filters; pending/reviewed rules mean query_email_rules.",
+      "When searching for emails, first use indexed/database-backed information through find_email. Only use provider-wide connected-account search when the user explicitly agrees, because it can be slower.",
+      "If a request needs broader provider search, ask for confirmation once, then continue when the user says yes/sure/ok.",
+      "If solving the task would require more than 10 tool calls, stop and explain what is making it hard and what detail would help narrow the search.",
       "Be concise and practical. If you need a user decision before taking the next step, ask one clear question.",
     ].join("\n"),
     userPrompt: [
+      "Recent AI Helper conversation:",
+      history || "(no previous conversation)",
+      "",
       `User request: ${request.prompt}`,
       "",
       `Active screen context (${request.contextDescription || "visible emails"}):`,
@@ -1032,7 +1044,7 @@ async function callOpenAiResponses(platform, systemPrompt, userPrompt, mcpTools,
     ...structuredText,
   });
 
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < 10; index += 1) {
     const functionCalls = getOpenAiFunctionCalls(data);
     if (functionCalls.length === 0) {
       break;
@@ -1051,6 +1063,10 @@ async function callOpenAiResponses(platform, systemPrompt, userPrompt, mcpTools,
       temperature: 0.2,
       ...structuredText,
     });
+  }
+
+  if (getOpenAiFunctionCalls(data).length > 0) {
+    return "I am having trouble completing this because it requires more than 10 tool calls. Please narrow the request with a sender, label, date range, or account so I can finish it accurately.";
   }
 
   return extractOpenAiResponseText(data);
@@ -1289,6 +1305,12 @@ function parseComposeSuggestionInput(body) {
 function parseAiHelperChatInput(body) {
   const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
   const contextDescription = typeof body?.contextDescription === "string" ? body.contextDescription.trim().slice(0, 200) : "";
+  const conversationHistory = Array.isArray(body?.conversationHistory)
+    ? body.conversationHistory.slice(-16).filter((message) => message && typeof message === "object").map((message) => ({
+        role: message.role === "assistant" ? "assistant" : "user",
+        text: typeof message.text === "string" ? message.text.trim().slice(0, 2000) : "",
+      })).filter((message) => message.text)
+    : [];
   const contextMessages = Array.isArray(body?.contextMessages)
     ? body.contextMessages.slice(0, 30).filter((message) => message && typeof message === "object").map((message) => ({
         accountEmail: typeof message.accountEmail === "string" ? message.accountEmail : "",
@@ -1309,7 +1331,7 @@ function parseAiHelperChatInput(body) {
     return { ok: false, error: "AI Helper prompt must be 2,000 characters or less." };
   }
 
-  return { ok: true, request: { contextDescription, contextMessages, prompt } };
+  return { ok: true, request: { contextDescription, contextMessages, conversationHistory, prompt } };
 }
 
 function parsePlatformInput(body) {

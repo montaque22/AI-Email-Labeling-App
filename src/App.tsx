@@ -328,12 +328,12 @@ const SYSTEM_MCP_TOOLS: AiMcpTool[] = [
   },
   {
     name: "query_email_rules",
-    description: "Query email rules using AND/OR groups and supported equivalence operators.",
+    description: "Query Emailable email rules by fromEmail/from, fromName, subject, isPending/pending, AND/OR groups, and supported equivalence operators.",
     inputSchema: null,
   },
   {
     name: "find_email",
-    description: "Find emails by optional email id, subject, from, and to fields. Searches the indexed database first; provider-wide connected-account search is optional.",
+    description: "Search Emailable's indexed email database by id, subject, sender, account, label, archive/draft/sent/inbox state, read/unread status, and timestamps. Provider-wide connected-account search is optional.",
     inputSchema: null,
   },
 ];
@@ -531,6 +531,13 @@ type InboxAiChatMessage = {
     value: string;
     type: "account" | "contact";
   }>;
+};
+
+const INBOX_AI_HELPER_SESSION_KEY = "emailable.inbox.aiHelper.history";
+const INBOX_AI_HELPER_INTRO_MESSAGE: InboxAiChatMessage = {
+  id: 1,
+  role: "assistant",
+  text: "I can help search visible emails, look through your indexed mail, and draft a new email. Ask about what you see, or say something like “compose an email.”",
 };
 
 type EmailLinkAction = {
@@ -3250,13 +3257,27 @@ function InboxAiHelperPanel({
   privacyMode: boolean;
   selectedMessages: InboxMessage[];
 }) {
-  const [messages, setMessages] = useState<InboxAiChatMessage[]>([
-    {
-      id: 1,
-      role: "assistant",
-      text: "I can help search visible emails, look through your indexed mail, and draft a new email. Ask about what you see, or say something like “compose an email.”",
-    },
-  ]);
+  const [messages, setMessages] = useState<InboxAiChatMessage[]>(() => {
+    try {
+      const stored = window.sessionStorage.getItem(INBOX_AI_HELPER_SESSION_KEY);
+      const parsed = stored ? JSON.parse(stored) : null;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed
+          .filter((message) => message && (message.role === "assistant" || message.role === "user") && typeof message.text === "string")
+          .slice(-40)
+          .map((message, index) => ({
+            draftBody: typeof message.draftBody === "string" ? message.draftBody : undefined,
+            id: typeof message.id === "number" ? message.id : Date.now() + index,
+            role: message.role,
+            subjectSuggestion: typeof message.subjectSuggestion === "string" ? message.subjectSuggestion : undefined,
+            text: message.text,
+          }));
+      }
+    } catch {
+      window.sessionStorage.removeItem(INBOX_AI_HELPER_SESSION_KEY);
+    }
+    return [INBOX_AI_HELPER_INTRO_MESSAGE];
+  });
   const [input, setInput] = useState("");
   const [workflow, setWorkflow] = useState<{
     draft: Partial<InboxComposeDraft>;
@@ -3271,6 +3292,17 @@ function InboxAiHelperPanel({
   function addMessage(message: Omit<InboxAiChatMessage, "id">) {
     setMessages((current) => [...current, { ...message, id: Date.now() + current.length }]);
   }
+
+  useEffect(() => {
+    const persisted = messages.slice(-40).map((message) => ({
+      draftBody: message.draftBody,
+      id: message.id,
+      role: message.role,
+      subjectSuggestion: message.subjectSuggestion,
+      text: message.text,
+    }));
+    window.sessionStorage.setItem(INBOX_AI_HELPER_SESSION_KEY, JSON.stringify(persisted));
+  }, [messages]);
 
   function openComposeWithDraft(nextDraft: Partial<InboxComposeDraft> | null) {
     const draft = {
@@ -3412,12 +3444,16 @@ function InboxAiHelperPanel({
     return String(data.bodyText ?? "").trim();
   }
 
-  async function askAiHelper(prompt: string) {
+  async function askAiHelper(prompt: string, conversationHistory: InboxAiChatMessage[]) {
     const response = await fetch("/api/byoai/helper-chat", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        conversationHistory: conversationHistory.slice(-16).map((message) => ({
+          role: message.role,
+          text: message.text,
+        })),
         contextDescription: selectedContextText,
         contextMessages: activeContext.map((message) => ({
           accountEmail: message.accountEmail,
@@ -3439,7 +3475,7 @@ function InboxAiHelperPanel({
     return String(data.message ?? "").trim();
   }
 
-  async function handleUserPrompt(prompt: string) {
+  async function handleUserPrompt(prompt: string, conversationHistory: InboxAiChatMessage[]) {
     const normalizedPrompt = prompt.toLowerCase();
 
     if (workflow.step === "recipient") {
@@ -3515,7 +3551,7 @@ function InboxAiHelperPanel({
 
     setIsThinking(true);
     try {
-      addMessage({ role: "assistant", text: await askAiHelper(prompt) });
+      addMessage({ role: "assistant", text: await askAiHelper(prompt, conversationHistory) });
     } catch (error) {
       addMessage({ role: "assistant", text: error instanceof Error ? error.message : "AI Helper could not answer that." });
     } finally {
@@ -3564,8 +3600,10 @@ function InboxAiHelperPanel({
       return;
     }
     setInput("");
-    addMessage({ role: "user", text: prompt });
-    void handleUserPrompt(prompt);
+    const userMessage: InboxAiChatMessage = { id: Date.now() + messages.length, role: "user", text: prompt };
+    const nextMessages = [...messages, userMessage];
+    setMessages(nextMessages);
+    void handleUserPrompt(prompt, nextMessages);
   }
 
   return (
