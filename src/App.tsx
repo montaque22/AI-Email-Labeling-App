@@ -1755,6 +1755,7 @@ function InboxPage({
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const [isMobileLabelPickerOpen, setIsMobileLabelPickerOpen] = useState(false);
   const [isMobileEditMode, setIsMobileEditMode] = useState(false);
+  const [isBulkLabelMenuOpen, setIsBulkLabelMenuOpen] = useState(false);
   const [mobilePullDistance, setMobilePullDistance] = useState(0);
   const [isMobilePullRefreshing, setIsMobilePullRefreshing] = useState(false);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
@@ -2372,9 +2373,27 @@ function InboxPage({
       return;
     }
 
+    setIsBulkLabelMenuOpen(false);
     const timeout = window.setTimeout(() => setIsBulkActionBarRendered(false), 190);
     return () => window.clearTimeout(timeout);
   }, [hasSelectedMessages]);
+
+  useEffect(() => {
+    if (!isBulkLabelMenuOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target;
+      if (target instanceof Element && target.closest("[data-bulk-label-menu]")) {
+        return;
+      }
+      setIsBulkLabelMenuOpen(false);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [isBulkLabelMenuOpen]);
 
   function enterMobileEditMode(message?: InboxMessage) {
     setIsMobileEditMode(true);
@@ -2545,6 +2564,7 @@ function InboxPage({
           : current,
       );
       setSelectedMessageKeys((current) => current.filter((key) => !updatedKeys.has(key)));
+      setIsBulkLabelMenuOpen(false);
 
       if (successfulUpdates.length > 0) {
         showInboxToast(nextLabelName ? `Updated ${successfulUpdates.length} message${successfulUpdates.length === 1 ? "" : "s"} to ${nextLabelName}.` : `Removed labels from ${successfulUpdates.length} message${successfulUpdates.length === 1 ? "" : "s"}.`);
@@ -2567,6 +2587,7 @@ function InboxPage({
     }
 
     const requestedDeleteKeys = messagesToDelete.map(getInboxMessageKey);
+    setIsBulkLabelMenuOpen(false);
     setDeletingMessageKeys(requestedDeleteKeys);
     setIsBulkActionRunning(true);
     setError(null);
@@ -2603,6 +2624,7 @@ function InboxPage({
       }
       if (successfulDeletes.length > 0) {
         showInboxToast(`${successfulDeletes.length} message${successfulDeletes.length === 1 ? "" : "s"} deleted.`);
+        setIsMobileEditMode(false);
       }
       if (data.failed?.length) {
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be deleted.`);
@@ -2622,6 +2644,7 @@ function InboxPage({
     }
 
     setIsBulkActionRunning(true);
+    setIsBulkLabelMenuOpen(false);
     setError(null);
     try {
       const response = await fetch("/api/inbox/messages/archive", {
@@ -2658,6 +2681,7 @@ function InboxPage({
       }
       if (successfulArchives.length > 0) {
         showInboxToast(`${successfulArchives.length} message${successfulArchives.length === 1 ? "" : "s"} archived.`);
+        setIsMobileEditMode(false);
       }
       if (data.failed?.length) {
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be archived.`);
@@ -2716,17 +2740,9 @@ function InboxPage({
               Cancel
             </button>
             <div className="flex min-w-0 flex-1 justify-center">
-              {selectedMessages.length > 0 ? (
-                <LabelActionSelect
-                  disabled={isBulkActionRunning || isLabelActionRunning}
-                  isLoading={isLabelActionRunning}
-                  labels={labels}
-                  onChange={(labelId) => void setMessagesLabel(selectedMessages, labelId)}
-                  value={selectedMessagesLabelValue}
-                />
-              ) : (
-                <span className="text-sm font-medium text-zinc-500">Select messages</span>
-              )}
+              <span className="truncate text-sm font-medium text-zinc-950">
+                {selectedMessages.length > 0 ? `${selectedMessages.length} selected` : "Select messages"}
+              </span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <button className="cursor-pointer text-sm font-medium text-blue-600" onClick={toggleAllVisibleMessages} type="button">
@@ -2819,6 +2835,58 @@ function InboxPage({
           >
             {isBulkActionRunning ? <Loader /> : <Archive className="h-5 w-5" />}
           </Button>
+          <div className="h-8 w-px bg-zinc-200/80" />
+          <div className="relative" data-bulk-label-menu>
+            <Button
+              aria-label="Change selected email labels"
+              className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
+              disabled={isBulkActionRunning || isLabelActionRunning || selectedMessages.length === 0}
+              onClick={() => setIsBulkLabelMenuOpen((current) => !current)}
+              size="icon"
+              type="button"
+              variant="ghost"
+            >
+              {isLabelActionRunning ? <Loader /> : <Tag className="h-5 w-5" />}
+            </Button>
+            {isBulkLabelMenuOpen ? (
+              <div className="absolute bottom-16 left-1/2 z-50 w-64 -translate-x-1/2 rounded-2xl border border-white/70 bg-white/85 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl">
+                <p className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-500">Move to label</p>
+                <div className="max-h-72 space-y-1 overflow-y-auto">
+                  <button
+                    className={cn(
+                      "flex w-full cursor-pointer items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm text-zinc-700 hover:bg-white/80",
+                      !selectedMessagesLabelValue && "bg-zinc-100/80 text-zinc-950",
+                    )}
+                    onClick={() => {
+                      setIsBulkLabelMenuOpen(false);
+                      void setMessagesLabel(selectedMessages, "");
+                    }}
+                    type="button"
+                  >
+                    <span>No label</span>
+                    {!selectedMessagesLabelValue ? <Check className="h-4 w-4" /> : null}
+                  </button>
+                  {labels.map((label) => (
+                    <button
+                      className={cn(
+                        "flex w-full cursor-pointer items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm text-zinc-700 hover:bg-white/80",
+                        selectedMessagesLabelValue === label.id && "bg-blue-50/80 text-blue-800",
+                      )}
+                      key={label.id}
+                      onClick={() => {
+                        setIsBulkLabelMenuOpen(false);
+                        void setMessagesLabel(selectedMessages, label.id);
+                      }}
+                      type="button"
+                    >
+                      <span className="truncate">{label.name}</span>
+                      {selectedMessagesLabelValue === label.id ? <Check className="h-4 w-4" /> : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
           <div className="h-8 w-px bg-zinc-200/80" />
           <Button
             aria-label="Delete selected emails"
@@ -2983,19 +3051,7 @@ function InboxPage({
                   ) : null}
                 </div>
               </div>
-              <div className="ml-auto flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
-                {selectedMessages.length > 0 ? (
-                  <div className="flex items-center gap-2">
-                    <LabelActionSelect
-                      disabled={isBulkActionRunning || isLabelActionRunning}
-                      isLoading={isLabelActionRunning}
-                      labels={labels}
-                      onChange={(labelId) => void setMessagesLabel(selectedMessages, labelId)}
-                      value={selectedMessagesLabelValue}
-                    />
-                  </div>
-                ) : null}
-              </div>
+              <div className="ml-auto flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center" />
               </CardContent>
             </Card>
           </div>
@@ -3330,17 +3386,93 @@ function InboxAiHelperPanel({
   }, [messages, isThinking]);
 
   function openComposeWithDraft(nextDraft: Partial<InboxComposeDraft> | null) {
-    const draft = {
+    const draft: Partial<InboxComposeDraft> = {
       accountId: nextDraft?.accountId || accounts[0]?.id || "",
+      draftId: nextDraft?.draftId,
+      mailbox: nextDraft?.mailbox,
       to: nextDraft?.to ?? "",
       cc: nextDraft?.cc ?? "",
       bcc: nextDraft?.bcc ?? "",
       subject: nextDraft?.subject ?? "",
       bodyText: nextDraft?.bodyText ?? "",
+      threadId: nextDraft?.threadId,
+      replyContext: nextDraft?.replyContext ?? null,
     };
     onOpenComposeDraft(draft);
     setWorkflow((current) => ({ ...current, draft }));
     return draft;
+  }
+
+  function createReplyDraftFromMessage(message: InboxMessage): Partial<InboxComposeDraft> {
+    const fromAddress = extractEmailAddressFromText(message.from) || extractEmailAddressFromText(message.sender);
+    return {
+      accountId: message.accountId,
+      to: fromAddress,
+      subject: normalizeReplySubject(message.subject),
+      threadId: message.threadId || message.id,
+      replyContext: {
+        bodyText: message.snippet || "",
+        emailId: message.id,
+        from: message.from || message.sender || fromAddress,
+        snippet: message.snippet || "",
+        subject: message.subject || "",
+        threadId: message.threadId || message.id,
+      },
+    };
+  }
+
+  function scoreReplyTarget(message: InboxMessage, prompt: string) {
+    const normalizedPrompt = prompt.toLowerCase();
+    const senderName = extractDisplayNameFromText(message.from) || message.sender;
+    const fromEmail = extractEmailAddressFromText(message.from) || extractEmailAddressFromText(message.sender);
+    const searchable = `${senderName} ${fromEmail} ${message.subject} ${message.snippet}`.toLowerCase();
+    const promptTokens = normalizedPrompt
+      .replace(/[^a-z0-9@._+-]+/gi, " ")
+      .split(/\s+/)
+      .filter((token) => token.length >= 4 && !["reply", "respond", "compose", "email", "message", "write", "draft", "please"].includes(token));
+
+    let score = 0;
+    if (fromEmail && normalizedPrompt.includes(fromEmail.toLowerCase())) {
+      score += 12;
+    }
+    if (senderName && normalizedPrompt.includes(senderName.toLowerCase())) {
+      score += 10;
+    }
+    if (message.subject && normalizedPrompt.includes(message.subject.toLowerCase())) {
+      score += 8;
+    }
+    for (const token of promptTokens) {
+      if (searchable.includes(token)) {
+        score += 2;
+      }
+    }
+    return score;
+  }
+
+  function findReplyTarget(prompt: string) {
+    if (selectedMessages.length === 1) {
+      return selectedMessages[0];
+    }
+    if (selectedMessages.length > 1) {
+      const rankedSelected = selectedMessages
+        .map((message) => ({ message, score: scoreReplyTarget(message, prompt) }))
+        .sort((a, b) => b.score - a.score);
+      return rankedSelected[0]?.score > 0 ? rankedSelected[0].message : null;
+    }
+
+    if (contextMessages.length === 1) {
+      return contextMessages[0];
+    }
+
+    const rankedContext = contextMessages
+      .map((message) => ({ message, score: scoreReplyTarget(message, prompt) }))
+      .sort((a, b) => b.score - a.score);
+    return rankedContext[0]?.score > 0 ? rankedContext[0].message : null;
+  }
+
+  function describeReplyTarget(message: InboxMessage) {
+    const sender = extractDisplayNameFromText(message.from) || message.sender || extractEmailAddressFromText(message.from) || "that sender";
+    return `${sender}${message.subject ? ` about "${message.subject}"` : ""}`;
   }
 
   function findContactOptions(query: string) {
@@ -3457,7 +3589,7 @@ function InboxAiHelperPanel({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         currentBody: draft.bodyText || "",
-        message: null,
+        message: draft.replyContext ?? null,
         prompt: `You are helping from the Inbox AI helper. Active screen context: ${selectedContextText}.\n\nVisible or selected email context:\n${contextSummary || "(none)"}\n\nUser request:\n${prompt}`,
         requiredTools: [],
       }),
@@ -3565,6 +3697,27 @@ function InboxAiHelperPanel({
       } finally {
         setIsThinking(false);
       }
+      return;
+    }
+
+    const isReplyIntent = /\b(reply|respond|response|answer)\b/.test(normalizedPrompt)
+      && !/\b(new email|new message|compose new|start a new)\b/.test(normalizedPrompt);
+    if (isReplyIntent) {
+      const target = findReplyTarget(prompt);
+      if (!target) {
+        addMessage({
+          role: "assistant",
+          text: "Which email should I reply to? Select one email first, or mention the sender or subject from the visible emails.",
+        });
+        return;
+      }
+
+      const nextDraft = openComposeWithDraft(createReplyDraftFromMessage(target));
+      setWorkflow({ draft: nextDraft, step: "body" });
+      addMessage({
+        role: "assistant",
+        text: `I opened a reply to ${describeReplyTarget(target)}. Tell me what you want the reply to say, and I will draft it in that thread.`,
+      });
       return;
     }
 
