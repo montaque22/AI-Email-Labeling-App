@@ -16,10 +16,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.8",
+    "@ai-sdk/google": "^4.0.8",
+    "@ai-sdk/openai": "^4.0.8",
+    "@ai-sdk/openai-compatible": "^3.0.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@radix-ui/react-slot": "latest",
     "@tailwindcss/vite": "latest",
     "@vitejs/plugin-react": "latest",
+    "ai": "^7.0.15",
     "better-auth": "latest",
     "class-variance-authority": "latest",
     "clsx": "latest",

@@ -534,6 +534,9 @@ type InboxAiChatMessage = {
 };
 
 const INBOX_AI_HELPER_SESSION_KEY = "emailable.inbox.aiHelper.history";
+const INBOX_AI_HELPER_SESSION_ID_KEY = "emailable.inbox.aiHelper.sessionId";
+const INBOX_AI_HELPER_SESSION_CREATED_KEY = "emailable.inbox.aiHelper.createdAt";
+const INBOX_AI_HELPER_SESSION_TTL_MS = 60 * 60 * 1000;
 const INBOX_AI_HELPER_INTRO_MESSAGE: InboxAiChatMessage = {
   id: 1,
   role: "assistant",
@@ -3259,6 +3262,12 @@ function InboxAiHelperPanel({
 }) {
   const [messages, setMessages] = useState<InboxAiChatMessage[]>(() => {
     try {
+      const createdAt = Number(window.sessionStorage.getItem(INBOX_AI_HELPER_SESSION_CREATED_KEY) || "0");
+      if (!createdAt || Date.now() - createdAt > INBOX_AI_HELPER_SESSION_TTL_MS) {
+        window.sessionStorage.removeItem(INBOX_AI_HELPER_SESSION_KEY);
+        window.sessionStorage.removeItem(INBOX_AI_HELPER_SESSION_ID_KEY);
+        window.sessionStorage.setItem(INBOX_AI_HELPER_SESSION_CREATED_KEY, String(Date.now()));
+      }
       const stored = window.sessionStorage.getItem(INBOX_AI_HELPER_SESSION_KEY);
       const parsed = stored ? JSON.parse(stored) : null;
       if (Array.isArray(parsed) && parsed.length > 0) {
@@ -3278,12 +3287,23 @@ function InboxAiHelperPanel({
     }
     return [INBOX_AI_HELPER_INTRO_MESSAGE];
   });
+  const [sessionId] = useState(() => {
+    const existing = window.sessionStorage.getItem(INBOX_AI_HELPER_SESSION_ID_KEY);
+    if (existing) {
+      return existing;
+    }
+    const next = window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    window.sessionStorage.setItem(INBOX_AI_HELPER_SESSION_ID_KEY, next);
+    window.sessionStorage.setItem(INBOX_AI_HELPER_SESSION_CREATED_KEY, String(Date.now()));
+    return next;
+  });
   const [input, setInput] = useState("");
   const [workflow, setWorkflow] = useState<{
     draft: Partial<InboxComposeDraft>;
     step: "idle" | "recipient" | "account" | "body";
   }>({ draft: {}, step: "idle" });
   const [isThinking, setIsThinking] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const activeContext = selectedMessages.length > 0 ? selectedMessages : contextMessages;
   const selectedContextText = selectedMessages.length > 0
     ? `${selectedMessages.length} selected email${selectedMessages.length === 1 ? "" : "s"}`
@@ -3303,6 +3323,10 @@ function InboxAiHelperPanel({
     }));
     window.sessionStorage.setItem(INBOX_AI_HELPER_SESSION_KEY, JSON.stringify(persisted));
   }, [messages]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, isThinking]);
 
   function openComposeWithDraft(nextDraft: Partial<InboxComposeDraft> | null) {
     const draft = {
@@ -3466,6 +3490,7 @@ function InboxAiHelperPanel({
           subject: message.subject,
         })),
         prompt,
+        sessionId,
       }),
     });
     const data = await response.json();
@@ -3656,6 +3681,7 @@ function InboxAiHelperPanel({
             </div>
           </div>
         ) : null}
+        <div ref={messagesEndRef} />
       </div>
 
       <form className="shrink-0 border-t border-white/70 p-3" onSubmit={submitPrompt}>

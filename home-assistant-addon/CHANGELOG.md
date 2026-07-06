@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.71
+
+- Refactored BYOAI calls through the Vercel AI SDK provider abstraction.
+- Converted Emailable system and selected MCP client tools into executable AI SDK tools.
+- Added a one-hour session id and session-backed message history for AI Helper conversations.
+- Made the AI Helper chat auto-scroll to the newest message.
+
 ## 0.1.70
 
 - Added session-backed AI Helper chat history so follow-up replies keep context.

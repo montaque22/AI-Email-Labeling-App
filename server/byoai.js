@@ -1,4 +1,9 @@
 import crypto from "node:crypto";
+import { generateObject, generateText, jsonSchema, stepCountIs, tool } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createGoogle } from "@ai-sdk/google";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
 import { getRenderedAiPromptBundle } from "./ai-prompts.js";
@@ -56,6 +61,17 @@ const AI_TEST_OUTPUT_SCHEMA = {
   type: "object",
   properties: { ok: { type: "boolean", description: "Whether the connection test succeeded." } },
   required: ["ok"],
+  additionalProperties: false,
+};
+const AI_REPLY_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    to: { type: "string", description: "Recipient email address for the reply." },
+    subject: { type: "string", description: "Reply subject." },
+    bodyText: { type: "string", description: "Plain text reply body." },
+    bodyHtml: { type: "string", description: "Optional HTML reply body." },
+  },
+  required: ["to", "subject", "bodyText", "bodyHtml"],
   additionalProperties: false,
 };
 const SYSTEM_MCP_CLIENT_ID = "system";
@@ -592,6 +608,7 @@ async function generateAiReply(userId, request) {
     systemPrompt: bundle["draft-reply"].markdown,
     userPrompt: `Draft a reply for this email. Return JSON with keys: to, subject, bodyText, bodyHtml.\n\nSubject: ${target.email.subject}\nFrom: ${target.email.fromEmail}\nBody:\n${simplifyBody(target.email.bodyText)}`,
     responseShape: "reply",
+    responseSchema: AI_REPLY_OUTPUT_SCHEMA,
   });
   const reply = parseJsonResponse(aiResponse, ["bodyText"]);
   const input = {
@@ -867,10 +884,6 @@ async function generateComposeSuggestion(userId, request) {
 
 async function generateAiHelperChat(userId, request) {
   await assertAiEnabled(userId);
-  const history = request.conversationHistory
-    .slice(-16)
-    .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.text}`)
-    .join("\n");
   const context = request.contextMessages
     .slice(0, 30)
     .map((message, index) => [
@@ -897,15 +910,23 @@ async function generateAiHelperChat(userId, request) {
       "If solving the task would require more than 10 tool calls, stop and explain what is making it hard and what detail would help narrow the search.",
       "Be concise and practical. If you need a user decision before taking the next step, ask one clear question.",
     ].join("\n"),
-    userPrompt: [
-      "Recent AI Helper conversation:",
-      history || "(no previous conversation)",
-      "",
-      `User request: ${request.prompt}`,
-      "",
-      `Active screen context (${request.contextDescription || "visible emails"}):`,
-      context || "(no visible or selected email context)",
-    ].join("\n"),
+    messages: [
+      ...request.conversationHistory.slice(0, -1).map((message) => ({
+        role: message.role,
+        content: message.text,
+      })),
+      {
+        role: "user",
+        content: [
+          `User request: ${request.prompt}`,
+          "",
+          `AI Helper session id: ${request.sessionId || "unknown"}`,
+          "",
+          `Active screen context (${request.contextDescription || "visible emails"}):`,
+          context || "(no visible or selected email context)",
+        ].join("\n"),
+      },
+    ],
     responseShape: "text",
   });
 
@@ -988,20 +1009,141 @@ async function testAiPlatform(platform) {
   });
 }
 
-async function callAiPlatform(platform, { systemPrompt, userPrompt, responseShape, responseSchema }, options = {}) {
+async function callAiPlatform(platform, { systemPrompt, userPrompt, responseShape, responseSchema, messages }, options = {}) {
+  return callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, responseShape, responseSchema, messages }, options);
+}
+
+async function callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, responseShape, responseSchema, messages }, options = {}) {
+  const model = createSdkModel(platform);
+  const tools = buildSdkTools(options.mcpClients ?? []);
+  const promptInput = messages?.length
+    ? { messages: normalizeSdkMessages(messages) }
+    : { prompt: userPrompt ?? "" };
+
+  if (responseSchema) {
+    const result = await generateObject({
+      model,
+      system: systemPrompt,
+      ...promptInput,
+      schema: jsonSchema(responseSchema),
+      schemaName: `emailable_${responseShape}_response`,
+      schemaDescription: `Structured ${responseShape} response for Emailable.`,
+      temperature: 0.2,
+    });
+    return JSON.stringify(result.object);
+  }
+
+  const result = await generateText({
+    model,
+    system: systemPrompt,
+    ...promptInput,
+    tools,
+    stopWhen: stepCountIs(10),
+    temperature: 0.2,
+  });
+
+  if (Array.isArray(result.steps) && result.steps.length >= 10) {
+    const lastStep = result.steps[result.steps.length - 1];
+    if (Array.isArray(lastStep.toolCalls) && lastStep.toolCalls.length > 0) {
+      return "I am having trouble completing this because it requires more than 10 tool calls. Please narrow the request with a sender, label, date range, or account so I can finish it accurately.";
+    }
+  }
+
+  return result.text ?? "";
+}
+
+function createSdkModel(platform) {
   if (platform.provider === "openai") {
-    return callOpenAi(platform, systemPrompt, userPrompt, responseShape, responseSchema, options.mcpClients ?? []);
+    return createOpenAI({ apiKey: platform.apiKey })(platform.model);
   }
   if (platform.provider === "gemini") {
-    return callGemini(platform, systemPrompt, userPrompt, responseShape, responseSchema, buildGeminiMcpTools(options.mcpClients ?? []));
+    return createGoogle({ apiKey: platform.apiKey })(platform.model);
   }
   if (platform.provider === "anthropic") {
-    return callAnthropic(platform, systemPrompt, userPrompt, responseShape, responseSchema, buildAnthropicMcpConfig(options.mcpClients ?? []));
+    return createAnthropic({ apiKey: platform.apiKey })(platform.model);
   }
   if (platform.provider === "ollama") {
-    return callOllama(platform, systemPrompt, userPrompt, responseShape, responseSchema);
+    const baseURL = normalizeOllamaOpenAiBaseUrl(platform.baseUrl);
+    const provider = createOpenAICompatible({
+      name: "ollama",
+      baseURL,
+      ...(platform.bearerToken ? { apiKey: platform.bearerToken } : {}),
+    });
+    return provider(platform.model);
   }
   throw new Error("Unsupported AI platform.");
+}
+
+function normalizeOllamaOpenAiBaseUrl(baseUrl) {
+  const parsed = new URL(baseUrl || "http://127.0.0.1:11434");
+  const pathname = parsed.pathname.replace(/\/+$/, "");
+  parsed.pathname = pathname.endsWith("/v1") ? pathname : `${pathname}/v1`;
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function normalizeSdkMessages(messages = []) {
+  return messages
+    .filter((message) => message && (message.role === "user" || message.role === "assistant" || message.role === "system"))
+    .map((message) => ({
+      role: message.role,
+      content: String(message.content ?? message.text ?? ""),
+    }))
+    .filter((message) => message.content.trim());
+}
+
+function buildSdkTools(clients) {
+  const tools = {};
+  const usedNames = new Set();
+  const addTool = ({ name, description, inputSchema, execute }) => {
+    const sdkName = uniqueSdkToolName(name, usedNames);
+    tools[sdkName] = tool({
+      description,
+      inputSchema: jsonSchema(inputSchema ?? { type: "object", properties: {}, additionalProperties: true }),
+      execute,
+    });
+  };
+
+  for (const client of clients) {
+    if (client.isSystem) {
+      const selectedTools = new Set(client.selectedTools);
+      for (const systemTool of SYSTEM_MCP_TOOLS.filter((entry) => selectedTools.has(entry.name))) {
+        addTool({
+          name: systemTool.name,
+          description: systemTool.description,
+          inputSchema: systemTool.inputSchema,
+          execute: async (input) => callSystemMcpTool(systemTool.name, input ?? {}, client.bearerToken),
+        });
+      }
+      continue;
+    }
+
+    const selectedTools = new Set(client.selectedTools);
+    for (const remoteTool of (client.tools ?? []).filter((entry) => selectedTools.has(entry.name))) {
+      addTool({
+        name: remoteTool.name,
+        description: remoteTool.description || `Tool from MCP server ${client.name || client.serverUrl}.`,
+        inputSchema: remoteTool.inputSchema,
+        execute: async (input) => callRemoteMcpTool(client, remoteTool.name, input ?? {}),
+      });
+    }
+  }
+
+  return tools;
+}
+
+function uniqueSdkToolName(name, usedNames) {
+  const base = String(name || "tool")
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 60) || "tool";
+  let candidate = base;
+  let index = 2;
+  while (usedNames.has(candidate)) {
+    candidate = `${base}_${index}`;
+    index += 1;
+  }
+  usedNames.add(candidate);
+  return candidate;
 }
 
 async function callOpenAi(platform, systemPrompt, userPrompt, responseShape, responseSchema, mcpClients = []) {
@@ -1304,6 +1446,7 @@ function parseComposeSuggestionInput(body) {
 
 function parseAiHelperChatInput(body) {
   const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
+  const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim().slice(0, 120) : "";
   const contextDescription = typeof body?.contextDescription === "string" ? body.contextDescription.trim().slice(0, 200) : "";
   const conversationHistory = Array.isArray(body?.conversationHistory)
     ? body.conversationHistory.slice(-16).filter((message) => message && typeof message === "object").map((message) => ({
@@ -1331,7 +1474,7 @@ function parseAiHelperChatInput(body) {
     return { ok: false, error: "AI Helper prompt must be 2,000 characters or less." };
   }
 
-  return { ok: true, request: { contextDescription, contextMessages, conversationHistory, prompt } };
+  return { ok: true, request: { contextDescription, contextMessages, conversationHistory, prompt, sessionId } };
 }
 
 function parsePlatformInput(body) {
@@ -2153,6 +2296,43 @@ async function callSystemMcpTool(toolName, input, token) {
     params: {},
   }, { ignoreResponse: true });
   const data = await sendMcpRequest(getLocalMcpServerUrl(), sessionHeaders, {
+    jsonrpc: "2.0",
+    id: crypto.randomUUID(),
+    method: "tools/call",
+    params: {
+      name: toolName,
+      arguments: input,
+    },
+  });
+  return data.result ?? data;
+}
+
+async function callRemoteMcpTool(client, toolName, input) {
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+    ...(client.bearerToken ? { Authorization: `Bearer ${client.bearerToken}` } : {}),
+  };
+  const initialized = await sendMcpRequest(client.serverUrl, headers, {
+    jsonrpc: "2.0",
+    id: crypto.randomUUID(),
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: {
+        name: "Emailable AI",
+        version: "1.0.0",
+      },
+    },
+  });
+  const sessionHeaders = initialized.sessionId ? { ...headers, "Mcp-Session-Id": initialized.sessionId } : headers;
+  await sendMcpRequest(client.serverUrl, sessionHeaders, {
+    jsonrpc: "2.0",
+    method: "notifications/initialized",
+    params: {},
+  }, { ignoreResponse: true });
+  const data = await sendMcpRequest(client.serverUrl, sessionHeaders, {
     jsonrpc: "2.0",
     id: crypto.randomUUID(),
     method: "tools/call",
