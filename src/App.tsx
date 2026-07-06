@@ -537,6 +537,7 @@ const INBOX_AI_HELPER_SESSION_KEY = "emailable.inbox.aiHelper.history";
 const INBOX_AI_HELPER_SESSION_ID_KEY = "emailable.inbox.aiHelper.sessionId";
 const INBOX_AI_HELPER_SESSION_CREATED_KEY = "emailable.inbox.aiHelper.createdAt";
 const INBOX_AI_HELPER_SESSION_TTL_MS = 60 * 60 * 1000;
+const INBOX_AI_HELPER_HISTORY_LIMIT = 60;
 const INBOX_AI_HELPER_INTRO_MESSAGE: InboxAiChatMessage = {
   id: 1,
   role: "assistant",
@@ -3273,7 +3274,7 @@ function InboxAiHelperPanel({
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed
           .filter((message) => message && (message.role === "assistant" || message.role === "user") && typeof message.text === "string")
-          .slice(-40)
+          .slice(-INBOX_AI_HELPER_HISTORY_LIMIT)
           .map((message, index) => ({
             draftBody: typeof message.draftBody === "string" ? message.draftBody : undefined,
             id: typeof message.id === "number" ? message.id : Date.now() + index,
@@ -3314,7 +3315,7 @@ function InboxAiHelperPanel({
   }
 
   useEffect(() => {
-    const persisted = messages.slice(-40).map((message) => ({
+    const persisted = messages.slice(-INBOX_AI_HELPER_HISTORY_LIMIT).map((message) => ({
       draftBody: message.draftBody,
       id: message.id,
       role: message.role,
@@ -3474,7 +3475,7 @@ function InboxAiHelperPanel({
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        conversationHistory: conversationHistory.slice(-16).map((message) => ({
+        conversationHistory: conversationHistory.slice(-INBOX_AI_HELPER_HISTORY_LIMIT).map((message) => ({
           role: message.role,
           text: message.text,
         })),

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.72
+
+- Increased AI Helper session history sent to the backend.
+- Improved AI Helper follow-up handling so short replies answer the previous assistant question.
+
 ## 0.1.71
 
 - Refactored BYOAI calls through the Vercel AI SDK provider abstraction.
