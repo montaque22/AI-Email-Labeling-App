@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.73
+
+- Kept the desktop AI Helper button and panel above compose/email modals.
+
 ## 0.1.72
 
 - Increased AI Helper session history sent to the backend.

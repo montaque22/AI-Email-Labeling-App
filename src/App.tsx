@@ -2797,7 +2797,7 @@ function InboxPage({
       {isByoAiActive ? (
         <Button
           aria-label="Open AI helper"
-          className="fixed bottom-24 right-5 z-40 hidden h-14 w-14 rounded-full border-white/70 bg-white/70 text-zinc-900 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85 md:flex"
+          className="fixed bottom-24 right-5 z-[120] hidden h-14 w-14 rounded-full border-white/70 bg-white/70 text-zinc-900 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85 md:flex"
           onClick={() => setIsAiHelperOpen(true)}
           size="icon"
           type="button"
@@ -3633,7 +3633,7 @@ function InboxAiHelperPanel({
   }
 
   return (
-    <aside className="inbox-ai-helper fixed bottom-24 right-5 top-20 z-40 hidden w-[420px] max-w-[calc(100vw-2.5rem)] flex-col rounded-2xl border border-white/70 bg-white/70 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:flex">
+    <aside className="inbox-ai-helper fixed bottom-24 right-5 top-20 z-[120] hidden w-[420px] max-w-[calc(100vw-2.5rem)] flex-col rounded-2xl border border-white/70 bg-white/70 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:flex">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-zinc-950">AI Helper</p>
