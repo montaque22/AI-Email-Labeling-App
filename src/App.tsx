@@ -1436,7 +1436,10 @@ function AuthenticatedLayout({
           </div>
         ) : null}
 
-        <main className="min-h-[calc(100vh-4rem)] min-w-0 overflow-x-clip p-4 sm:p-5 lg:p-8">
+        <main className={cn(
+          "min-h-[calc(100vh-4rem)] min-w-0 overflow-x-clip p-4 sm:p-5 lg:p-8",
+          activePage === "inbox" && "max-md:overflow-x-visible max-md:p-0",
+        )}>
           {activePage === "overview" && (
             <OverviewPage
               onNavigate={onNavigate}
@@ -2849,13 +2852,13 @@ function InboxPage({
               {isLabelActionRunning ? <Loader /> : <Tag className="h-5 w-5" />}
             </Button>
             {isBulkLabelMenuOpen ? (
-              <div className="absolute bottom-16 left-1/2 z-50 w-64 -translate-x-1/2 rounded-2xl border border-white/70 bg-white/85 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl">
+              <div className="absolute bottom-16 left-1/2 z-50 w-64 -translate-x-1/2 rounded-2xl border border-zinc-200 bg-white p-2 shadow-2xl shadow-slate-900/20">
                 <p className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-500">Move to label</p>
-                <div className="max-h-72 space-y-1 overflow-y-auto">
+                <div className="-mx-2 max-h-72 overflow-y-auto">
                   <button
                     className={cn(
-                      "flex w-full cursor-pointer items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm text-zinc-700 hover:bg-white/80",
-                      !selectedMessagesLabelValue && "bg-zinc-100/80 text-zinc-950",
+                      "flex w-full cursor-pointer items-center justify-between gap-3 px-5 py-2 text-left text-sm text-zinc-700 transition-colors hover:bg-zinc-100/90",
+                      !selectedMessagesLabelValue && "bg-blue-50/90 text-blue-800 hover:bg-blue-50/90",
                     )}
                     onClick={() => {
                       setIsBulkLabelMenuOpen(false);
@@ -2869,8 +2872,8 @@ function InboxPage({
                   {labels.map((label) => (
                     <button
                       className={cn(
-                        "flex w-full cursor-pointer items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm text-zinc-700 hover:bg-white/80",
-                        selectedMessagesLabelValue === label.id && "bg-blue-50/80 text-blue-800",
+                        "flex w-full cursor-pointer items-center justify-between gap-3 px-5 py-2 text-left text-sm text-zinc-700 transition-colors hover:bg-zinc-100/90",
+                        selectedMessagesLabelValue === label.id && "bg-blue-50/90 text-blue-800 hover:bg-blue-50/90",
                       )}
                       key={label.id}
                       onClick={() => {
@@ -3056,7 +3059,7 @@ function InboxPage({
             </Card>
           </div>
 
-          <Card className="min-w-0 max-w-full overflow-hidden">
+          <Card className="min-w-0 max-w-full overflow-hidden max-md:relative max-md:left-1/2 max-md:min-h-[calc(100svh-11rem)] max-md:w-screen max-md:-translate-x-1/2 max-md:rounded-none max-md:border-x-0 max-md:shadow-none">
             <div className="block border-b border-white/60 px-3 pb-2 pt-3 md:hidden">
               <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
             </div>
@@ -3081,7 +3084,7 @@ function InboxPage({
                 </select>
               </label>
             </CardHeader>
-            <CardContent className={cn("space-y-3", isMobileEditMode && "pb-28 md:pb-6")}>
+            <CardContent className={cn("space-y-3 max-md:min-h-[calc(100svh-14rem)] max-md:px-0 max-md:pb-18 max-md:pt-0", isMobileEditMode && "pb-28 md:pb-6")}>
               <div className="hidden justify-start md:flex">
                 {filteredMessages.length > 0 ? (
                   <button
@@ -3360,7 +3363,9 @@ function InboxAiHelperPanel({
     step: "idle" | "recipient" | "account" | "body";
   }>({ draft: {}, step: "idle" });
   const [isThinking, setIsThinking] = useState(false);
+  const [isClosing, setIsClosing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
   const activeContext = selectedMessages.length > 0 ? selectedMessages : contextMessages;
   const selectedContextText = selectedMessages.length > 0
     ? `${selectedMessages.length} selected email${selectedMessages.length === 1 ? "" : "s"}`
@@ -3384,6 +3389,23 @@ function InboxAiHelperPanel({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isThinking]);
+
+  useEffect(() => () => {
+    if (closeTimerRef.current) {
+      window.clearTimeout(closeTimerRef.current);
+    }
+  }, []);
+
+  function closeWithAnimation() {
+    if (isClosing) {
+      return;
+    }
+
+    setIsClosing(true);
+    closeTimerRef.current = window.setTimeout(() => {
+      onClose();
+    }, 220);
+  }
 
   function openComposeWithDraft(nextDraft: Partial<InboxComposeDraft> | null) {
     const draft: Partial<InboxComposeDraft> = {
@@ -3786,13 +3808,13 @@ function InboxAiHelperPanel({
   }
 
   return (
-    <aside className="inbox-ai-helper fixed bottom-24 right-5 top-20 z-[120] hidden w-[420px] max-w-[calc(100vw-2.5rem)] flex-col rounded-2xl border border-white/70 bg-white/70 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:flex">
+    <aside className="inbox-ai-helper fixed bottom-24 right-5 top-20 z-[120] hidden w-[420px] max-w-[calc(100vw-2.5rem)] flex-col rounded-2xl border border-white/70 bg-white/70 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:flex" data-state={isClosing ? "closing" : "open"}>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-zinc-950">AI Helper</p>
           <p className="truncate text-xs text-zinc-500">{selectedContextText} in context</p>
         </div>
-        <Button aria-label="Close AI helper" onClick={onClose} size="icon" type="button" variant="ghost">
+        <Button aria-label="Close AI helper" onClick={closeWithAnimation} size="icon" type="button" variant="ghost">
           <X className="h-4 w-4" />
         </Button>
       </div>
