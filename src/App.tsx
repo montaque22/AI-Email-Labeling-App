@@ -474,6 +474,7 @@ type InboxThreadMessage = {
   accountId: string;
   accountEmail: string;
   provider: string;
+  mailbox?: string;
   from: string;
   to: string;
   cc?: string;
@@ -486,6 +487,7 @@ type InboxThreadMessage = {
 };
 
 type InboxAttachment = {
+  attachmentId?: string;
   filename: string;
   type: string;
   size?: number | null;
@@ -517,6 +519,25 @@ type InboxToast = {
   id: number;
   message: string;
   type: "success" | "error";
+};
+
+type InboxAiActionPlan = {
+  toolClientId: string;
+  toolName: string;
+  title: string;
+  summary: string;
+  confirmLabel: string;
+  arguments: Record<string, unknown>;
+  needsMoreInfo: boolean;
+  question: string;
+};
+
+type InboxAiActionSuggestion = {
+  toolClientId: string;
+  toolName: string;
+  label: string;
+  prompt: string;
+  tooltip: string;
 };
 
 type InboxAiChatMessage = {
@@ -1753,6 +1774,15 @@ function InboxPage({
   const [isByoAiActive, setIsByoAiActive] = useState(false);
   const [activeAiTools, setActiveAiTools] = useState<AiMcpTool[]>([]);
   const [isAiHelperOpen, setIsAiHelperOpen] = useState(false);
+  const [aiActionMessage, setAiActionMessage] = useState<InboxMessage | null>(null);
+  const [aiActionInstruction, setAiActionInstruction] = useState("");
+  const [aiActionPlan, setAiActionPlan] = useState<InboxAiActionPlan | null>(null);
+  const [aiActionSuggestions, setAiActionSuggestions] = useState<InboxAiActionSuggestion[]>([]);
+  const [selectedAiActionSuggestion, setSelectedAiActionSuggestion] = useState<InboxAiActionSuggestion | null>(null);
+  const [aiActionError, setAiActionError] = useState<string | null>(null);
+  const [isAiActionSuggestionsLoading, setIsAiActionSuggestionsLoading] = useState(false);
+  const [isAiActionPlanning, setIsAiActionPlanning] = useState(false);
+  const [isAiActionExecuting, setIsAiActionExecuting] = useState(false);
   const [composeRevision, setComposeRevision] = useState(0);
   const [isBulkActionBarRendered, setIsBulkActionBarRendered] = useState(false);
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
@@ -1767,6 +1797,7 @@ function InboxPage({
   const searchSuggestionRequestIdRef = useRef(0);
   const mobilePullStartYRef = useRef<number | null>(null);
   const mobilePullActiveRef = useRef(false);
+  const mobilePullReadyHapticRef = useRef(false);
   const lastAutoRefreshAtRef = useRef(0);
 
   useEffect(() => {
@@ -2087,6 +2118,7 @@ function InboxPage({
     }
 
     setIsMobilePullRefreshing(true);
+    navigator.vibrate?.(12);
     try {
       await Promise.all([
         loadMessages({ reset: true }),
@@ -2099,6 +2131,7 @@ function InboxPage({
       setIsMobilePullRefreshing(false);
       setMobilePullDistance(0);
       mobilePullActiveRef.current = false;
+      mobilePullReadyHapticRef.current = false;
       mobilePullStartYRef.current = null;
     }
   }
@@ -2138,6 +2171,7 @@ function InboxPage({
     if (distance <= 0 || window.scrollY > 0) {
       setMobilePullDistance(0);
       mobilePullActiveRef.current = false;
+      mobilePullReadyHapticRef.current = false;
       return;
     }
 
@@ -2145,6 +2179,13 @@ function InboxPage({
     if (dampedDistance > 8) {
       mobilePullActiveRef.current = true;
       event.preventDefault();
+    }
+    if (dampedDistance >= MOBILE_PULL_REFRESH_THRESHOLD && !mobilePullReadyHapticRef.current) {
+      mobilePullReadyHapticRef.current = true;
+      navigator.vibrate?.(10);
+    }
+    if (dampedDistance < MOBILE_PULL_REFRESH_THRESHOLD) {
+      mobilePullReadyHapticRef.current = false;
     }
     setMobilePullDistance(dampedDistance);
   }
@@ -2157,6 +2198,7 @@ function InboxPage({
 
     setMobilePullDistance(0);
     mobilePullActiveRef.current = false;
+    mobilePullReadyHapticRef.current = false;
     mobilePullStartYRef.current = null;
   }
 
@@ -2399,6 +2441,9 @@ function InboxPage({
   }, [isBulkLabelMenuOpen]);
 
   function enterMobileEditMode(message?: InboxMessage) {
+    if (!isMobileEditMode) {
+      navigator.vibrate?.(12);
+    }
     setIsMobileEditMode(true);
     if (message) {
       setSelectedMessageKeys((current) => [...new Set([...current, getInboxMessageKey(message)])]);
@@ -2725,6 +2770,132 @@ function InboxPage({
     });
   }
 
+  function openAiAction(message: InboxMessage, instruction = "") {
+    setAiActionMessage(message);
+    setAiActionInstruction(instruction);
+    setAiActionPlan(null);
+    setAiActionSuggestions([]);
+    setSelectedAiActionSuggestion(null);
+    setAiActionError(null);
+    void loadAiActionSuggestions(message);
+  }
+
+  function closeAiAction() {
+    setAiActionMessage(null);
+    setAiActionInstruction("");
+    setAiActionPlan(null);
+    setAiActionSuggestions([]);
+    setSelectedAiActionSuggestion(null);
+    setAiActionError(null);
+    setIsAiActionSuggestionsLoading(false);
+    setIsAiActionPlanning(false);
+    setIsAiActionExecuting(false);
+  }
+
+  async function loadAiActionSuggestions(message: InboxMessage) {
+    setIsAiActionSuggestionsLoading(true);
+    setAiActionError(null);
+    try {
+      const response = await fetch("/api/byoai/email-action/suggestions", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: message.from || message.sender,
+          snippet: message.snippet,
+          subject: message.subject,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setAiActionError(data.error ?? "Could not load AI actions.");
+        return;
+      }
+      setAiActionSuggestions(Array.isArray(data.actions) ? data.actions : []);
+    } catch {
+      setAiActionError("Could not load AI actions.");
+    } finally {
+      setIsAiActionSuggestionsLoading(false);
+    }
+  }
+
+  async function planAiAction(instructionOverride?: string, suggestion?: InboxAiActionSuggestion | null) {
+    if (!aiActionMessage || isAiActionPlanning || isAiActionExecuting) {
+      return;
+    }
+    const instruction = (instructionOverride ?? aiActionInstruction).trim();
+    if (!instruction) {
+      setAiActionError("Choose an action or tell AI what to do with this email.");
+      return;
+    }
+
+    setAiActionInstruction(instruction);
+    setSelectedAiActionSuggestion(suggestion ?? null);
+    setAiActionPlan(null);
+    setAiActionError(null);
+    setIsAiActionPlanning(true);
+    try {
+      const response = await fetch("/api/byoai/email-action", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountEmail: aiActionMessage.accountEmail,
+          emailId: aiActionMessage.id,
+          instruction,
+          preferredToolClientId: suggestion?.toolClientId ?? "",
+          preferredToolName: suggestion?.toolName ?? "",
+          subject: aiActionMessage.subject,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setAiActionError(data.error ?? "Could not prepare this AI action.");
+        return;
+      }
+      setAiActionPlan(data);
+      if (data.needsMoreInfo && data.question) {
+        setAiActionError(data.question);
+      }
+    } catch {
+      setAiActionError("Could not prepare this AI action.");
+    } finally {
+      setIsAiActionPlanning(false);
+    }
+  }
+
+  async function confirmAiAction() {
+    if (!aiActionPlan || aiActionPlan.needsMoreInfo || isAiActionExecuting) {
+      return;
+    }
+
+    setAiActionError(null);
+    setIsAiActionExecuting(true);
+    try {
+      const response = await fetch("/api/byoai/email-action/confirm", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          arguments: aiActionPlan.arguments,
+          toolClientId: aiActionPlan.toolClientId,
+          toolName: aiActionPlan.toolName,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setAiActionError(data.error ?? "Could not run this AI action.");
+        return;
+      }
+      showInboxToast(`${aiActionPlan.confirmLabel || "Action"} completed.`);
+      closeAiAction();
+    } catch {
+      setAiActionError("Could not run this AI action.");
+    } finally {
+      setIsAiActionExecuting(false);
+    }
+  }
+
   return (
     <div
       className="space-y-6 pt-20 md:pt-0"
@@ -2777,26 +2948,32 @@ function InboxPage({
 
       <div
         aria-hidden={!isMobilePullRefreshing && mobilePullDistance === 0}
-        className="pointer-events-none fixed inset-x-0 top-16 z-30 flex justify-center md:hidden"
+        className="pointer-events-none fixed inset-x-0 top-16 z-30 overflow-hidden border-b border-white/60 bg-white/80 shadow-sm backdrop-blur-xl md:hidden"
         style={{
           opacity: isMobilePullRefreshing || mobilePullDistance > 0 ? 1 : 0,
-          transform: `translateY(${isMobilePullRefreshing ? 10 : Math.max(0, mobilePullDistance - 44)}px)`,
-          transition: mobilePullActiveRef.current ? "none" : "opacity 180ms ease, transform 180ms ease",
+          height: `${isMobilePullRefreshing ? 54 : Math.max(0, Math.min(56, mobilePullDistance))}px`,
+          transition: mobilePullActiveRef.current ? "none" : "opacity 180ms ease, height 180ms ease",
         }}
       >
-        <div className="flex h-9 min-w-9 items-center justify-center rounded-full border border-white/70 bg-white/80 px-3 text-xs font-medium text-zinc-600 shadow-lg shadow-slate-900/10 backdrop-blur-xl">
+        <div className="flex h-full items-center justify-center gap-2 px-4 text-sm font-medium text-zinc-600">
           {isMobilePullRefreshing ? (
             <>
               <Loader />
-              <span className="ml-2">Refreshing</span>
+              <span>Refreshing inbox...</span>
             </>
           ) : mobilePullDistance >= MOBILE_PULL_REFRESH_THRESHOLD ? (
-            "Release to refresh"
+            <>
+              <RefreshCw className="h-4 w-4 text-blue-600" />
+              <span>Release to refresh</span>
+            </>
           ) : (
-            <RefreshCw
-              className="h-4 w-4 text-zinc-500"
-              style={{ transform: `rotate(${Math.min(180, mobilePullDistance * 2)}deg)` }}
-            />
+            <>
+              <RefreshCw
+                className="h-4 w-4 text-zinc-500"
+                style={{ transform: `rotate(${Math.min(180, mobilePullDistance * 2)}deg)` }}
+              />
+              <span>Pull down to refresh</span>
+            </>
           )}
         </div>
       </div>
@@ -2924,22 +3101,20 @@ function InboxPage({
         </div>
       ) : null}
 
-      {!isMobileEditMode ? (
-        <div className="md:hidden">
-          <InboxSearchBox
-            isLoading={isInboxSearchPending}
-            isOpen={isInboxSearchMenuOpen}
-            onClear={clearInboxSearch}
-            onCommit={() => commitInboxSearch()}
-            onFocus={() => setIsInboxSearchMenuOpen(inboxSearchSuggestions.length > 0)}
-            onOpenChange={setIsInboxSearchMenuOpen}
-            onSelectSuggestion={selectInboxSearchSuggestion}
-            onValueChange={setInboxSearch}
-            suggestions={inboxSearchSuggestions}
-            value={inboxSearch}
-          />
-        </div>
-      ) : null}
+      <div className="md:hidden">
+        <InboxSearchBox
+          isLoading={isInboxSearchPending}
+          isOpen={isInboxSearchMenuOpen}
+          onClear={clearInboxSearch}
+          onCommit={() => commitInboxSearch()}
+          onFocus={() => setIsInboxSearchMenuOpen(inboxSearchSuggestions.length > 0)}
+          onOpenChange={setIsInboxSearchMenuOpen}
+          onSelectSuggestion={selectInboxSearchSuggestion}
+          onValueChange={setInboxSearch}
+          suggestions={inboxSearchSuggestions}
+          value={inboxSearch}
+        />
+      </div>
 
       <div className={cn("grid min-w-0 gap-4 xl:gap-5", isLabelFilteredInboxMode(inboxMode) ? "xl:grid-cols-[260px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
         {isLabelFilteredInboxMode(inboxMode) ? (
@@ -3206,13 +3381,34 @@ function InboxPage({
               isLoading={isDetailLoading}
               isLabelActionRunning={isLabelActionRunning}
               labels={labels}
+              aiAction={{
+                error: aiActionError,
+                instruction: aiActionInstruction,
+                isExecuting: isAiActionExecuting,
+                isPlanning: isAiActionPlanning,
+                isSuggestionsLoading: isAiActionSuggestionsLoading,
+                message: aiActionMessage,
+                onCancel: closeAiAction,
+                onConfirm: () => void confirmAiAction(),
+                onInstructionChange: (value: string) => {
+                  setAiActionInstruction(value);
+                  setAiActionError(null);
+                  setSelectedAiActionSuggestion(null);
+                },
+                onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void planAiAction(instruction, suggestion),
+                plan: aiActionPlan,
+                selectedSuggestion: selectedAiActionSuggestion,
+                suggestions: aiActionSuggestions,
+              }}
               onClose={() => {
                 setSelectedMessage(null);
                 setMessageDetail(null);
+                closeAiAction();
               }}
               onDelete={(message) => void deleteSelectedMessages([message])}
               onArchive={(message) => void archiveSelectedMessages([message])}
               onEditRule={(message) => setRuleEditorMessage(message)}
+              onAiAction={isByoAiActive ? (message) => openAiAction(message) : undefined}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
               onReply={(detail, summary) => openReplyComposer(detail, summary)}
               onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
@@ -4284,11 +4480,14 @@ function InboxMessageRow({
       <div className="relative overflow-hidden md:hidden">
         <div
           className={cn(
-            "relative w-full touch-pan-y bg-white/45 py-3 text-left transition duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] will-change-transform",
-            isEditMode ? "grid cursor-pointer grid-cols-[3.25rem_minmax(0,1fr)] items-center gap-2 px-3" : "flex cursor-pointer items-start gap-3 px-4",
+            "relative grid w-full cursor-pointer touch-pan-y items-center bg-white/45 px-3 py-3 text-left transition duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] will-change-transform",
             pressState === "pressing" ? "scale-[0.975] bg-white/65 shadow-inner" : null,
             pressState === "popped" ? "scale-[1.025] bg-white/80 shadow-lg" : null,
           )}
+          style={{
+            gridTemplateColumns: isEditMode ? "3.25rem minmax(0, 1fr)" : "0rem minmax(0, 1fr)",
+            transitionProperty: "grid-template-columns, transform, background-color, box-shadow",
+          }}
           onClick={handleMobileRowClick}
           onPointerCancel={releasePress}
           onPointerDown={handleMobilePointerDown}
@@ -4298,16 +4497,17 @@ function InboxMessageRow({
           role="button"
           tabIndex={0}
         >
-          {isEditMode ? (
-            <div className="flex h-full min-h-24 items-center justify-center self-stretch">
-              <GlassCheckbox
-                checked={isSelected}
-                onChange={onToggle}
-                onClick={(event) => event.stopPropagation()}
-              />
-            </div>
-          ) : null}
-          <div className="min-w-0 overflow-hidden">
+          <div className={cn(
+            "flex h-full min-h-24 items-center justify-center self-stretch overflow-hidden transition-all duration-200",
+            isEditMode ? "translate-x-0 opacity-100" : "-translate-x-5 opacity-0",
+          )}>
+            <GlassCheckbox
+              checked={isSelected}
+              onChange={onToggle}
+              onClick={(event) => event.stopPropagation()}
+            />
+          </div>
+          <div className={cn("min-w-0 overflow-hidden transition-transform duration-200", isEditMode ? "translate-x-0" : "translate-x-1")}>
             <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
               <p className="flex min-w-0 items-center gap-2 overflow-hidden text-base font-bold text-zinc-950">
                 {!message.isRead ? <span aria-label="Unread" className="h-2 w-2 shrink-0 rounded-full bg-blue-500" title="Unread" /> : null}
@@ -4616,6 +4816,7 @@ function LabelActionSelect({
 }
 
 function InboxMessageModal({
+  aiAction,
   detail,
   error,
   isArchiving,
@@ -4627,12 +4828,28 @@ function InboxMessageModal({
   onClose,
   onDelete,
   onEditRule,
+  onAiAction,
   onSetLabel,
   onReply,
   onShowReplies,
   privacyMode,
   summary,
 }: {
+  aiAction: {
+    error: string | null;
+    instruction: string;
+    isExecuting: boolean;
+    isPlanning: boolean;
+    isSuggestionsLoading: boolean;
+    message: InboxMessage | null;
+    onCancel: () => void;
+    onConfirm: () => void;
+    onInstructionChange: (value: string) => void;
+    onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
+    plan: InboxAiActionPlan | null;
+    selectedSuggestion: InboxAiActionSuggestion | null;
+    suggestions: InboxAiActionSuggestion[];
+  };
   detail: InboxMessageDetail | null;
   error: string | null;
   isArchiving: boolean;
@@ -4644,6 +4861,7 @@ function InboxMessageModal({
   onClose: () => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
+  onAiAction?: (message: InboxMessage) => void;
   onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
   onShowReplies: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
@@ -4654,10 +4872,15 @@ function InboxMessageModal({
   const currentLabelId = getCommonMessageLabelId([summary], labels);
   const replyCount = detail?.replyCount ?? summary.replyCount ?? 0;
   const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
+  const isAiActionOpen = Boolean(aiAction.message && getInboxMessageKey(aiAction.message) === getInboxMessageKey(summary));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
-      <div className="max-h-[92vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+      <div className={cn(
+        "flex max-h-[92vh] w-full items-stretch justify-center gap-3 transition-[max-width] duration-300",
+        isAiActionOpen ? "max-w-7xl" : "max-w-4xl",
+      )}>
+      <div className="max-h-[92vh] min-w-0 flex-1 overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
         <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
           <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
             <div className="min-w-0">
@@ -4693,6 +4916,13 @@ function InboxMessageModal({
                   {isArchiving ? <Loader /> : <Archive className="h-4 w-4" />}
                 </Button>
               </Tooltip>
+              {onAiAction ? (
+                <Tooltip side="bottom" text="AI Actions">
+                  <Button aria-label="AI Actions" onClick={() => isAiActionOpen ? aiAction.onCancel() : onAiAction(summary)} size="icon" type="button" variant="outline">
+                    <Sparkles className="h-4 w-4" />
+                  </Button>
+                </Tooltip>
+              ) : null}
               <Tooltip side="bottom" text="Reply">
                 <Button aria-label="Reply" onClick={() => onReply(detail, summary)} size="icon" type="button" variant="outline">
                   <Reply className="h-4 w-4" />
@@ -4712,8 +4942,178 @@ function InboxMessageModal({
           </div>
         </div>
       </div>
+      {isAiActionOpen ? (
+        <InboxAiActionDrawer
+          error={aiAction.error}
+          instruction={aiAction.instruction}
+          isExecuting={aiAction.isExecuting}
+          isPlanning={aiAction.isPlanning}
+          isSuggestionsLoading={aiAction.isSuggestionsLoading}
+          message={summary}
+          onCancel={aiAction.onCancel}
+          onConfirm={aiAction.onConfirm}
+          onInstructionChange={aiAction.onInstructionChange}
+          onPlan={aiAction.onPlan}
+          plan={aiAction.plan}
+          privacyMode={privacyMode}
+          selectedSuggestion={aiAction.selectedSuggestion}
+          suggestions={aiAction.suggestions}
+        />
+      ) : null}
+      </div>
       {linkAction ? <EmailLinkActionSheet link={linkAction} onClose={() => setLinkAction(null)} /> : null}
     </div>
+  );
+}
+
+function InboxAiActionDrawer({
+  error,
+  instruction,
+  isExecuting,
+  isPlanning,
+  isSuggestionsLoading,
+  message,
+  onCancel,
+  onConfirm,
+  onInstructionChange,
+  onPlan,
+  plan,
+  privacyMode,
+  selectedSuggestion,
+  suggestions,
+}: {
+  error: string | null;
+  instruction: string;
+  isExecuting: boolean;
+  isPlanning: boolean;
+  isSuggestionsLoading: boolean;
+  message: InboxMessage;
+  onCancel: () => void;
+  onConfirm: () => void;
+  onInstructionChange: (value: string) => void;
+  onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
+  plan: InboxAiActionPlan | null;
+  privacyMode: boolean;
+  selectedSuggestion: InboxAiActionSuggestion | null;
+  suggestions: InboxAiActionSuggestion[];
+}) {
+  const canConfirm = Boolean(plan && !plan.needsMoreInfo && !isPlanning && !isExecuting);
+
+  return (
+    <aside className="inbox-ai-action-drawer hidden w-[380px] shrink-0 overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)] md:block">
+        <div className="flex h-full max-h-[calc(92vh-2rem)] flex-col rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
+          <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 py-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-zinc-600" />
+                <h3 className="text-base font-semibold text-zinc-950">AI Actions</h3>
+              </div>
+              <p className="mt-1 truncate text-sm text-zinc-500">
+                {message.subject || "(no subject)"} · {formatEmailForPrivacy(message.accountEmail, privacyMode)}
+              </p>
+            </div>
+            <Button aria-label="Close AI Actions" disabled={isPlanning || isExecuting} onClick={onCancel} size="icon" type="button" variant="ghost">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5">
+            <div>
+              <p className="text-sm font-medium text-zinc-950">What should Emailable do with this email?</p>
+              <p className="mt-1 text-sm text-zinc-500">
+                AI will prepare an MCP tool call for review. Nothing runs until you confirm it.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Suggested actions</p>
+                {isSuggestionsLoading ? <Loader /> : null}
+              </div>
+              {isSuggestionsLoading ? (
+                <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">Finding valid actions from your active MCP tools...</p>
+              ) : suggestions.length === 0 ? (
+                <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">No suggested actions were found for the active custom MCP tools.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {suggestions.map((action) => (
+                    <Tooltip key={`${action.toolClientId}-${action.toolName}-${action.label}`} text={action.tooltip || action.prompt}>
+                      <button
+                        className={cn(
+                          "cursor-pointer rounded-full border border-white/70 bg-white/65 px-3 py-1.5 text-sm text-zinc-700 shadow-sm backdrop-blur-xl transition hover:bg-white",
+                          selectedSuggestion?.toolClientId === action.toolClientId && selectedSuggestion.toolName === action.toolName && "border-blue-200 bg-blue-50 text-blue-700",
+                        )}
+                        disabled={isPlanning || isExecuting}
+                        onClick={() => onPlan(action.prompt, action)}
+                        type="button"
+                      >
+                        {action.label}
+                      </button>
+                    </Tooltip>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <form
+              className="flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onPlan();
+              }}
+            >
+              <input
+                className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white/70 px-3 text-sm text-zinc-950 outline-none transition focus:border-zinc-400"
+                disabled={isPlanning || isExecuting}
+                onChange={(event) => onInstructionChange(event.target.value)}
+                placeholder="Example: create a todo for me to follow up tomorrow"
+                value={instruction}
+              />
+              <Button disabled={isPlanning || isExecuting || !instruction.trim()} type="submit">
+                {isPlanning ? <Loader /> : <Sparkles className="h-4 w-4" />}
+                Preview
+              </Button>
+            </form>
+
+            {error ? (
+              <p className={cn(
+                "rounded-md px-3 py-2 text-sm",
+                plan?.needsMoreInfo ? "bg-amber-50 text-amber-800" : "bg-red-50 text-red-700",
+              )}>
+                {error}
+              </p>
+            ) : null}
+
+            {plan && !plan.needsMoreInfo ? (
+              <div className="rounded-xl border border-white/70 bg-white/60 p-4 shadow-sm backdrop-blur-xl">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-zinc-950">{plan.title || "Proposed action"}</p>
+                    <p className="mt-1 text-sm leading-6 text-zinc-600">{plan.summary}</p>
+                  </div>
+                  <Badge>{plan.toolName}</Badge>
+                </div>
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-zinc-500">Tool arguments</summary>
+                  <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-zinc-950/90 p-3 text-xs leading-5 text-white">
+                    {JSON.stringify(plan.arguments, null, 2)}
+                  </pre>
+                </details>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-white/60 px-5 py-4">
+            <Button disabled={isPlanning || isExecuting} onClick={onCancel} type="button" variant="outline">
+              Cancel
+            </Button>
+            <Button disabled={!canConfirm} onClick={onConfirm} type="button">
+              {isExecuting ? <Loader /> : <Check className="h-4 w-4" />}
+              {plan?.confirmLabel || "Confirm"}
+            </Button>
+          </div>
+        </div>
+    </aside>
   );
 }
 
@@ -4734,6 +5134,7 @@ function InboxThreadConversation({
         accountId: detail.accountId,
         accountEmail: detail.accountEmail,
         provider: detail.provider,
+        mailbox: detail.mailbox,
         from: detail.from,
         to: detail.to,
         cc: detail.cc,
@@ -4768,13 +5169,26 @@ function InboxThreadConversation({
           {message.attachments.length > 0 ? (
             <div className="space-y-2 border-t border-zinc-200/80 bg-white/65 px-4 py-3">
               {message.attachments.map((attachment, attachmentIndex) => (
-                <div className="flex items-center justify-between gap-3 rounded-md border border-zinc-200/80 bg-white/70 px-3 py-2 text-sm" key={`${message.id}-${attachment.filename}-${attachmentIndex}`}>
+                <button
+                  className={cn(
+                    "flex w-full items-center justify-between gap-3 rounded-md border border-zinc-200/80 bg-white/70 px-3 py-2 text-left text-sm transition-colors",
+                    attachment.downloadSupported ? "cursor-pointer hover:border-zinc-300 hover:bg-zinc-50" : "cursor-not-allowed opacity-70",
+                  )}
+                  disabled={!attachment.downloadSupported}
+                  key={`${message.id}-${attachment.filename}-${attachmentIndex}`}
+                  onClick={() => openInboxAttachment(message, attachment)}
+                  title={attachment.downloadSupported ? "Download attachment" : "Attachment download is not available for this provider yet."}
+                  type="button"
+                >
                   <div className="min-w-0">
                     <p className="truncate font-medium text-zinc-950">{attachment.filename}</p>
-                    <p className="text-xs text-zinc-500">{attachment.type} {attachment.size ? ` / ${formatFileSize(attachment.size)}` : ""}</p>
+                    <p className="text-xs text-zinc-500">
+                      {attachment.type} {attachment.size ? ` / ${formatFileSize(attachment.size)}` : ""}
+                      {!attachment.downloadSupported ? " / Download unavailable" : ""}
+                    </p>
                   </div>
-                  <Download className="h-4 w-4 shrink-0 text-zinc-500" />
-                </div>
+                  <Download className={cn("h-4 w-4 shrink-0", attachment.downloadSupported ? "text-zinc-600" : "text-zinc-400")} />
+                </button>
               ))}
             </div>
           ) : null}
@@ -4782,6 +5196,24 @@ function InboxThreadConversation({
       ))}
     </div>
   );
+}
+
+function openInboxAttachment(message: InboxThreadMessage, attachment: InboxAttachment) {
+  if (!attachment.downloadSupported || !attachment.attachmentId) {
+    return;
+  }
+
+  const params = new URLSearchParams({
+    accountId: message.accountId,
+    attachmentId: attachment.attachmentId,
+    emailId: message.id,
+    filename: attachment.filename,
+    type: attachment.type,
+  });
+  if (message.mailbox) {
+    params.set("mailbox", message.mailbox);
+  }
+  window.open(getRuntimeUrl(`/api/inbox/attachment?${params.toString()}`), "_blank", "noopener,noreferrer");
 }
 
 function PlainTextEmailBody({ text, onLinkAction }: { text: string; onLinkAction: (link: EmailLinkAction) => void }) {

@@ -75,6 +75,45 @@ const AI_REPLY_OUTPUT_SCHEMA = {
   required: ["to", "subject", "bodyText", "bodyHtml"],
   additionalProperties: false,
 };
+const AI_EMAIL_ACTION_PLAN_SCHEMA = {
+  type: "object",
+  properties: {
+    toolClientId: { type: "string", description: "The id of the MCP client/server that owns the selected tool." },
+    toolName: { type: "string", description: "The exact MCP tool name to run after user confirmation." },
+    title: { type: "string", description: "Short title for the proposed action." },
+    summary: { type: "string", description: "Human-readable summary of what will happen." },
+    confirmLabel: { type: "string", description: "Short action button label, such as Create task, Create event, or Turn on light." },
+    arguments: { type: "object", description: "Arguments to pass directly to the selected MCP tool.", additionalProperties: true },
+    needsMoreInfo: { type: "boolean", description: "True if the AI cannot safely prepare the tool call yet." },
+    question: { type: "string", description: "A concise follow-up question when needsMoreInfo is true." },
+  },
+  required: ["toolClientId", "toolName", "title", "summary", "confirmLabel", "arguments", "needsMoreInfo", "question"],
+  additionalProperties: false,
+};
+const AI_EMAIL_ACTION_SUGGESTIONS_SCHEMA = {
+  type: "object",
+  properties: {
+    actions: {
+      type: "array",
+      minItems: 1,
+      maxItems: 6,
+      items: {
+        type: "object",
+        properties: {
+          toolClientId: { type: "string", description: "The id of the MCP client/server that owns this tool." },
+          toolName: { type: "string", description: "The exact MCP tool name this action should use." },
+          label: { type: "string", description: "Short button label for the user." },
+          prompt: { type: "string", description: "Specific instruction to send to the AI action planner when clicked." },
+          tooltip: { type: "string", description: "Plain-language explanation of what this action will try to do." },
+        },
+        required: ["toolClientId", "toolName", "label", "prompt", "tooltip"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["actions"],
+  additionalProperties: false,
+};
 const SYSTEM_MCP_CLIENT_ID = "system";
 const SYSTEM_MCP_TOOLS = [
   {
@@ -536,6 +575,107 @@ export function registerByoAiRoutes(app) {
     }
   });
 
+  app.post("/api/byoai/email-action", requireSession, async (req, res) => {
+    try {
+      const input = parseEmailActionInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      const planned = await planEmailAction(req.user.id, input.request);
+      const plan = planned.plan;
+      await logSystemEvent(req.user.id, {
+        category: "ai",
+        eventName: "ai_email_action.planned",
+        status: plan.needsMoreInfo ? "warning" : "success",
+        message: plan.needsMoreInfo ? "AI action needs more information." : `AI action planned: ${plan.toolName}`,
+        payload: {
+          request: input.request,
+          aiRequest: planned.aiRequest,
+          aiResponse: planned.aiResponse,
+          plan,
+        },
+      });
+      res.json(plan);
+    } catch (error) {
+      await logSystemEvent(req.user?.id, {
+        category: "ai",
+        eventName: "ai_email_action.plan_failed",
+        status: "error",
+        message: error.message,
+        payload: { request: req.body },
+      });
+      handleError(res, error);
+    }
+  });
+
+  app.post("/api/byoai/email-action/suggestions", requireSession, async (req, res) => {
+    try {
+      const input = parseEmailActionSuggestionInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      const suggestions = await suggestEmailActions(req.user.id, input.request);
+      await logSystemEvent(req.user.id, {
+        category: "ai",
+        eventName: "ai_email_action.suggestions",
+        status: suggestions.actions.length > 0 ? "success" : "warning",
+        message: suggestions.actions.length > 0
+          ? `AI suggested ${suggestions.actions.length} email action${suggestions.actions.length === 1 ? "" : "s"}.`
+          : "AI found no suggested email actions.",
+        payload: {
+          request: input.request,
+          aiRequest: suggestions.aiRequest,
+          aiResponse: suggestions.aiResponse,
+          actions: suggestions.actions,
+          fallbackUsed: suggestions.fallbackUsed,
+        },
+      });
+      res.json({ actions: suggestions.actions });
+    } catch (error) {
+      await logSystemEvent(req.user?.id, {
+        category: "ai",
+        eventName: "ai_email_action.suggestions_failed",
+        status: "error",
+        message: error.message,
+        payload: { request: req.body },
+      });
+      handleError(res, error);
+    }
+  });
+
+  app.post("/api/byoai/email-action/confirm", requireSession, async (req, res) => {
+    try {
+      const input = parseEmailActionConfirmInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      const result = await executeEmailAction(req.user.id, input.request);
+      await logSystemEvent(req.user.id, {
+        category: "ai",
+        eventName: "ai_email_action.executed",
+        status: "success",
+        message: `AI action executed: ${input.request.toolName}`,
+        payload: { request: input.request, response: result },
+      });
+      res.json(result);
+    } catch (error) {
+      await logSystemEvent(req.user?.id, {
+        category: "ai",
+        eventName: "ai_email_action.execute_failed",
+        status: "error",
+        message: error.message,
+        payload: { request: req.body },
+      });
+      handleError(res, error);
+    }
+  });
+
   app.put("/api/byoai/mcp-client/settings", requireSession, async (req, res) => {
     try {
       const enabled = Boolean(req.body?.enabled);
@@ -939,6 +1079,248 @@ async function generateAiHelperChat(userId, request) {
   });
 
   return cleanAiTextResponse(aiResponse);
+}
+
+async function suggestEmailActions(userId, request) {
+  await assertAiEnabled(userId);
+  const tools = await listActiveCustomMcpActionTools(userId);
+  if (tools.length === 0) {
+    return { actions: [], aiRequest: null, aiResponse: { actions: [], reason: "No active custom MCP tools." }, fallbackUsed: false };
+  }
+
+  const toolCatalog = tools.map((entry, index) => [
+    `${index + 1}. clientId: ${entry.client.id}`,
+    `clientName: ${entry.client.name || "MCP Server"}`,
+    `toolName: ${entry.tool.name}`,
+    `description: ${entry.tool.description || "No description provided."}`,
+    `inputSchema: ${JSON.stringify(entry.tool.inputSchema ?? { type: "object", properties: {}, additionalProperties: true })}`,
+  ].join("\n")).join("\n\n");
+  const aiRequest = {
+    systemPrompt: [
+      "You create concise email action buttons for Emailable.",
+      "Read the active custom MCP tools and return only actions that map to a real listed tool.",
+      "Return at least one action when tools are listed.",
+      "Prefer one useful action per listed tool, up to six total actions.",
+      "Do not invent tools. Every action must use an exact clientId and toolName from the catalog.",
+      "Labels should be short button text, such as Create task, Create event, Add CRM note, or Send alert.",
+      "Prompts should be specific instructions for preparing a tool call from the current email.",
+      "Tooltips should explain the action in simple language.",
+    ].join("\n"),
+    userPrompt: [
+      "Current email summary:",
+      `Subject: ${request.subject || "(no subject)"}`,
+      `From: ${request.from || ""}`,
+      `Snippet: ${request.snippet || ""}`,
+      "",
+      "Active custom MCP tools:",
+      toolCatalog,
+    ].join("\n"),
+    responseShape: "email_action_suggestions",
+    responseSchema: AI_EMAIL_ACTION_SUGGESTIONS_SCHEMA,
+  };
+  let aiResponse = "";
+  try {
+    aiResponse = await callBestAvailableAi(userId, aiRequest);
+  } catch (error) {
+    return {
+      actions: buildFallbackEmailActionSuggestions(tools, request),
+      aiRequest,
+      aiResponse: { error: error.message },
+      fallbackUsed: true,
+    };
+  }
+  const parsed = parseJsonResponse(aiResponse, ["actions"]);
+  const validTools = new Set(tools.map((entry) => `${entry.client.id}:${entry.tool.name}`));
+
+  const actions = (Array.isArray(parsed.actions) ? parsed.actions : [])
+    .map((action) => ({
+      toolClientId: String(action?.toolClientId || "").trim(),
+      toolName: String(action?.toolName || "").trim(),
+      label: truncateText(action?.label, 32),
+      prompt: truncateText(action?.prompt, 500),
+      tooltip: truncateText(action?.tooltip, 180),
+    }))
+    .filter((action) =>
+      action.label &&
+      action.prompt &&
+      validTools.has(`${action.toolClientId}:${action.toolName}`),
+    )
+    .slice(0, 6);
+
+  if (actions.length > 0) {
+    return { actions, aiRequest, aiResponse: parsed, fallbackUsed: false };
+  }
+
+  return {
+    actions: buildFallbackEmailActionSuggestions(tools, request),
+    aiRequest,
+    aiResponse: parsed,
+    fallbackUsed: true,
+  };
+}
+
+async function planEmailAction(userId, request) {
+  await assertAiEnabled(userId);
+  const target = await findEmailTarget(userId, request);
+  const tools = await listActiveCustomMcpActionTools(userId);
+  if (tools.length === 0) {
+    const error = new Error("Activate MCP Client and select at least one custom MCP tool before using AI Actions.");
+    error.status = 400;
+    throw error;
+  }
+
+  const emailBody = simplifyBody(target.email.bodyText || target.email.snippet || "");
+  const preferredTool = request.preferredToolClientId && request.preferredToolName
+    ? tools.find((entry) => entry.client.id === request.preferredToolClientId && entry.tool.name === request.preferredToolName)
+    : null;
+  if ((request.preferredToolClientId || request.preferredToolName) && !preferredTool) {
+    const error = new Error("The selected MCP tool is not active for this account.");
+    error.status = 400;
+    throw error;
+  }
+  const toolCatalog = tools.map((entry, index) => [
+    `${index + 1}. clientId: ${entry.client.id}`,
+    `clientName: ${entry.client.name || "MCP Server"}`,
+    `toolName: ${entry.tool.name}`,
+    `description: ${entry.tool.description || "No description provided."}`,
+    `inputSchema: ${JSON.stringify(entry.tool.inputSchema ?? { type: "object", properties: {}, additionalProperties: true })}`,
+  ].join("\n")).join("\n\n");
+  const aiRequest = {
+    systemPrompt: [
+      "You plan user-approved actions for the current email using custom MCP tools.",
+      "Your job is to choose the most appropriate listed MCP tool and prepare safe arguments from the email and user instruction.",
+      "Do not execute tools. Only produce a preview plan that the user will confirm later.",
+      "Use only the exact toolClientId and toolName from the available tool catalog.",
+      preferredTool ? `You MUST use this selected tool: toolClientId=${preferredTool.client.id}, toolName=${preferredTool.tool.name}.` : "Choose the best matching tool from the catalog.",
+      "Do not invent facts, dates, addresses, amounts, or commitments. If required tool fields are missing, set needsMoreInfo to true and ask one concise follow-up question.",
+      "The confirmLabel should be short and specific, such as Create task, Create event, Add contact, or Turn on light.",
+    ].join("\n"),
+    userPrompt: [
+      `User instruction: ${request.instruction}`,
+      "",
+      "Current email:",
+      `Account: ${target.account.email}`,
+      `Provider: ${target.account.provider}`,
+      `Email ID: ${target.email.emailId}`,
+      `Thread ID: ${target.email.threadId || target.email.emailId}`,
+      `From: ${target.email.fromName || target.email.fromEmail} <${target.email.fromEmail || ""}>`,
+      `To: ${target.email.to || target.account.email}`,
+      `Subject: ${target.email.subject || "(no subject)"}`,
+      `Received: ${target.email.receivedAt || ""}`,
+      `Snippet: ${target.email.snippet || ""}`,
+      "Body:",
+      emailBody || "(empty)",
+      "",
+      "Available custom MCP tools:",
+      toolCatalog,
+    ].join("\n"),
+    responseShape: "email_action_plan",
+    responseSchema: AI_EMAIL_ACTION_PLAN_SCHEMA,
+  };
+  const aiResponse = await callBestAvailableAi(userId, aiRequest);
+  const plan = normalizeEmailActionPlan(parseJsonResponse(aiResponse, ["toolName", "confirmLabel"]), tools);
+
+  if (!plan.needsMoreInfo && !tools.some((entry) => entry.client.id === plan.toolClientId && entry.tool.name === plan.toolName)) {
+    throw badAiResponse("AI selected an MCP tool that is not active for this account.");
+  }
+  if (!plan.needsMoreInfo && preferredTool && (plan.toolClientId !== preferredTool.client.id || plan.toolName !== preferredTool.tool.name)) {
+    throw badAiResponse("AI did not use the selected MCP tool.");
+  }
+
+  return { plan, aiRequest, aiResponse: parseJsonResponse(aiResponse, ["toolName", "confirmLabel"]) };
+}
+
+async function executeEmailAction(userId, request) {
+  await assertAiEnabled(userId);
+  const tools = await listActiveCustomMcpActionTools(userId);
+  const match = tools.find((entry) => entry.client.id === request.toolClientId && entry.tool.name === request.toolName);
+  if (!match) {
+    const error = new Error("The selected MCP tool is not active for this account.");
+    error.status = 400;
+    throw error;
+  }
+
+  const response = await callRemoteMcpTool(match.client, match.tool.name, request.arguments);
+  return {
+    ok: true,
+    toolClientId: match.client.id,
+    toolName: match.tool.name,
+    result: response,
+  };
+}
+
+async function listActiveCustomMcpActionTools(userId) {
+  const settings = await getAiSettings(userId);
+  if (!settings.mcpClientEnabled) {
+    return [];
+  }
+
+  const clients = await listMcpClientConfigs(userId, { includeSecret: true });
+  const result = [];
+  for (const client of clients.filter((entry) =>
+    !entry.isSystem &&
+    entry.status === "connected" &&
+    entry.selectedTools.length > 0 &&
+    isUsableRemoteMcpClient(entry),
+  )) {
+    const selectedTools = new Set(client.selectedTools);
+    for (const toolConfig of (client.tools ?? []).filter((toolConfig) => selectedTools.has(toolConfig.name))) {
+      result.push({ client, tool: toolConfig });
+    }
+  }
+  return result;
+}
+
+function buildFallbackEmailActionSuggestions(tools, request) {
+  return tools.slice(0, 6).map((entry) => {
+    const label = buildToolActionLabel(entry.tool.name);
+    return {
+      toolClientId: entry.client.id,
+      toolName: entry.tool.name,
+      label,
+      prompt: truncateText(
+        [
+          `Use the ${entry.tool.name} MCP tool for this email.`,
+          `Subject: ${request.subject || "(no subject)"}`,
+          `From: ${request.from || ""}`,
+          `Snippet: ${request.snippet || ""}`,
+          "Prepare the safest useful action from this email and ask for more information if required fields are missing.",
+        ].join("\n"),
+        500,
+      ),
+      tooltip: truncateText(entry.tool.description || `Prepare an action using ${entry.tool.name}.`, 180),
+    };
+  });
+}
+
+function buildToolActionLabel(toolName) {
+  const cleaned = String(toolName || "Run tool")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) {
+    return "Run tool";
+  }
+  return truncateText(cleaned.replace(/\b\w/g, (letter) => letter.toUpperCase()), 32) || "Run tool";
+}
+
+function normalizeEmailActionPlan(plan, tools) {
+  const fallback = tools[0] ?? null;
+  const toolClientId = String(plan.toolClientId || fallback?.client.id || "").trim();
+  const toolName = String(plan.toolName || fallback?.tool.name || "").trim();
+  const needsMoreInfo = Boolean(plan.needsMoreInfo);
+  const confirmLabel = truncateText(plan.confirmLabel || `Run ${toolName || "action"}`, 40) || "Confirm";
+
+  return {
+    toolClientId,
+    toolName,
+    title: truncateText(plan.title || confirmLabel, 80) || "AI action",
+    summary: truncateText(plan.summary || "Review and confirm this action.", 500),
+    confirmLabel,
+    arguments: plan.arguments && typeof plan.arguments === "object" && !Array.isArray(plan.arguments) ? plan.arguments : {},
+    needsMoreInfo,
+    question: truncateText(plan.question || "", 300),
+  };
 }
 
 function normalizeRequiredTools(requiredTools, availableToolNames) {
@@ -1483,6 +1865,54 @@ function parseAiHelperChatInput(body) {
   }
 
   return { ok: true, request: { contextDescription, contextMessages, conversationHistory, prompt, sessionId } };
+}
+
+function parseEmailActionInput(body) {
+  const emailId = typeof body?.emailId === "string" ? body.emailId.trim() : "";
+  const accountEmail = typeof body?.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : "";
+  const subject = typeof body?.subject === "string" ? body.subject.trim().slice(0, 500) : "";
+  const instruction = typeof body?.instruction === "string" ? body.instruction.trim() : "";
+  const preferredToolClientId = typeof body?.preferredToolClientId === "string" ? body.preferredToolClientId.trim() : "";
+  const preferredToolName = typeof body?.preferredToolName === "string" ? body.preferredToolName.trim() : "";
+
+  if (!emailId) {
+    return { ok: false, error: "emailId is required." };
+  }
+  if (!instruction) {
+    return { ok: false, error: "Tell AI what action to prepare." };
+  }
+  if (instruction.length > 1000) {
+    return { ok: false, error: "AI action instruction must be 1,000 characters or less." };
+  }
+
+  return { ok: true, request: { accountEmail, emailId, instruction, preferredToolClientId, preferredToolName, subject } };
+}
+
+function parseEmailActionSuggestionInput(body) {
+  return {
+    ok: true,
+    request: {
+      from: typeof body?.from === "string" ? body.from.trim().slice(0, 300) : "",
+      snippet: typeof body?.snippet === "string" ? body.snippet.trim().slice(0, 600) : "",
+      subject: typeof body?.subject === "string" ? body.subject.trim().slice(0, 500) : "",
+    },
+  };
+}
+
+function parseEmailActionConfirmInput(body) {
+  const toolClientId = typeof body?.toolClientId === "string" ? body.toolClientId.trim() : "";
+  const toolName = typeof body?.toolName === "string" ? body.toolName.trim() : "";
+  const args = body?.arguments;
+  const toolArguments = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+
+  if (!toolClientId) {
+    return { ok: false, error: "toolClientId is required." };
+  }
+  if (!toolName) {
+    return { ok: false, error: "toolName is required." };
+  }
+
+  return { ok: true, request: { arguments: toolArguments, toolClientId, toolName } };
 }
 
 function parsePlatformInput(body) {

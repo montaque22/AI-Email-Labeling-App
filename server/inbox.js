@@ -17,6 +17,7 @@ import {
 } from "./email-index.js";
 import {
   createImapComposeDraft,
+  fetchImapAttachment,
   fetchImapInboxMessage,
   getImapInboxCount,
   markImapInboxMessageRead,
@@ -94,6 +95,24 @@ export function registerInboxRoutes(app) {
 
       const message = await getInboxMessage(req.user.id, input.query);
       res.json({ message });
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.get("/api/inbox/attachment", requireSession, async (req, res) => {
+    try {
+      const input = parseAttachmentDownloadQuery(req.query);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      const attachment = await getInboxAttachment(req.user.id, input.query);
+      res.setHeader("Content-Type", attachment.type);
+      res.setHeader("Content-Length", String(attachment.buffer.length));
+      res.setHeader("Content-Disposition", `attachment; filename="${sanitizeDownloadFilename(attachment.filename)}"`);
+      res.send(attachment.buffer);
     } catch (error) {
       handleProviderError(res, error);
     }
@@ -370,6 +389,42 @@ async function getInboxMessage(userId, query) {
   }
 
   const error = new Error(`${account.provider} inbox detail is not implemented yet`);
+  error.status = 501;
+  throw error;
+}
+
+async function getInboxAttachment(userId, query) {
+  const accounts = await getInboxAccounts(userId, [query.accountId]);
+  const account = accounts[0];
+
+  if (!account) {
+    const error = new Error("Email account not found");
+    error.status = 404;
+    throw error;
+  }
+
+  if (isImapBackedProvider(account.provider)) {
+    const accessToken = await getImapAccessToken(account);
+    return fetchImapAttachment({
+      account,
+      accessToken,
+      attachmentId: query.attachmentId,
+      emailId: query.emailId,
+      mailbox: query.mailbox,
+    });
+  }
+
+  if (account.provider === "gmail") {
+    const accessToken = await getValidEmailAccountAccessToken(account);
+    const buffer = await fetchGmailAttachment(accessToken, query.emailId, query.attachmentId);
+    return {
+      buffer,
+      filename: query.filename || "attachment",
+      type: query.type || "application/octet-stream",
+    };
+  }
+
+  const error = new Error(`${providerDisplayName(account.provider)} attachment downloads are not implemented yet`);
   error.status = 501;
   throw error;
 }
@@ -1078,6 +1133,19 @@ async function fetchGmailInboxMessage(accessToken, account, emailId) {
   };
 }
 
+async function fetchGmailAttachment(accessToken, emailId, attachmentId) {
+  const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}/attachments/${encodeURIComponent(attachmentId)}`);
+  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+  const data = await response.json();
+  if (!data.data) {
+    const error = new Error("Gmail did not return attachment data");
+    error.status = 502;
+    throw error;
+  }
+
+  return Buffer.from(String(data.data).replace(/-/g, "+").replace(/_/g, "/"), "base64");
+}
+
 async function fetchGmailThreadMessages(accessToken, account, threadId) {
   if (!threadId) {
     return [];
@@ -1390,6 +1458,27 @@ function parseInboxDetailQuery(query) {
   };
 }
 
+function parseAttachmentDownloadQuery(query) {
+  const accountId = typeof query.accountId === "string" ? query.accountId : "";
+  const emailId = typeof query.emailId === "string" ? query.emailId : "";
+  const attachmentId = typeof query.attachmentId === "string" ? query.attachmentId : "";
+  if (!accountId || !emailId || !attachmentId) {
+    return { ok: false, error: "accountId, emailId, and attachmentId are required" };
+  }
+
+  return {
+    ok: true,
+    query: {
+      accountId,
+      attachmentId,
+      emailId,
+      filename: typeof query.filename === "string" ? query.filename : "",
+      mailbox: typeof query.mailbox === "string" ? query.mailbox : "",
+      type: typeof query.type === "string" ? query.type : "",
+    },
+  };
+}
+
 function parseLabelCountsQuery(query) {
   return { accountIds: parseCsv(query.accounts), archivedOnly: query.archived === "true" };
 }
@@ -1546,10 +1635,11 @@ function collectGmailAttachments(part, attachments = []) {
 
   if (part.filename && part.body?.attachmentId) {
     attachments.push({
+      attachmentId: part.body.attachmentId,
       filename: part.filename,
       type: part.mimeType || "application/octet-stream",
       size: part.body.size ?? null,
-      downloadSupported: false,
+      downloadSupported: true,
     });
   }
 
@@ -1593,6 +1683,14 @@ function providerDisplayName(provider) {
     return "Microsoft";
   }
   return provider;
+}
+
+function sanitizeDownloadFilename(filename) {
+  return String(filename || "attachment")
+    .replace(/["\r\n]/g, "")
+    .replace(/[\\/]/g, "_")
+    .trim()
+    || "attachment";
 }
 
 function sanitizeEmailHtml(html) {

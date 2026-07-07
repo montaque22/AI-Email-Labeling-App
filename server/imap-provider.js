@@ -1,4 +1,5 @@
 import { ImapFlow } from "imapflow";
+import { simpleParser } from "mailparser";
 import { decryptToken } from "./email-accounts.js";
 
 const DEFAULT_IMAP_MAILBOX = "INBOX";
@@ -330,7 +331,7 @@ export async function fetchImapInboxMessage(account, { emailId, mailbox, accessT
     }
 
     const raw = message.source?.toString() ?? "";
-    const bodyText = extractTextFromRawMessage(raw);
+    const parsed = await parseRawEmail(raw);
 
     return {
       id: String(message.uid),
@@ -346,9 +347,38 @@ export async function fetchImapInboxMessage(account, { emailId, mailbox, accessT
       subject: message.envelope?.subject ?? "",
       date: (message.internalDate ?? message.envelope?.date ?? new Date()).toISOString(),
       isRead: hasImapFlag(message.flags, "\\Seen"),
-      bodyText,
-      bodyHtml: "",
-      attachments: collectImapAttachments(message.bodyStructure),
+      bodyText: parsed.text,
+      bodyHtml: parsed.html,
+      attachments: parsed.attachments,
+    };
+  }, accessToken);
+}
+
+export async function fetchImapAttachment({ account, emailId, mailbox, attachmentId, accessToken = "" }) {
+  return withImapClient(account, async (client, metadata) => {
+    const targetMailbox = mailbox || metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
+    const mailboxInfo = await findImapMailbox(client, targetMailbox);
+    if (!mailboxInfo) {
+      throw providerNotFoundError("IMAP mailbox was not found");
+    }
+
+    await client.mailboxOpen(mailboxInfo.path);
+    const message = await client.fetchOne(String(emailId), { uid: true, source: true }, { uid: true });
+    if (!message) {
+      throw providerNotFoundError("IMAP message was not found");
+    }
+
+    const parsed = await simpleParser(message.source ?? Buffer.alloc(0));
+    const attachmentIndex = Number.parseInt(String(attachmentId), 10);
+    const attachment = parsed.attachments?.[attachmentIndex];
+    if (!attachment) {
+      throw providerNotFoundError("IMAP attachment was not found");
+    }
+
+    return {
+      buffer: Buffer.isBuffer(attachment.content) ? attachment.content : Buffer.from(attachment.content ?? ""),
+      filename: attachment.filename || "attachment",
+      type: attachment.contentType || "application/octet-stream",
     };
   }, accessToken);
 }
@@ -735,6 +765,33 @@ function parseAddressList(value) {
 
 function formatImapAddress(address) {
   return address?.address || [address?.name, address?.host].filter(Boolean).join("@");
+}
+
+async function parseRawEmail(raw) {
+  if (!raw) {
+    return { attachments: [], html: "", text: "" };
+  }
+
+  try {
+    const parsed = await simpleParser(raw);
+    const text = String(parsed.text || parsed.textAsHtml?.replace(/<[^>]+>/g, " ") || "")
+      .replace(/\s+\n/g, "\n")
+      .trim()
+      .slice(0, 5000);
+    return {
+      attachments: (parsed.attachments ?? []).map((attachment, index) => ({
+        attachmentId: String(index),
+        filename: attachment.filename || "Attachment",
+        type: attachment.contentType || "application/octet-stream",
+        size: attachment.size ?? null,
+        downloadSupported: true,
+      })),
+      html: typeof parsed.html === "string" ? parsed.html : "",
+      text,
+    };
+  } catch {
+    return { attachments: [], html: "", text: extractTextFromRawMessage(raw) };
+  }
 }
 
 function extractTextFromRawMessage(raw) {
