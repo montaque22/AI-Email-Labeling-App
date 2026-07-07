@@ -83,11 +83,11 @@ const AI_EMAIL_ACTION_PLAN_SCHEMA = {
     title: { type: "string", description: "Short title for the proposed action." },
     summary: { type: "string", description: "Human-readable summary of what will happen." },
     confirmLabel: { type: "string", description: "Short action button label, such as Create task, Create event, or Turn on light." },
-    arguments: { type: "object", description: "Arguments to pass directly to the selected MCP tool.", additionalProperties: true },
+    argumentsJson: { type: "string", description: "A valid JSON object string containing arguments to pass directly to the selected MCP tool." },
     needsMoreInfo: { type: "boolean", description: "True if the AI cannot safely prepare the tool call yet." },
     question: { type: "string", description: "A concise follow-up question when needsMoreInfo is true." },
   },
-  required: ["toolClientId", "toolName", "title", "summary", "confirmLabel", "arguments", "needsMoreInfo", "question"],
+  required: ["toolClientId", "toolName", "title", "summary", "confirmLabel", "argumentsJson", "needsMoreInfo", "question"],
   additionalProperties: false,
 };
 const AI_EMAIL_ACTION_SUGGESTIONS_SCHEMA = {
@@ -1194,6 +1194,7 @@ async function planEmailAction(userId, request) {
       preferredTool ? `You MUST use this selected tool: toolClientId=${preferredTool.client.id}, toolName=${preferredTool.tool.name}.` : "Choose the best matching tool from the catalog.",
       "Do not invent facts, dates, addresses, amounts, or commitments. If required tool fields are missing, set needsMoreInfo to true and ask one concise follow-up question.",
       "The confirmLabel should be short and specific, such as Create task, Create event, Add contact, or Turn on light.",
+      "Return MCP tool arguments in argumentsJson as a valid JSON object string. Do not return arguments as a nested object.",
     ].join("\n"),
     userPrompt: [
       `User instruction: ${request.instruction}`,
@@ -1317,10 +1318,25 @@ function normalizeEmailActionPlan(plan, tools) {
     title: truncateText(plan.title || confirmLabel, 80) || "AI action",
     summary: truncateText(plan.summary || "Review and confirm this action.", 500),
     confirmLabel,
-    arguments: plan.arguments && typeof plan.arguments === "object" && !Array.isArray(plan.arguments) ? plan.arguments : {},
+    arguments: parseAiActionArguments(plan.argumentsJson ?? plan.arguments),
     needsMoreInfo,
     question: truncateText(plan.question || "", 300),
   };
+}
+
+function parseAiActionArguments(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value !== "string" || !value.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function normalizeRequiredTools(requiredTools, availableToolNames) {

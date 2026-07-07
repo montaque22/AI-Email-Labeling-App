@@ -2792,6 +2792,14 @@ function InboxPage({
     setIsAiActionExecuting(false);
   }
 
+  function resetAiActionPreview() {
+    setAiActionPlan(null);
+    setAiActionError(null);
+    setSelectedAiActionSuggestion(null);
+    setIsAiActionPlanning(false);
+    setIsAiActionExecuting(false);
+  }
+
   async function loadAiActionSuggestions(message: InboxMessage) {
     setIsAiActionSuggestionsLoading(true);
     setAiActionError(null);
@@ -3383,18 +3391,13 @@ function InboxPage({
               labels={labels}
               aiAction={{
                 error: aiActionError,
-                instruction: aiActionInstruction,
                 isExecuting: isAiActionExecuting,
                 isPlanning: isAiActionPlanning,
                 isSuggestionsLoading: isAiActionSuggestionsLoading,
                 message: aiActionMessage,
+                onBack: resetAiActionPreview,
                 onCancel: closeAiAction,
                 onConfirm: () => void confirmAiAction(),
-                onInstructionChange: (value: string) => {
-                  setAiActionInstruction(value);
-                  setAiActionError(null);
-                  setSelectedAiActionSuggestion(null);
-                },
                 onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void planAiAction(instruction, suggestion),
                 plan: aiActionPlan,
                 selectedSuggestion: selectedAiActionSuggestion,
@@ -4837,14 +4840,13 @@ function InboxMessageModal({
 }: {
   aiAction: {
     error: string | null;
-    instruction: string;
     isExecuting: boolean;
     isPlanning: boolean;
     isSuggestionsLoading: boolean;
     message: InboxMessage | null;
+    onBack: () => void;
     onCancel: () => void;
     onConfirm: () => void;
-    onInstructionChange: (value: string) => void;
     onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
     plan: InboxAiActionPlan | null;
     selectedSuggestion: InboxAiActionSuggestion | null;
@@ -4945,14 +4947,13 @@ function InboxMessageModal({
       {isAiActionOpen ? (
         <InboxAiActionDrawer
           error={aiAction.error}
-          instruction={aiAction.instruction}
           isExecuting={aiAction.isExecuting}
           isPlanning={aiAction.isPlanning}
           isSuggestionsLoading={aiAction.isSuggestionsLoading}
           message={summary}
+          onBack={aiAction.onBack}
           onCancel={aiAction.onCancel}
           onConfirm={aiAction.onConfirm}
-          onInstructionChange={aiAction.onInstructionChange}
           onPlan={aiAction.onPlan}
           plan={aiAction.plan}
           privacyMode={privacyMode}
@@ -4968,14 +4969,13 @@ function InboxMessageModal({
 
 function InboxAiActionDrawer({
   error,
-  instruction,
   isExecuting,
   isPlanning,
   isSuggestionsLoading,
   message,
+  onBack,
   onCancel,
   onConfirm,
-  onInstructionChange,
   onPlan,
   plan,
   privacyMode,
@@ -4983,14 +4983,13 @@ function InboxAiActionDrawer({
   suggestions,
 }: {
   error: string | null;
-  instruction: string;
   isExecuting: boolean;
   isPlanning: boolean;
   isSuggestionsLoading: boolean;
   message: InboxMessage;
+  onBack: () => void;
   onCancel: () => void;
   onConfirm: () => void;
-  onInstructionChange: (value: string) => void;
   onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
   plan: InboxAiActionPlan | null;
   privacyMode: boolean;
@@ -4998,6 +4997,7 @@ function InboxAiActionDrawer({
   suggestions: InboxAiActionSuggestion[];
 }) {
   const canConfirm = Boolean(plan && !plan.needsMoreInfo && !isPlanning && !isExecuting);
+  const isPreviewStep = Boolean(plan || (error && selectedSuggestion));
 
   return (
     <aside className="inbox-ai-action-drawer hidden w-[380px] shrink-0 overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)] md:block">
@@ -5017,90 +5017,102 @@ function InboxAiActionDrawer({
             </Button>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5">
-            <div>
-              <p className="text-sm font-medium text-zinc-950">What should Emailable do with this email?</p>
-              <p className="mt-1 text-sm text-zinc-500">
-                AI will prepare an MCP tool call for review. Nothing runs until you confirm it.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Suggested actions</p>
-                {isSuggestionsLoading ? <Loader /> : null}
-              </div>
-              {isSuggestionsLoading ? (
-                <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">Finding valid actions from your active MCP tools...</p>
-              ) : suggestions.length === 0 ? (
-                <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">No suggested actions were found for the active custom MCP tools.</p>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {suggestions.map((action) => (
-                    <Tooltip key={`${action.toolClientId}-${action.toolName}-${action.label}`} text={action.tooltip || action.prompt}>
-                      <button
-                        className={cn(
-                          "cursor-pointer rounded-full border border-white/70 bg-white/65 px-3 py-1.5 text-sm text-zinc-700 shadow-sm backdrop-blur-xl transition hover:bg-white",
-                          selectedSuggestion?.toolClientId === action.toolClientId && selectedSuggestion.toolName === action.toolName && "border-blue-200 bg-blue-50 text-blue-700",
-                        )}
-                        disabled={isPlanning || isExecuting}
-                        onClick={() => onPlan(action.prompt, action)}
-                        type="button"
-                      >
-                        {action.label}
-                      </button>
-                    </Tooltip>
-                  ))}
-                </div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <div
+              className={cn(
+                "flex h-full w-[200%] transition-transform duration-300 ease-out",
+                isPreviewStep && "-translate-x-1/2",
               )}
-            </div>
-
-            <form
-              className="flex gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                onPlan();
-              }}
             >
-              <input
-                className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white/70 px-3 text-sm text-zinc-950 outline-none transition focus:border-zinc-400"
-                disabled={isPlanning || isExecuting}
-                onChange={(event) => onInstructionChange(event.target.value)}
-                placeholder="Example: create a todo for me to follow up tomorrow"
-                value={instruction}
-              />
-              <Button disabled={isPlanning || isExecuting || !instruction.trim()} type="submit">
-                {isPlanning ? <Loader /> : <Sparkles className="h-4 w-4" />}
-                Preview
-              </Button>
-            </form>
-
-            {error ? (
-              <p className={cn(
-                "rounded-md px-3 py-2 text-sm",
-                plan?.needsMoreInfo ? "bg-amber-50 text-amber-800" : "bg-red-50 text-red-700",
-              )}>
-                {error}
-              </p>
-            ) : null}
-
-            {plan && !plan.needsMoreInfo ? (
-              <div className="rounded-xl border border-white/70 bg-white/60 p-4 shadow-sm backdrop-blur-xl">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-zinc-950">{plan.title || "Proposed action"}</p>
-                    <p className="mt-1 text-sm leading-6 text-zinc-600">{plan.summary}</p>
-                  </div>
-                  <Badge>{plan.toolName}</Badge>
+              <div className="h-full w-1/2 min-w-0 space-y-4 overflow-y-auto px-5 py-5">
+                <div>
+                  <p className="text-sm font-medium text-zinc-950">What should Emailable do with this email?</p>
+                  <p className="mt-1 text-sm text-zinc-500">
+                    AI will prepare an MCP tool call for review. Nothing runs until you confirm it.
+                  </p>
                 </div>
-                <details className="mt-3">
-                  <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-zinc-500">Tool arguments</summary>
-                  <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-zinc-950/90 p-3 text-xs leading-5 text-white">
-                    {JSON.stringify(plan.arguments, null, 2)}
-                  </pre>
-                </details>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Suggested actions</p>
+                    {isSuggestionsLoading ? <Loader /> : null}
+                  </div>
+                  {isSuggestionsLoading ? (
+                    <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">Finding valid actions from your active MCP tools...</p>
+                  ) : suggestions.length === 0 ? (
+                    <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">No suggested actions were found for the active custom MCP tools.</p>
+                  ) : (
+                    <div className="overflow-hidden rounded-xl border border-white/70 bg-white/45 shadow-sm backdrop-blur-xl">
+                      {suggestions.map((action) => (
+                        <button
+                          className="flex w-full cursor-pointer flex-col items-start gap-1 border-b border-zinc-200/70 px-4 py-3 text-left transition last:border-b-0 hover:bg-zinc-100/80 disabled:cursor-not-allowed disabled:opacity-60"
+                          disabled={isPlanning || isExecuting}
+                          key={`${action.toolClientId}-${action.toolName}-${action.label}`}
+                          onClick={() => onPlan(action.prompt, action)}
+                          type="button"
+                        >
+                          <span className="text-sm font-medium text-zinc-950">{action.label}</span>
+                          <span className="text-xs leading-5 text-zinc-500">{action.tooltip || action.prompt}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {isPlanning ? (
+                  <p className="flex items-center gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-700">
+                    <Loader />
+                    Preparing preview...
+                  </p>
+                ) : null}
               </div>
-            ) : null}
+
+              <div className="h-full w-1/2 min-w-0 space-y-4 overflow-y-auto px-5 py-5">
+                <button
+                  className="inline-flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-950"
+                  disabled={isPlanning || isExecuting}
+                  onClick={onBack}
+                  type="button"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  Back to suggestions
+                </button>
+
+                {selectedSuggestion ? (
+                  <div className="rounded-xl border border-blue-100 bg-blue-50/70 p-3">
+                    <p className="text-sm font-medium text-blue-950">{selectedSuggestion.label}</p>
+                    <p className="mt-1 text-xs leading-5 text-blue-800">{selectedSuggestion.tooltip || selectedSuggestion.prompt}</p>
+                  </div>
+                ) : null}
+
+                {error ? (
+                  <p className={cn(
+                    "rounded-md px-3 py-2 text-sm",
+                    plan?.needsMoreInfo ? "bg-amber-50 text-amber-800" : "bg-red-50 text-red-700",
+                  )}>
+                    {error}
+                  </p>
+                ) : null}
+
+                {plan && !plan.needsMoreInfo ? (
+                  <div className="rounded-xl border border-white/70 bg-white/60 p-4 shadow-sm backdrop-blur-xl">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-zinc-950">{plan.title || "Proposed action"}</p>
+                        <p className="mt-1 text-sm leading-6 text-zinc-600">{plan.summary}</p>
+                      </div>
+                      <Badge>{plan.toolName}</Badge>
+                    </div>
+                    <details className="mt-3">
+                      <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-zinc-500">Tool arguments</summary>
+                      <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-zinc-950/90 p-3 text-xs leading-5 text-white">
+                        {JSON.stringify(plan.arguments, null, 2)}
+                      </pre>
+                    </details>
+                  </div>
+                ) : null}
+              </div>
+            </div>
           </div>
 
           <div className="flex justify-end gap-2 border-t border-white/60 px-5 py-4">
