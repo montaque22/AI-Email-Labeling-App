@@ -5348,15 +5348,47 @@ function extractAiActionResultMarkdown(result: unknown): string {
   }
 
   const record = result as Record<string, unknown>;
+  const contentMarkdown = extractMcpTextContent(record.content);
+  if (contentMarkdown) {
+    return contentMarkdown;
+  }
+
   const candidateKeys = ["content", "text", "message", "summary", "body", "bodyText", "markdown", "result"];
   for (const key of candidateKeys) {
     const value = record[key];
     if (typeof value === "string" && value.trim()) {
       return value.trim();
     }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const nestedContent = extractMcpTextContent((value as Record<string, unknown>).content);
+      if (nestedContent) {
+        return nestedContent;
+      }
+    }
   }
 
   return "";
+}
+
+function extractMcpTextContent(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return "";
+      }
+      const record = entry as Record<string, unknown>;
+      if (record.type !== "text") {
+        return "";
+      }
+      return typeof record.text === "string" ? record.text.trim() : "";
+    })
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
 }
 
 function InboxThreadConversation({
