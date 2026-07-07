@@ -8,9 +8,12 @@ import {
 } from "./email-accounts.js";
 import {
   archiveEmailIndexEntries,
+  clearEmailIndexCommitment,
+  countUnreadEmailIndexEntries,
   deleteEmailIndexEntries,
   getEmailIndexLabelCounts,
   listEmailIndexEntries,
+  setEmailIndexCommitment,
   updateEmailIndexLabels,
   updateEmailIndexReadStatus,
   upsertEmailIndexEntry,
@@ -128,6 +131,15 @@ export function registerInboxRoutes(app) {
     }
   });
 
+  app.get("/api/inbox/unread-count", requireSession, async (req, res) => {
+    try {
+      const count = await countUnreadEmailIndexEntries(req.user.id);
+      res.json({ count });
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
   app.post("/api/inbox/compose", requireSession, async (req, res) => {
     try {
       const input = parseComposeInput(req.body);
@@ -226,6 +238,51 @@ export function registerInboxRoutes(app) {
       }
 
       const result = await archiveInboxMessages(req.user.id, input.messages);
+      res.json(result);
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.post("/api/inbox/messages/commitment", requireSession, async (req, res) => {
+    try {
+      const input = parseCommitmentInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      const result = await setInboxMessageCommitments(req.user.id, input.action);
+      res.json(result);
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.post("/api/inbox/messages/commitment/complete", requireSession, async (req, res) => {
+    try {
+      const input = parseBulkMessageInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      const result = await completeInboxMessageCommitments(req.user.id, input.messages);
+      res.json(result);
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.post("/api/inbox/messages/commitment/renege", requireSession, async (req, res) => {
+    try {
+      const input = parseBulkMessageInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      const result = await renegeInboxMessageCommitments(req.user.id, input.messages);
       res.json(result);
     } catch (error) {
       handleProviderError(res, error);
@@ -896,6 +953,76 @@ async function archiveInboxMessages(userId, messages) {
   };
 }
 
+async function setInboxMessageCommitments(userId, action) {
+  const committedRows = await setEmailIndexCommitment(userId, action.messages, {
+    text: action.text,
+    dueAt: action.dueAt,
+  });
+  const committedKeys = new Set(committedRows.map((message) => `${message.accountId}:${message.id}:${message.mailbox ?? ""}`));
+  const results = action.messages.map((message) => ({
+    ...message,
+    ok: committedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`),
+    commitment: committedRows.find((row) => row.accountId === message.accountId && row.id === message.emailId && (row.mailbox ?? "") === (message.mailbox ?? ""))?.commitment ?? null,
+    error: committedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`) ? undefined : "Message was not found",
+  }));
+  const committed = results.filter((result) => result.ok).length;
+  const failed = results.filter((result) => !result.ok);
+
+  await logSystemEvent(userId, {
+    category: "email",
+    eventName: "email.commitment_set",
+    status: failed.length > 0 ? (committed > 0 ? "warning" : "error") : "success",
+    message: `${committed} email commitment${committed === 1 ? "" : "s"} set${failed.length ? `; ${failed.length} failed` : ""}.`,
+    payload: { committed, failed, dueAt: action.dueAt, text: action.text, messages: action.messages },
+  });
+
+  return { committed, failed, results };
+}
+
+async function completeInboxMessageCommitments(userId, messages) {
+  const archivedRows = await archiveEmailIndexEntries(userId, messages, { allowCommitted: true });
+  const archivedKeys = new Set(archivedRows.map((message) => `${message.accountId}:${message.id}:${message.mailbox ?? ""}`));
+  const results = messages.map((message) => ({
+    ...message,
+    ok: archivedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`),
+    error: archivedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`) ? undefined : "Message was not found",
+  }));
+  const archived = results.filter((result) => result.ok).length;
+  const failed = results.filter((result) => !result.ok);
+
+  await logSystemEvent(userId, {
+    category: "email",
+    eventName: "email.commitment_completed",
+    status: failed.length > 0 ? (archived > 0 ? "warning" : "error") : "success",
+    message: `${archived} committed email${archived === 1 ? "" : "s"} completed and archived${failed.length ? `; ${failed.length} failed` : ""}.`,
+    payload: { archived, failed, messages },
+  });
+
+  return { archived, failed, results };
+}
+
+async function renegeInboxMessageCommitments(userId, messages) {
+  const clearedRows = await clearEmailIndexCommitment(userId, messages);
+  const clearedKeys = new Set(clearedRows.map((message) => `${message.accountId}:${message.id}:${message.mailbox ?? ""}`));
+  const results = messages.map((message) => ({
+    ...message,
+    ok: clearedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`),
+    error: clearedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`) ? undefined : "Message was not found",
+  }));
+  const cleared = results.filter((result) => result.ok).length;
+  const failed = results.filter((result) => !result.ok);
+
+  await logSystemEvent(userId, {
+    category: "email",
+    eventName: "email.commitment_reneged",
+    status: failed.length > 0 ? (cleared > 0 ? "warning" : "error") : "success",
+    message: `${cleared} email commitment${cleared === 1 ? "" : "s"} removed${failed.length ? `; ${failed.length} failed` : ""}.`,
+    payload: { cleared, failed, messages },
+  });
+
+  return { cleared, failed, results };
+}
+
 function queueProviderDelete(userId, account, message) {
   void deleteProviderMessage(userId, account, message).catch((error) => {
     console.warn(`Background provider delete failed for ${account.email} ${message.emailId}:`, error.message);
@@ -1454,6 +1581,39 @@ function parseInboxDetailQuery(query) {
       accountId,
       emailId,
       mailbox: typeof query.mailbox === "string" ? query.mailbox : "",
+    },
+  };
+}
+
+function parseCommitmentInput(body) {
+  const bulk = parseBulkMessageInput(body);
+  if (!bulk.ok) {
+    return bulk;
+  }
+
+  const text = typeof body?.text === "string" ? body.text.trim() : "";
+  const dueAtText = typeof body?.dueAt === "string" ? body.dueAt.trim() : "";
+  const dueAt = new Date(dueAtText);
+
+  if (!text) {
+    return { ok: false, error: "Describe what needs to be done before this email can be archived." };
+  }
+  if (text.length > 500) {
+    return { ok: false, error: "Commitment text must be 500 characters or less." };
+  }
+  if (!dueAtText || Number.isNaN(dueAt.getTime())) {
+    return { ok: false, error: "Choose a valid commitment due date and time." };
+  }
+  if (dueAt.getTime() < Date.now() - 60_000) {
+    return { ok: false, error: "Commitment due date cannot be in the past." };
+  }
+
+  return {
+    ok: true,
+    action: {
+      messages: bulk.messages,
+      text,
+      dueAt,
     },
   };
 }

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentType, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type ComponentType, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
 import { registerSW } from "virtual:pwa-register";
 import {
   Cell,
@@ -426,6 +426,12 @@ type InboxRuleStatus = {
   isPending: boolean;
 };
 
+type InboxCommitment = {
+  text: string;
+  dueAt: string;
+  setAt: string;
+};
+
 type InboxMessage = {
   id: string;
   draftId?: string;
@@ -442,6 +448,7 @@ type InboxMessage = {
   isRead: boolean;
   labels: string[];
   hasAttachments: boolean;
+  commitment?: InboxCommitment | null;
   replyCount?: number;
   rule?: InboxRuleStatus | null;
 };
@@ -463,6 +470,7 @@ type InboxMessageDetail = {
   bodyText: string;
   bodyHtml: string;
   attachments: InboxAttachment[];
+  commitment?: InboxCommitment | null;
   threadMessages?: InboxThreadMessage[];
   replyCount?: number;
   rule?: InboxRuleStatus | null;
@@ -520,6 +528,8 @@ type InboxToast = {
   message: string;
   type: "success" | "error";
 };
+
+type InboxCelebration = "confetti" | "thumbs-down" | null;
 
 type InboxAiActionPlan = {
   toolClientId: string;
@@ -1775,6 +1785,7 @@ function InboxPage({
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isBulkActionRunning, setIsBulkActionRunning] = useState(false);
   const [isLabelActionRunning, setIsLabelActionRunning] = useState(false);
+  const [isCommitmentActionRunning, setIsCommitmentActionRunning] = useState(false);
   const [ruleEditorMessage, setRuleEditorMessage] = useState<InboxMessage | null>(null);
   const [isCountsLoading, setIsCountsLoading] = useState(false);
   const [toast, setToast] = useState<InboxToast | null>(null);
@@ -1797,6 +1808,11 @@ function InboxPage({
   const [isMobileLabelPickerOpen, setIsMobileLabelPickerOpen] = useState(false);
   const [isMobileEditMode, setIsMobileEditMode] = useState(false);
   const [isBulkLabelMenuOpen, setIsBulkLabelMenuOpen] = useState(false);
+  const [commitmentDraftMessages, setCommitmentDraftMessages] = useState<InboxMessage[]>([]);
+  const [commitmentText, setCommitmentText] = useState("");
+  const [commitmentDueAt, setCommitmentDueAt] = useState("");
+  const [commitmentError, setCommitmentError] = useState<string | null>(null);
+  const [celebration, setCelebration] = useState<InboxCelebration>(null);
   const [mobilePullDistance, setMobilePullDistance] = useState(0);
   const [isMobilePullRefreshing, setIsMobilePullRefreshing] = useState(false);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
@@ -1807,6 +1823,7 @@ function InboxPage({
   const mobilePullActiveRef = useRef(false);
   const mobilePullReadyHapticRef = useRef(false);
   const lastAutoRefreshAtRef = useRef(0);
+  const commitmentDraftOpen = commitmentDraftMessages.length > 0;
 
   useEffect(() => {
     async function loadBootstrap() {
@@ -1892,6 +1909,10 @@ function InboxPage({
   }, [inboxMode, selectedLabelId, selectedAccountIds.join(","), accounts.map((account) => account.id).join(","), sort, sentSearch, committedInboxSearch]);
 
   useEffect(() => {
+    void refreshPwaUnreadBadge();
+  }, []);
+
+  useEffect(() => {
     const query = inboxSearch.trim();
     if (!query) {
       searchSuggestionRequestIdRef.current += 1;
@@ -1972,6 +1993,7 @@ function InboxPage({
       selectedMessage ||
         ruleEditorMessage ||
         isComposeOpen ||
+        commitmentDraftOpen ||
         isMobileFilterOpen ||
         isMobileLabelPickerOpen,
     );
@@ -1989,7 +2011,7 @@ function InboxPage({
       document.body.style.overflow = previousBodyOverflow;
       document.documentElement.style.overflow = previousHtmlOverflow;
     };
-  }, [selectedMessage, ruleEditorMessage, isComposeOpen, isMobileFilterOpen, isMobileLabelPickerOpen]);
+  }, [selectedMessage, ruleEditorMessage, isComposeOpen, commitmentDraftOpen, isMobileFilterOpen, isMobileLabelPickerOpen]);
 
   useEffect(() => {
     function refreshWhenVisible() {
@@ -2038,6 +2060,8 @@ function InboxPage({
   ]);
 
   const filteredMessages = messages;
+  const committedMessages = filteredMessages.filter((message) => Boolean(message.commitment));
+  const regularMessages = filteredMessages.filter((message) => !message.commitment);
   const selectedLabel = labels.find((label) => label.id === selectedLabelId) ?? null;
   const allLabelCount = getInboxAllLabelCount(labels, labelCounts);
   const isInboxSearchActive = committedInboxSearch.trim().length > 0;
@@ -2120,6 +2144,29 @@ function InboxPage({
     }
   }
 
+  async function refreshPwaUnreadBadge() {
+    const badgeNavigator = navigator as Navigator & {
+      clearAppBadge?: () => Promise<void>;
+      setAppBadge?: (contents?: number) => Promise<void>;
+    };
+    if (!badgeNavigator.setAppBadge && !badgeNavigator.clearAppBadge) {
+      return;
+    }
+
+    try {
+      const response = await fetchNoStore("/api/inbox/unread-count");
+      const data = await response.json();
+      const count = response.ok ? Number(data.count ?? 0) : 0;
+      if (count > 0 && badgeNavigator.setAppBadge) {
+        await badgeNavigator.setAppBadge(count);
+      } else if (badgeNavigator.clearAppBadge) {
+        await badgeNavigator.clearAppBadge();
+      }
+    } catch {
+      // Badge support is best-effort and should never affect inbox use.
+    }
+  }
+
   async function refreshInboxData() {
     if (isLoading || isLoadingMore || isMobilePullRefreshing) {
       return;
@@ -2148,24 +2195,27 @@ function InboxPage({
     if (window.matchMedia("(min-width: 768px)").matches) {
       return false;
     }
-    if (isLoading || isLoadingMore || isMobilePullRefreshing || selectedMessage || ruleEditorMessage || isComposeOpen || isMobileFilterOpen || isMobileLabelPickerOpen) {
+    if (isLoading || isLoadingMore || isMobilePullRefreshing || selectedMessage || ruleEditorMessage || isComposeOpen || isMobileFilterOpen || isMobileLabelPickerOpen || commitmentDraftOpen) {
       return false;
     }
     if ((target as HTMLElement | null)?.closest("button, input, textarea, select, a, [role='button']")) {
       return false;
     }
-    return window.scrollY <= 0;
+    return (document.scrollingElement?.scrollTop ?? window.scrollY) <= 1;
   }
 
   function handleMobilePullStart(event: ReactTouchEvent<HTMLDivElement>) {
     if (!canStartMobilePullRefresh(event.target)) {
       mobilePullStartYRef.current = null;
       mobilePullActiveRef.current = false;
+      mobilePullReadyHapticRef.current = false;
+      setMobilePullDistance(0);
       return;
     }
 
     mobilePullStartYRef.current = event.touches[0]?.clientY ?? null;
     mobilePullActiveRef.current = false;
+    mobilePullReadyHapticRef.current = false;
   }
 
   function handleMobilePullMove(event: ReactTouchEvent<HTMLDivElement>) {
@@ -2176,7 +2226,7 @@ function InboxPage({
 
     const currentY = event.touches[0]?.clientY ?? startY;
     const distance = currentY - startY;
-    if (distance <= 0 || window.scrollY > 0) {
+    if (distance <= 0 || (document.scrollingElement?.scrollTop ?? window.scrollY) > 1) {
       setMobilePullDistance(0);
       mobilePullActiveRef.current = false;
       mobilePullReadyHapticRef.current = false;
@@ -2329,6 +2379,7 @@ function InboxPage({
       setNextPageToken(encodeInboxPageToken(nextPageState));
       if (reset) {
         setSelectedMessageKeys([]);
+        void refreshPwaUnreadBadge();
       }
       if (loadedMessages.length === 0 && failures.length > 0) {
         setError(failures[0]);
@@ -2392,15 +2443,18 @@ function InboxPage({
         });
       } else {
         setMessageDetail(data.message);
-      }
-      if (data.message.isRead) {
-        const openedMessageKey = getInboxMessageKey(message);
-        setMessages((current) => current.map((item) =>
-          getInboxMessageKey(item) === openedMessageKey ? { ...item, isRead: true } : item,
-        ));
-        setSelectedMessage((current) =>
-          current && getInboxMessageKey(current) === openedMessageKey ? { ...current, isRead: true } : current,
-        );
+        if (data.message?.isRead === true) {
+          const openedMessageKey = getInboxMessageKey(message);
+          setMessages((current) => current.map((currentMessage) =>
+            getInboxMessageKey(currentMessage) === openedMessageKey
+              ? { ...currentMessage, isRead: true }
+              : currentMessage,
+          ));
+          setSelectedMessage((current) =>
+            current && getInboxMessageKey(current) === openedMessageKey ? { ...current, isRead: true } : current,
+          );
+          void refreshPwaUnreadBadge();
+        }
       }
     } catch {
       inboxMode === "drafts" ? setError("Could not load draft.") : setDetailError("Could not load email.");
@@ -2417,6 +2471,7 @@ function InboxPage({
 
   const selectedMessages = messages.filter((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
   const hasSelectedMessages = selectedMessages.length > 0;
+  const selectedHasCommitments = selectedMessages.some((message) => Boolean(message.commitment));
   const allVisibleSelected = filteredMessages.length > 0 && filteredMessages.every((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
   const selectedMessagesLabelValue = getCommonMessageLabelId(selectedMessages, labels);
 
@@ -2481,6 +2536,43 @@ function InboxPage({
 
   function showInboxToast(message: string, type: InboxToast["type"] = "success") {
     setToast({ id: Date.now(), message, type });
+  }
+
+  function showCelebration(type: InboxCelebration) {
+    setCelebration(type);
+    window.setTimeout(() => setCelebration(null), 3000);
+  }
+
+  function openCommitmentModal(messagesToCommit: InboxMessage[]) {
+    if (messagesToCommit.length === 0) {
+      return;
+    }
+
+    const existing = messagesToCommit.length === 1 ? messagesToCommit[0].commitment : null;
+    const defaultDueAt = new Date(Date.now() + 8 * 60 * 60 * 1000);
+    setCommitmentDraftMessages(messagesToCommit);
+    setCommitmentText(existing?.text ?? "");
+    setCommitmentDueAt(formatDateTimeLocalInput(existing?.dueAt ? new Date(existing.dueAt) : defaultDueAt));
+    setCommitmentError(null);
+  }
+
+  function closeCommitmentModal() {
+    if (isCommitmentActionRunning) {
+      return;
+    }
+
+    setCommitmentDraftMessages([]);
+    setCommitmentText("");
+    setCommitmentDueAt("");
+    setCommitmentError(null);
+  }
+
+  function updateMessagesWithCommitment(keys: Set<string>, commitment: InboxCommitment | null) {
+    setMessages((current) => sortInboxMessagesForClient(current.map((message) =>
+      keys.has(getInboxMessageKey(message)) ? { ...message, commitment } : message,
+    ), sort));
+    setSelectedMessage((current) => current && keys.has(getInboxMessageKey(current)) ? { ...current, commitment } : current);
+    setMessageDetail((current) => current && keys.has(`${current.accountId}:${current.mailbox ?? ""}:${current.id}`) ? { ...current, commitment } : current);
   }
 
   function handleInboxModeChange(mode: InboxMode) {
@@ -2637,8 +2729,171 @@ function InboxPage({
     }
   }
 
+  async function saveCommitment() {
+    if (commitmentDraftMessages.length === 0) {
+      return;
+    }
+
+    const text = commitmentText.trim();
+    const dueAt = new Date(commitmentDueAt);
+    if (!text) {
+      setCommitmentError("Describe what needs to be done before this email can be archived.");
+      return;
+    }
+    if (!commitmentDueAt || Number.isNaN(dueAt.getTime())) {
+      setCommitmentError("Choose a valid due date and time.");
+      return;
+    }
+
+    setIsCommitmentActionRunning(true);
+    setCommitmentError(null);
+    try {
+      const response = await fetch("/api/inbox/messages/commitment", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dueAt: dueAt.toISOString(),
+          messages: commitmentDraftMessages.map(messageToBulkPayload),
+          text,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setCommitmentError(data.error ?? "Could not save this commitment.");
+        return;
+      }
+
+      const successfulKeys = new Set(
+        commitmentDraftMessages
+          .filter((message) => data.results?.some((result: { accountId: string; emailId: string; mailbox?: string; ok: boolean }) =>
+            result.ok &&
+            result.accountId === message.accountId &&
+            result.emailId === message.id &&
+            (result.mailbox ?? "") === (message.mailbox ?? ""),
+          ))
+          .map(getInboxMessageKey),
+      );
+      const commitment = data.results?.find((result: { ok: boolean; commitment?: InboxCommitment | null }) => result.ok && result.commitment)?.commitment ?? {
+        dueAt: dueAt.toISOString(),
+        setAt: new Date().toISOString(),
+        text,
+      };
+
+      updateMessagesWithCommitment(successfulKeys, commitment);
+      setSelectedMessageKeys((current) => current.filter((key) => !successfulKeys.has(key)));
+      setIsMobileEditMode(false);
+      setCommitmentDraftMessages([]);
+      if (successfulKeys.size > 0) {
+        showInboxToast(`Commitment saved for ${successfulKeys.size} email${successfulKeys.size === 1 ? "" : "s"}.`);
+      }
+      if (data.failed?.length) {
+        showInboxToast(`${data.failed.length} email${data.failed.length === 1 ? "" : "s"} could not be updated.`, "error");
+      }
+    } catch {
+      setCommitmentError("Could not save this commitment.");
+    } finally {
+      setIsCommitmentActionRunning(false);
+    }
+  }
+
+  async function completeCommitment(messagesToComplete: InboxMessage[]) {
+    const committedMessagesToComplete = messagesToComplete.filter((message) => Boolean(message.commitment));
+    if (committedMessagesToComplete.length === 0 || !window.confirm("Is this commitment complete and okay to archive?")) {
+      return;
+    }
+
+    setIsCommitmentActionRunning(true);
+    setIsBulkActionRunning(true);
+    try {
+      const response = await fetch("/api/inbox/messages/commitment/complete", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: committedMessagesToComplete.map(messageToBulkPayload) }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        showInboxToast(data.error ?? "Could not complete this commitment.", "error");
+        return;
+      }
+
+      const completedKeys = new Set(
+        committedMessagesToComplete
+          .filter((message) => data.results?.some((result: { accountId: string; emailId: string; mailbox?: string; ok: boolean }) =>
+            result.ok &&
+            result.accountId === message.accountId &&
+            result.emailId === message.id &&
+            (result.mailbox ?? "") === (message.mailbox ?? ""),
+          ))
+          .map(getInboxMessageKey),
+      );
+      setMessages((current) => current.filter((message) => !completedKeys.has(getInboxMessageKey(message))));
+      setSelectedMessageKeys((current) => current.filter((key) => !completedKeys.has(key)));
+      if (selectedMessage && completedKeys.has(getInboxMessageKey(selectedMessage))) {
+        setSelectedMessage(null);
+        setMessageDetail(null);
+      }
+      setIsMobileEditMode(false);
+      void refreshPwaUnreadBadge();
+      showInboxToast("Commitment completed and email archived.");
+      showCelebration("confetti");
+    } catch {
+      showInboxToast("Could not complete this commitment.", "error");
+    } finally {
+      setIsCommitmentActionRunning(false);
+      setIsBulkActionRunning(false);
+    }
+  }
+
+  async function renegeCommitment(messagesToRenege: InboxMessage[]) {
+    const committedMessagesToRenege = messagesToRenege.filter((message) => Boolean(message.commitment));
+    if (committedMessagesToRenege.length === 0 || !window.confirm("Break this commitment and move the email back into the inbox?")) {
+      return;
+    }
+
+    setIsCommitmentActionRunning(true);
+    try {
+      const response = await fetch("/api/inbox/messages/commitment/renege", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: committedMessagesToRenege.map(messageToBulkPayload) }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        showInboxToast(data.error ?? "Could not remove this commitment.", "error");
+        return;
+      }
+
+      const clearedKeys = new Set(
+        committedMessagesToRenege
+          .filter((message) => data.results?.some((result: { accountId: string; emailId: string; mailbox?: string; ok: boolean }) =>
+            result.ok &&
+            result.accountId === message.accountId &&
+            result.emailId === message.id &&
+            (result.mailbox ?? "") === (message.mailbox ?? ""),
+          ))
+          .map(getInboxMessageKey),
+      );
+      updateMessagesWithCommitment(clearedKeys, null);
+      setSelectedMessageKeys((current) => current.filter((key) => !clearedKeys.has(key)));
+      setIsMobileEditMode(false);
+      showInboxToast("Commitment removed.");
+      showCelebration("thumbs-down");
+    } catch {
+      showInboxToast("Could not remove this commitment.", "error");
+    } finally {
+      setIsCommitmentActionRunning(false);
+    }
+  }
+
   async function deleteSelectedMessages(messagesToDelete = selectedMessages) {
     if (messagesToDelete.length === 0) {
+      return;
+    }
+    if (messagesToDelete.some((message) => Boolean(message.commitment))) {
+      showInboxToast("Complete or renege the commitment before deleting this email.", "error");
       return;
     }
 
@@ -2678,6 +2933,7 @@ function InboxPage({
         setSelectedMessage(null);
         setMessageDetail(null);
       }
+      void refreshPwaUnreadBadge();
       if (successfulDeletes.length > 0) {
         showInboxToast(`${successfulDeletes.length} message${successfulDeletes.length === 1 ? "" : "s"} deleted.`);
         setIsMobileEditMode(false);
@@ -2696,6 +2952,10 @@ function InboxPage({
 
   async function archiveSelectedMessages(messagesToArchive = selectedMessages) {
     if (messagesToArchive.length === 0) {
+      return;
+    }
+    if (messagesToArchive.some((message) => Boolean(message.commitment))) {
+      showInboxToast("Complete or renege the commitment before archiving this email.", "error");
       return;
     }
 
@@ -2735,6 +2995,7 @@ function InboxPage({
         setSelectedMessage(null);
         setMessageDetail(null);
       }
+      void refreshPwaUnreadBadge();
       if (successfulArchives.length > 0) {
         showInboxToast(`${successfulArchives.length} message${successfulArchives.length === 1 ? "" : "s"} archived.`);
         setIsMobileEditMode(false);
@@ -3024,23 +3285,39 @@ function InboxPage({
       ) : null}
       {isBulkActionBarRendered ? (
         <div className="inbox-floating-actions fixed bottom-5 left-1/2 z-40 flex items-center gap-1 rounded-full border border-white/70 bg-white/70 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl" data-state={hasSelectedMessages ? "open" : "closed"}>
+          {!selectedHasCommitments ? (
+            <>
+              <Button
+                aria-label="Archive selected emails"
+                className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
+                disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning}
+                onClick={() => void archiveSelectedMessages()}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                {isBulkActionRunning ? <Loader /> : <Archive className="h-5 w-5" />}
+              </Button>
+              <div className="h-8 w-px bg-zinc-200/80" />
+            </>
+          ) : null}
           <Button
-            aria-label="Archive selected emails"
+            aria-label="Set commitment"
             className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
-            disabled={isBulkActionRunning || isLabelActionRunning}
-            onClick={() => void archiveSelectedMessages()}
+            disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning || selectedMessages.length === 0}
+            onClick={() => openCommitmentModal(selectedMessages)}
             size="icon"
             type="button"
             variant="ghost"
           >
-            {isBulkActionRunning ? <Loader /> : <Archive className="h-5 w-5" />}
+            {isCommitmentActionRunning ? <Loader /> : <FileCheck2 className="h-5 w-5" />}
           </Button>
           <div className="h-8 w-px bg-zinc-200/80" />
           <div className="relative" data-bulk-label-menu>
             <Button
               aria-label="Change selected email labels"
               className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
-              disabled={isBulkActionRunning || isLabelActionRunning || selectedMessages.length === 0}
+              disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning || selectedMessages.length === 0}
               onClick={() => setIsBulkLabelMenuOpen((current) => !current)}
               size="icon"
               type="button"
@@ -3087,18 +3364,22 @@ function InboxPage({
               </div>
             ) : null}
           </div>
-          <div className="h-8 w-px bg-zinc-200/80" />
-          <Button
-            aria-label="Delete selected emails"
-            className="h-12 w-12 rounded-full border-transparent bg-white/35 text-red-600 hover:bg-red-50/80 hover:text-red-700"
-            disabled={isBulkActionRunning || isLabelActionRunning}
-            onClick={() => void deleteSelectedMessages()}
-            size="icon"
-            type="button"
-            variant="ghost"
-          >
-            {isBulkActionRunning ? <Loader /> : <Trash2 className="h-5 w-5" />}
-          </Button>
+          {!selectedHasCommitments ? (
+            <>
+              <div className="h-8 w-px bg-zinc-200/80" />
+              <Button
+                aria-label="Delete selected emails"
+                className="h-12 w-12 rounded-full border-transparent bg-white/35 text-red-600 hover:bg-red-50/80 hover:text-red-700"
+                disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning}
+                onClick={() => void deleteSelectedMessages()}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                {isBulkActionRunning ? <Loader /> : <Trash2 className="h-5 w-5" />}
+              </Button>
+            </>
+          ) : null}
         </div>
       ) : null}
 
@@ -3302,18 +3583,42 @@ function InboxPage({
                     : inboxMode === "drafts" ? "No drafts found." : inboxMode === "sent" ? "No sent messages found." : inboxMode === "archive" ? "No archived messages found for this label." : "No messages found for this label."}
                 </p>
               ) : (
-                filteredMessages.map((message) => (
-                  <InboxMessageRow
-                    isEditMode={isMobileEditMode}
-                    isDeleting={deletingMessageKeys.includes(getInboxMessageKey(message))}
-                    isSelected={selectedMessageKeys.includes(getInboxMessageKey(message))}
-                    key={`${message.accountId}-${message.id}-${message.mailbox ?? ""}`}
-                    message={message}
-                    onLongPress={() => enterMobileEditMode(message)}
-                    onOpen={() => void openMessage(message)}
-                    onToggle={() => toggleMessage(message)}
-                  />
-                ))
+                <>
+                  {committedMessages.length > 0 ? (
+                    <div className="px-3 pt-1 text-xs font-semibold uppercase tracking-wide text-zinc-500 md:px-0">
+                      Commitments
+                    </div>
+                  ) : null}
+                  {committedMessages.map((message) => (
+                    <InboxMessageRow
+                      isEditMode={isMobileEditMode}
+                      isDeleting={deletingMessageKeys.includes(getInboxMessageKey(message))}
+                      isSelected={selectedMessageKeys.includes(getInboxMessageKey(message))}
+                      key={`${message.accountId}-${message.id}-${message.mailbox ?? ""}`}
+                      message={message}
+                      onLongPress={() => enterMobileEditMode(message)}
+                      onOpen={() => void openMessage(message)}
+                      onToggle={() => toggleMessage(message)}
+                    />
+                  ))}
+                  {committedMessages.length > 0 && regularMessages.length > 0 ? (
+                    <div className="px-3 pt-3 text-xs font-semibold uppercase tracking-wide text-zinc-500 md:px-0">
+                      Other emails
+                    </div>
+                  ) : null}
+                  {regularMessages.map((message) => (
+                    <InboxMessageRow
+                      isEditMode={isMobileEditMode}
+                      isDeleting={deletingMessageKeys.includes(getInboxMessageKey(message))}
+                      isSelected={selectedMessageKeys.includes(getInboxMessageKey(message))}
+                      key={`${message.accountId}-${message.id}-${message.mailbox ?? ""}`}
+                      message={message}
+                      onLongPress={() => enterMobileEditMode(message)}
+                      onOpen={() => void openMessage(message)}
+                      onToggle={() => toggleMessage(message)}
+                    />
+                  ))}
+                </>
               )}
               {nextPageToken ? (
                 <div aria-live="polite" className="min-h-px" ref={loadMoreSentinelRef}>
@@ -3399,6 +3704,9 @@ function InboxPage({
               }}
               onDelete={(message) => void deleteSelectedMessages([message])}
               onArchive={(message) => void archiveSelectedMessages([message])}
+              onCommitment={(message) => openCommitmentModal([message])}
+              onCompleteCommitment={(message) => void completeCommitment([message])}
+              onRenegeCommitment={(message) => void renegeCommitment([message])}
               onEditRule={(message) => setRuleEditorMessage(message)}
               onAiAction={isByoAiActive ? (message) => openAiAction(message) : undefined}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
@@ -3439,6 +3747,9 @@ function InboxPage({
               }}
               onDelete={(message) => void deleteSelectedMessages([message])}
               onArchive={(message) => void archiveSelectedMessages([message])}
+              onCommitment={(message) => openCommitmentModal([message])}
+              onCompleteCommitment={(message) => void completeCommitment([message])}
+              onRenegeCommitment={(message) => void renegeCommitment([message])}
               onEditRule={(message) => setRuleEditorMessage(message)}
               onAiAction={isByoAiActive ? (message) => openAiAction(message) : undefined}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
@@ -3525,6 +3836,21 @@ function InboxPage({
           </div>
         </>
       ) : null}
+
+      {commitmentDraftOpen ? (
+        <InboxCommitmentModal
+          count={commitmentDraftMessages.length}
+          dueAt={commitmentDueAt}
+          error={commitmentError}
+          isSaving={isCommitmentActionRunning}
+          onClose={closeCommitmentModal}
+          onDueAtChange={setCommitmentDueAt}
+          onSave={() => void saveCommitment()}
+          onTextChange={setCommitmentText}
+          text={commitmentText}
+        />
+      ) : null}
+      {celebration ? <InboxCelebrationOverlay type={celebration} /> : null}
     </div>
   );
 }
@@ -4486,6 +4812,12 @@ function InboxMessageRow({
           <span className="min-w-0 truncate">{message.sender || message.from || "Unknown sender"}</span>
         </button>
         <button className="flex min-w-0 cursor-pointer items-center gap-2 text-left" onClick={onOpen} type="button">
+          {message.commitment ? (
+            <Badge className="shrink-0 border-amber-200 bg-amber-50 text-amber-700">
+              <FileCheck2 className="mr-1 h-3 w-3" />
+              Commitment
+            </Badge>
+          ) : null}
           {message.labels[0] ? <Badge className="shrink-0 bg-blue-50 text-blue-700">{message.labels[0]}</Badge> : null}
           <span className="min-w-0 truncate text-sm font-medium text-zinc-950">{message.subject || "(no subject)"}</span>
           <span className="min-w-0 truncate text-xs text-zinc-400">{message.snippet || "No preview available."}</span>
@@ -4559,8 +4891,14 @@ function InboxMessageRow({
               <p className="min-w-0 flex-1 truncate text-base text-zinc-500">{message.snippet || "No preview available."}</p>
               <p className="shrink-0 text-sm font-semibold text-zinc-500">{formatInboxListDate(message.date)}</p>
             </div>
-            {message.labels.length > 0 ? (
+            {message.commitment || message.labels.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1.5">
+                {message.commitment ? (
+                  <Badge className="w-fit border-amber-200 bg-amber-50 text-amber-700">
+                    <FileCheck2 className="mr-1 h-3 w-3" />
+                    Commitment
+                  </Badge>
+                ) : null}
                 {message.labels.slice(0, 3).map((label) => (
                   <Badge className="w-fit bg-blue-50 text-blue-700" key={label}>
                     {label}
@@ -4678,9 +5016,12 @@ function InboxMessagePushView({
   labels,
   onArchive,
   onClose,
+  onCommitment,
+  onCompleteCommitment,
   onDelete,
   onEditRule,
   onAiAction,
+  onRenegeCommitment,
   onSetLabel,
   onReply,
   onShowReplies,
@@ -4711,9 +5052,12 @@ function InboxMessagePushView({
   labels: Label[];
   onArchive: (message: InboxMessage) => void;
   onClose: () => void;
+  onCommitment: (message: InboxMessage) => void;
+  onCompleteCommitment: (message: InboxMessage) => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
   onAiAction?: (message: InboxMessage) => void;
+  onRenegeCommitment: (message: InboxMessage) => void;
   onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
   onShowReplies: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
@@ -4721,6 +5065,7 @@ function InboxMessagePushView({
   summary: InboxMessage;
 }) {
   const rule = detail?.rule ?? summary.rule ?? null;
+  const commitment = detail?.commitment ?? summary.commitment ?? null;
   const replyCount = detail?.replyCount ?? summary.replyCount ?? 0;
   const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
   const isAiActionOpen = Boolean(aiAction.message && getInboxMessageKey(aiAction.message) === getInboxMessageKey(summary));
@@ -4733,11 +5078,18 @@ function InboxMessagePushView({
         </Button>
         <div className="min-w-0 flex-1" />
         <div className="flex shrink-0 items-center gap-1">
-          <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" disabled={isDeleting} onClick={() => onDelete(summary)} size="icon" type="button" variant="ghost">
-            {isDeleting ? <Loader /> : <Trash2 className="h-4 w-4" />}
-          </Button>
-          <Button aria-label="Archive email" disabled={isArchiving || isDeleting} onClick={() => onArchive(summary)} size="icon" type="button" variant="ghost">
-            {isArchiving ? <Loader /> : <Archive className="h-4 w-4" />}
+          {commitment ? null : (
+            <>
+              <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" disabled={isDeleting} onClick={() => onDelete(summary)} size="icon" type="button" variant="ghost">
+                {isDeleting ? <Loader /> : <Trash2 className="h-4 w-4" />}
+              </Button>
+              <Button aria-label="Archive email" disabled={isArchiving || isDeleting} onClick={() => onArchive(summary)} size="icon" type="button" variant="ghost">
+                {isArchiving ? <Loader /> : <Archive className="h-4 w-4" />}
+              </Button>
+            </>
+          )}
+          <Button aria-label="Set commitment" onClick={() => onCommitment(summary)} size="icon" type="button" variant="ghost">
+            <FileCheck2 className="h-4 w-4" />
           </Button>
           {onAiAction ? (
             <Button aria-label="AI Actions" onClick={() => isAiActionOpen ? aiAction.onCancel() : onAiAction(summary)} size="icon" type="button" variant="ghost">
@@ -4773,6 +5125,14 @@ function InboxMessagePushView({
 
           {isLoading ? <p className="rounded-xl border border-white/70 bg-white/60 p-4 text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          {commitment ? (
+            <InboxCommitmentPanel
+              commitment={commitment}
+              isBusy={isArchiving || isDeleting}
+              onComplete={() => onCompleteCommitment(summary)}
+              onRenege={() => onRenegeCommitment(summary)}
+            />
+          ) : null}
 
           {detail ? <InboxThreadConversation detail={detail} onLinkAction={setLinkAction} privacyMode={privacyMode} /> : null}
         </div>
@@ -4898,9 +5258,12 @@ function InboxMessageModal({
   labels,
   onArchive,
   onClose,
+  onCommitment,
+  onCompleteCommitment,
   onDelete,
   onEditRule,
   onAiAction,
+  onRenegeCommitment,
   onSetLabel,
   onReply,
   onShowReplies,
@@ -4931,9 +5294,12 @@ function InboxMessageModal({
   labels: Label[];
   onArchive: (message: InboxMessage) => void;
   onClose: () => void;
+  onCommitment: (message: InboxMessage) => void;
+  onCompleteCommitment: (message: InboxMessage) => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
   onAiAction?: (message: InboxMessage) => void;
+  onRenegeCommitment: (message: InboxMessage) => void;
   onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
   onShowReplies: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
@@ -4941,6 +5307,7 @@ function InboxMessageModal({
   summary: InboxMessage;
 }) {
   const rule = detail?.rule ?? summary.rule ?? null;
+  const commitment = detail?.commitment ?? summary.commitment ?? null;
   const currentLabelId = getCommonMessageLabelId([summary], labels);
   const replyCount = detail?.replyCount ?? summary.replyCount ?? 0;
   const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
@@ -4978,14 +5345,23 @@ function InboxMessageModal({
                 onChange={(labelId) => onSetLabel(summary, labelId)}
                 value={currentLabelId}
               />
-              <Tooltip side="bottom" text="Delete email">
-                <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" disabled={isDeleting} onClick={() => onDelete(summary)} size="icon" type="button" variant="outline">
-                  {isDeleting ? <Loader /> : <Trash2 className="h-4 w-4" />}
-                </Button>
-              </Tooltip>
-              <Tooltip side="bottom" text="Archive email">
-                <Button aria-label="Archive email" disabled={isArchiving || isDeleting} onClick={() => onArchive(summary)} size="icon" type="button" variant="outline">
-                  {isArchiving ? <Loader /> : <Archive className="h-4 w-4" />}
+              {commitment ? null : (
+                <>
+                  <Tooltip side="bottom" text="Delete email">
+                    <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" disabled={isDeleting} onClick={() => onDelete(summary)} size="icon" type="button" variant="outline">
+                      {isDeleting ? <Loader /> : <Trash2 className="h-4 w-4" />}
+                    </Button>
+                  </Tooltip>
+                  <Tooltip side="bottom" text="Archive email">
+                    <Button aria-label="Archive email" disabled={isArchiving || isDeleting} onClick={() => onArchive(summary)} size="icon" type="button" variant="outline">
+                      {isArchiving ? <Loader /> : <Archive className="h-4 w-4" />}
+                    </Button>
+                  </Tooltip>
+                </>
+              )}
+              <Tooltip side="bottom" text={commitment ? "Update commitment" : "Set commitment"}>
+                <Button aria-label={commitment ? "Update commitment" : "Set commitment"} onClick={() => onCommitment(summary)} size="icon" type="button" variant="outline">
+                  <FileCheck2 className="h-4 w-4" />
                 </Button>
               </Tooltip>
               {onAiAction ? (
@@ -5008,6 +5384,14 @@ function InboxMessageModal({
           <div className="max-h-[calc(92vh-112px)] overflow-y-auto px-5 pb-10 pt-5">
           {isLoading ? <p className="text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          {commitment ? (
+            <InboxCommitmentPanel
+              commitment={commitment}
+              isBusy={isArchiving || isDeleting}
+              onComplete={() => onCompleteCommitment(summary)}
+              onRenege={() => onRenegeCommitment(summary)}
+            />
+          ) : null}
           {detail ? (
             <InboxThreadConversation detail={detail} onLinkAction={setLinkAction} privacyMode={privacyMode} />
           ) : null}
@@ -5113,6 +5497,153 @@ function InboxAiActionDrawer({
           </div>
         </div>
     </aside>
+  );
+}
+
+function InboxCommitmentPanel({
+  commitment,
+  isBusy,
+  onComplete,
+  onRenege,
+}: {
+  commitment: InboxCommitment;
+  isBusy: boolean;
+  onComplete: () => void;
+  onRenege: () => void;
+}) {
+  return (
+    <section className="rounded-xl border border-amber-200/80 bg-amber-50/85 p-4 text-sm text-amber-950 shadow-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-1">
+          <div className="flex items-center gap-2 font-semibold">
+            <FileCheck2 className="h-4 w-4" />
+            <span>Commitment</span>
+          </div>
+          <p className="break-words">{commitment.text}</p>
+          <p className="text-xs text-amber-800">
+            Due {formatDateTime(commitment.dueAt)} · Set {formatDateTime(commitment.setAt)}
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <Button disabled={isBusy} onClick={onRenege} size="sm" type="button" variant="outline">
+            Renege
+          </Button>
+          <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={isBusy} onClick={onComplete} size="sm" type="button">
+            Complete
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function InboxCommitmentModal({
+  count,
+  dueAt,
+  error,
+  isSaving,
+  onClose,
+  onDueAtChange,
+  onSave,
+  onTextChange,
+  text,
+}: {
+  count: number;
+  dueAt: string;
+  error: string | null;
+  isSaving: boolean;
+  onClose: () => void;
+  onDueAtChange: (value: string) => void;
+  onSave: () => void;
+  onTextChange: (value: string) => void;
+  text: string;
+}) {
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/20 p-4">
+      <div className="w-full max-w-lg rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+        <div className="rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-semibold text-zinc-950">Set commitment</h3>
+              <p className="mt-1 text-sm text-zinc-500">
+                Define what must happen before {count === 1 ? "this email can" : `${count} emails can`} be archived.
+              </p>
+            </div>
+            <Button aria-label="Close commitment modal" disabled={isSaving} onClick={onClose} size="icon" type="button" variant="ghost">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {error ? <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+
+          <div className="mt-5 space-y-4">
+            <label className="block space-y-2">
+              <span className="text-sm font-medium text-zinc-700">What needs to be done?</span>
+              <textarea
+                className="min-h-28 w-full resize-y rounded-md border border-zinc-200 bg-white/70 px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
+                disabled={isSaving}
+                maxLength={500}
+                onChange={(event) => onTextChange(event.target.value)}
+                placeholder="Example: Reply with the signed document and confirm the next appointment."
+                value={text}
+              />
+              <span className="block text-right text-xs text-zinc-500">{text.length}/500</span>
+            </label>
+            <label className="block space-y-2">
+              <span className="text-sm font-medium text-zinc-700">Commitment due</span>
+              <input
+                className="h-11 w-full rounded-md border border-zinc-200 bg-white/70 px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                disabled={isSaving}
+                min={formatDateTimeLocalInput(new Date())}
+                onChange={(event) => onDueAtChange(event.target.value)}
+                type="datetime-local"
+                value={dueAt}
+              />
+            </label>
+          </div>
+
+          <div className="mt-6 flex justify-end gap-2">
+            <Button disabled={isSaving} onClick={onClose} type="button" variant="outline">
+              Cancel
+            </Button>
+            <Button disabled={isSaving || !text.trim() || !dueAt} onClick={onSave} type="button">
+              {isSaving ? <Loader /> : <FileCheck2 className="h-4 w-4" />}
+              Save commitment
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InboxCelebrationOverlay({ type }: { type: InboxCelebration }) {
+  if (!type) {
+    return null;
+  }
+
+  const items = Array.from({ length: type === "confetti" ? 34 : 18 });
+  return (
+    <div className="pointer-events-none fixed inset-0 z-[90] overflow-hidden">
+      {items.map((_, index) => (
+        <span
+          className={cn(
+            "absolute top-[-10%] select-none text-2xl",
+            type === "confetti" ? "inbox-confetti-piece" : "inbox-thumbs-down-piece",
+          )}
+          key={index}
+          style={{
+            animationDelay: `${(index % 10) * 90}ms`,
+            animationDuration: `${1800 + (index % 5) * 220}ms`,
+            left: `${(index * 29) % 100}%`,
+            opacity: type === "confetti" ? 0.85 : 0.25 + (index % 5) * 0.12,
+            "--piece-scale": `${0.75 + (index % 6) * 0.12}`,
+          } as CSSProperties}
+        >
+          {type === "confetti" ? ["•", "✦", "◆", "✓"][index % 4] : "👎"}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -13924,6 +14455,15 @@ function formatDateTime(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function formatDateTimeLocalInput(value: Date) {
+  if (Number.isNaN(value.getTime())) {
+    return "";
+  }
+
+  const offsetMs = value.getTimezoneOffset() * 60_000;
+  return new Date(value.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
 function formatInboxListDate(value: string) {

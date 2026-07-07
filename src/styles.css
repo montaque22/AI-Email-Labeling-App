@@ -197,6 +197,35 @@ select,
   }
 }
 
+@keyframes inbox-confetti-fall {
+  0% {
+    transform: translate3d(0, -10vh, 0) rotate(0deg) scale(var(--piece-scale, 1));
+  }
+
+  100% {
+    transform: translate3d(12vw, 115vh, 0) rotate(540deg) scale(var(--piece-scale, 1));
+  }
+}
+
+@keyframes inbox-thumbs-down-fall {
+  0% {
+    transform: translate3d(0, -10vh, 0) rotate(-12deg) scale(var(--piece-scale, 1));
+  }
+
+  100% {
+    transform: translate3d(-8vw, 115vh, 0) rotate(28deg) scale(var(--piece-scale, 1));
+  }
+}
+
+.inbox-confetti-piece {
+  animation: inbox-confetti-fall linear forwards;
+  color: #10b981;
+}
+
+.inbox-thumbs-down-piece {
+  animation: inbox-thumbs-down-fall ease-in forwards;
+}
+
 .emailable-email-html {
   overflow-wrap: anywhere;
   word-break: normal;

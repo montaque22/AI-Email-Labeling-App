@@ -40,6 +40,9 @@ export async function ensureEmailIndexTable() {
   await dbPool.query("alter table email_index add column if not exists responding_to_email_id text");
   await dbPool.query("alter table email_index add column if not exists metadata jsonb not null default '{}'::jsonb");
   await dbPool.query("alter table email_index add column if not exists archived boolean not null default false");
+  await dbPool.query("alter table email_index add column if not exists commitment_text text");
+  await dbPool.query("alter table email_index add column if not exists commitment_due_at timestamptz");
+  await dbPool.query("alter table email_index add column if not exists commitment_set_at timestamptz");
   await dbPool.query(`
     create unique index if not exists email_index_message_unique
       on email_index (user_id, email_account_id, email_id, mailbox)
@@ -47,6 +50,7 @@ export async function ensureEmailIndexTable() {
   await dbPool.query("create index if not exists email_index_user_received_idx on email_index (user_id, received_at desc)");
   await dbPool.query("create index if not exists email_index_user_direction_idx on email_index (user_id, direction)");
   await dbPool.query("create index if not exists email_index_user_labels_idx on email_index using gin (labels)");
+  await dbPool.query("create index if not exists email_index_user_commitment_idx on email_index (user_id, commitment_due_at) where commitment_set_at is not null");
 }
 
 export async function upsertEmailIndexEntry(userId, input) {
@@ -184,6 +188,7 @@ export async function deleteEmailIndexEntries(userId, messages) {
           and email_account_id = $2
           and email_id = $3
           and mailbox = $4
+          and commitment_set_at is null
         returning *
       `,
       [userId, message.accountId, message.emailId, message.mailbox || ""],
@@ -193,7 +198,7 @@ export async function deleteEmailIndexEntries(userId, messages) {
   return deleted;
 }
 
-export async function archiveEmailIndexEntries(userId, messages) {
+export async function archiveEmailIndexEntries(userId, messages, { allowCommitted = false } = {}) {
   if (!dbPool || !messages.length) {
     return [];
   }
@@ -209,6 +214,7 @@ export async function archiveEmailIndexEntries(userId, messages) {
           and email_account_id = $2
           and email_id = $3
           and mailbox = $4
+          ${allowCommitted ? "" : "and commitment_set_at is null"}
         returning *
       `,
       [userId, message.accountId, message.emailId, message.mailbox || ""],
@@ -216,6 +222,60 @@ export async function archiveEmailIndexEntries(userId, messages) {
     archived.push(...result.rows.map(mapEmailIndexRow));
   }
   return archived;
+}
+
+export async function setEmailIndexCommitment(userId, messages, { text, dueAt }) {
+  if (!dbPool || !messages.length) {
+    return [];
+  }
+
+  const committed = [];
+  for (const message of messages) {
+    const result = await dbPool.query(
+      `
+        update email_index
+        set commitment_text = $5,
+            commitment_due_at = $6,
+            commitment_set_at = now(),
+            updated_at = now()
+        where user_id = $1
+          and email_account_id = $2
+          and email_id = $3
+          and mailbox = $4
+        returning *
+      `,
+      [userId, message.accountId, message.emailId, message.mailbox || "", text, dueAt],
+    );
+    committed.push(...result.rows.map(mapEmailIndexRow));
+  }
+  return committed;
+}
+
+export async function clearEmailIndexCommitment(userId, messages) {
+  if (!dbPool || !messages.length) {
+    return [];
+  }
+
+  const cleared = [];
+  for (const message of messages) {
+    const result = await dbPool.query(
+      `
+        update email_index
+        set commitment_text = null,
+            commitment_due_at = null,
+            commitment_set_at = null,
+            updated_at = now()
+        where user_id = $1
+          and email_account_id = $2
+          and email_id = $3
+          and mailbox = $4
+        returning *
+      `,
+      [userId, message.accountId, message.emailId, message.mailbox || ""],
+    );
+    cleared.push(...result.rows.map(mapEmailIndexRow));
+  }
+  return cleared;
 }
 
 export async function listEmailIndexEntries(userId, query) {
@@ -310,6 +370,24 @@ export async function getEmailIndexLabelCounts(userId, { accountIds = [], archiv
   return counts;
 }
 
+export async function countUnreadEmailIndexEntries(userId) {
+  if (!dbPool) {
+    return 0;
+  }
+  const result = await dbPool.query(
+    `
+      select count(*)::int as count
+      from email_index
+      where user_id = $1
+        and direction = 'inbox'
+        and archived = false
+        and is_read = false
+    `,
+    [userId],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
 export function mapEmailIndexRow(row) {
   return {
     id: row.email_id,
@@ -327,6 +405,11 @@ export function mapEmailIndexRow(row) {
     labels: normalizeLabels(row.labels),
     hasAttachments: Boolean(row.has_attachments),
     archived: Boolean(row.archived),
+    commitment: row.commitment_set_at ? {
+      text: row.commitment_text || "",
+      dueAt: row.commitment_due_at ? new Date(row.commitment_due_at).toISOString() : "",
+      setAt: row.commitment_set_at ? new Date(row.commitment_set_at).toISOString() : "",
+    } : null,
     replyCount: Number(row.reply_count || 0),
     respondingToEmailId: row.responding_to_email_id || null,
     direction: row.direction || "inbox",
@@ -360,15 +443,15 @@ export function emailIndexInputFromInboxMessage(account, message, overrides = {}
 
 function getEmailIndexOrderBy(sort = "newest") {
   if (sort === "oldest") {
-    return "received_at asc, created_at asc";
+    return "commitment_due_at asc nulls last, received_at asc, created_at asc";
   }
   if (sort === "sender") {
-    return "lower(coalesce(nullif(from_name, ''), from_email)) asc, received_at desc";
+    return "commitment_due_at asc nulls last, lower(coalesce(nullif(from_name, ''), from_email)) asc, received_at desc";
   }
   if (sort === "subject") {
-    return "lower(subject) asc, received_at desc";
+    return "commitment_due_at asc nulls last, lower(subject) asc, received_at desc";
   }
-  return "received_at desc, created_at desc";
+  return "commitment_due_at asc nulls last, received_at desc, created_at desc";
 }
 
 function normalizeLabels(labels) {

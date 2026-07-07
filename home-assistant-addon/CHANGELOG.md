@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.74
+
+- Added inbox commitments with due dates, completion and renege flows, and committed-email archive/delete protection.
+- Added best-effort PWA unread badge updates for browsers that support app badging.
+- Improved mobile pull-to-refresh reset behavior.
+
 ## 0.1.73
 
 - Kept the desktop AI Helper button and panel above compose/email modals.
