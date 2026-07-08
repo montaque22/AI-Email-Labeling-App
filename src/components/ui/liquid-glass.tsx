@@ -84,7 +84,7 @@ export function LiquidGlassCard({
       <div className={cn("absolute inset-0 z-0", blurClasses[blurIntensity])} style={{ borderRadius }} />
       <div className="absolute inset-0 z-10" style={{ borderRadius, boxShadow: glowStyles[glowIntensity] }} />
       <div className="absolute inset-0 z-20" style={{ borderRadius, boxShadow: shadowStyles[shadowIntensity] }} />
-      <div className="relative z-30 h-full">{children}</div>
+      <div className="relative z-30 flex h-full min-h-0 flex-col">{children}</div>
     </div>
   );
 }

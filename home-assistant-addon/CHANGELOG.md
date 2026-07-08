@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.80
+
+- Fixed Inbox layering so the email list stays visually below the sticky search controls.
+- Updated the email detail modal shell to use LiquidGlassCard.
+- Matched the desktop AI Draft drawer input/footer behavior to the AI Helper chat input.
+
 ## 0.1.79
 
 - Fixed desktop AI Draft so it opens as a side drawer beside the compose/reply modal.

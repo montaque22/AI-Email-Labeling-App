@@ -3563,8 +3563,8 @@ function InboxPage({
         ) : null}
 
         <div className="min-w-0 space-y-4">
-          <div className="sticky top-16 z-30 hidden min-w-0 max-w-full md:block">
-            <Card className="inbox-sticky-surface">
+          <div className="sticky top-16 z-50 hidden min-w-0 max-w-full md:block">
+            <Card className="inbox-sticky-surface relative z-50 bg-white/85">
               <CardContent className="flex flex-row flex-wrap items-center justify-between gap-3 p-3 sm:p-4">
               <div className="min-w-0 flex-1">
                 <InboxSearchBox
@@ -3588,7 +3588,7 @@ function InboxPage({
             </Card>
           </div>
 
-          <Card className="min-w-0 max-w-full overflow-hidden max-md:relative max-md:left-1/2 max-md:min-h-[calc(100svh-11rem)] max-md:w-screen max-md:-translate-x-1/2 max-md:rounded-none max-md:border-x-0 max-md:shadow-none">
+          <Card className="relative z-0 min-w-0 max-w-full overflow-hidden max-md:relative max-md:left-1/2 max-md:min-h-[calc(100svh-11rem)] max-md:w-screen max-md:-translate-x-1/2 max-md:rounded-none max-md:border-x-0 max-md:shadow-none">
             <div className="block border-b border-white/60 px-3 pb-2 pt-3 md:hidden">
               <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
             </div>
@@ -5389,7 +5389,12 @@ function InboxMessageModal({
         "flex max-h-[92vh] w-full items-stretch justify-center gap-3 transition-[max-width] duration-300",
         isAiActionOpen ? "max-w-7xl" : "max-w-4xl",
       )}>
-      <div className="max-h-[92vh] min-w-0 flex-1 overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+      <LiquidGlassCard
+        borderRadius="8px"
+        className="max-h-[92vh] min-w-0 flex-1 overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]"
+        glowIntensity="none"
+        shadowIntensity="xs"
+      >
         <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
           <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
             <div className="min-w-0">
@@ -5467,7 +5472,7 @@ function InboxMessageModal({
           ) : null}
           </div>
         </div>
-      </div>
+      </LiquidGlassCard>
       {isAiActionOpen ? (
         <InboxAiActionDrawer
           error={aiAction.error}
@@ -7450,7 +7455,7 @@ function InboxComposeModal({
 	          ))}
 	          {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
 	        </main>
-	        <footer className="relative shrink-0 border-t border-white/70 bg-white/50 p-3 backdrop-blur-xl">
+	        <footer className="relative shrink-0 border-t border-white/70 p-3">
 	          {isToolPickerOpen && filteredToolOptions.length > 0 ? (
 	            <div className="absolute bottom-[calc(100%+0.5rem)] left-3 right-3 z-[110] overflow-hidden rounded-xl border border-white/70 bg-white/95 shadow-2xl shadow-slate-900/15 backdrop-blur-xl">
 	              <div className="border-b border-zinc-200/70 px-3 py-2 text-xs font-medium uppercase tracking-normal text-zinc-500">Available tools</div>
@@ -7473,9 +7478,9 @@ function InboxComposeModal({
 	              </div>
 	            </div>
 	          ) : null}
-	          <div className="flex items-center gap-2">
+	          <div className="flex items-end gap-2 rounded-xl border border-white/70 bg-white/55 p-2 shadow-sm backdrop-blur-xl">
 	            <textarea
-	              className="min-h-10 min-w-0 flex-1 resize-none rounded-md border border-zinc-200 bg-white/70 px-3 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400 shadow-sm backdrop-blur-xl focus:border-zinc-400"
+	              className="min-h-10 max-h-28 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400"
 	              maxLength={1000}
 	              onBlur={() => window.setTimeout(() => setIsToolPickerOpen(false), 120)}
 	              onChange={(event) => updateAiInstruction(event.target.value, event.target.selectionStart)}
@@ -7495,7 +7500,7 @@ function InboxComposeModal({
 	              rows={1}
 	              value={aiInstruction}
 	            />
-	            <Button className="h-10 w-10 border border-white/70 bg-white/70 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/85" disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} size="icon" type="button" variant="outline">
+	            <Button className="h-10 w-10 shrink-0 border border-white/70 bg-white/65 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/85" disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} size="icon" type="button" variant="outline">
 	              {isGeneratingAiSuggestion ? <Loader /> : <Send className="h-4 w-4" />}
 	            </Button>
 	          </div>
