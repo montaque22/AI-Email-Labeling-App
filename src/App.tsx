@@ -5540,22 +5540,18 @@ function InboxCommitmentPanel({
     <section className={cn("mb-4 rounded-xl border p-4 text-sm shadow-sm", tone.panelClassName)}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex items-center gap-2 font-semibold">
-              <FileCheck2 className="h-4 w-4" />
-              <span>Commitment</span>
-            </div>
-            <p className={cn("text-xs font-medium", tone.metaClassName)}>
-              Created {formatRelativeDuration(commitment.setAt, { suffix: "ago" })}
-            </p>
+          <div className="flex items-center gap-2 font-semibold">
+            <FileCheck2 className="h-4 w-4" />
+            <span>Commitment</span>
           </div>
           <div
             className="prose prose-sm max-w-none break-words prose-p:my-1 prose-ul:my-1 prose-ol:my-1"
             dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(commitment.text) }}
           />
-          <p className={cn("text-xs font-semibold", tone.metaClassName)}>
-            Due {formatRelativeDuration(commitment.dueAt, { prefix: "in" })}
-          </p>
+          <div className={cn("flex flex-col gap-1 text-xs font-semibold sm:flex-row sm:items-center sm:justify-between", tone.metaClassName)}>
+            <p>Due {formatRelativeDuration(commitment.dueAt, { prefix: "in" })}</p>
+            <p className="sm:text-right">Created {formatRelativeDuration(commitment.setAt, { suffix: "ago" })}</p>
+          </div>
         </div>
         <div className="flex shrink-0 gap-2">
           <Button className="border-red-200 bg-red-50 text-red-700 hover:bg-red-100" disabled={isBusy} onClick={onRenege} size="sm" type="button" variant="outline">
@@ -5845,13 +5841,13 @@ function AiActionCarousel({
 
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Suggested actions</p>
+              <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Available actions</p>
               {isSuggestionsLoading ? <Loader /> : null}
             </div>
             {isSuggestionsLoading ? (
               <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">Finding valid actions from your active MCP tools...</p>
             ) : suggestions.length === 0 ? (
-              <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">No suggested actions were found for the active custom MCP tools.</p>
+              <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">No available actions were found for the active custom MCP tools.</p>
             ) : (
               <div className="overflow-hidden rounded-xl border border-white/70 bg-white/45 shadow-sm backdrop-blur-xl">
                 {suggestions.map((action) => (

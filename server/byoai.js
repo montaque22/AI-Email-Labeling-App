@@ -96,7 +96,7 @@ const AI_EMAIL_ACTION_SUGGESTIONS_SCHEMA = {
     actions: {
       type: "array",
       minItems: 1,
-      maxItems: 6,
+      maxItems: 25,
       items: {
         type: "object",
         properties: {
@@ -1100,7 +1100,7 @@ async function suggestEmailActions(userId, request) {
       "You create concise email action buttons for Emailable.",
       "Read the active custom MCP tools and return only actions that map to a real listed tool.",
       "Return at least one action when tools are listed.",
-      "Prefer one useful action per listed tool, up to six total actions.",
+      "Return one useful action for every listed tool.",
       "Do not invent tools. Every action must use an exact clientId and toolName from the catalog.",
       "Labels should be short button text, such as Create task, Create event, Add CRM note, or Send alert.",
       "Prompts should be specific instructions for preparing a tool call from the current email.",
@@ -1144,11 +1144,18 @@ async function suggestEmailActions(userId, request) {
       action.label &&
       action.prompt &&
       validTools.has(`${action.toolClientId}:${action.toolName}`),
-    )
-    .slice(0, 6);
+    );
 
   if (actions.length > 0) {
-    return { actions, aiRequest, aiResponse: parsed, fallbackUsed: false };
+    const fallbackActions = buildFallbackEmailActionSuggestions(tools, request);
+    const actionByTool = new Map(actions.map((action) => [`${action.toolClientId}:${action.toolName}`, action]));
+    for (const fallbackAction of fallbackActions) {
+      const key = `${fallbackAction.toolClientId}:${fallbackAction.toolName}`;
+      if (!actionByTool.has(key)) {
+        actionByTool.set(key, fallbackAction);
+      }
+    }
+    return { actions: Array.from(actionByTool.values()), aiRequest, aiResponse: parsed, fallbackUsed: actions.length < fallbackActions.length };
   }
 
   return {
@@ -1273,7 +1280,7 @@ async function listActiveCustomMcpActionTools(userId) {
 }
 
 function buildFallbackEmailActionSuggestions(tools, request) {
-  return tools.slice(0, 6).map((entry) => {
+  return tools.map((entry) => {
     const label = buildToolActionLabel(entry.tool.name);
     return {
       toolClientId: entry.client.id,

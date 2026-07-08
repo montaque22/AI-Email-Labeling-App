@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.76
+
+- Changed AI Actions to show available actions for every selected custom MCP tool.
+- Moved commitment created timing beside due timing in the commitment footer.
+
 ## 0.1.75
 
 - Improved commitment urgency colors, markdown rendering, and relative due/created timing.
