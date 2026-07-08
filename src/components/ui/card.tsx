@@ -1,8 +1,17 @@
 import * as React from "react";
 import { cn } from "../../lib/utils";
+import { LiquidGlassCard } from "./liquid-glass";
 
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("glass-surface rounded-lg", className)} {...props} />;
+  return (
+    <LiquidGlassCard
+      borderRadius="8px"
+      className={cn("text-zinc-950 bg-white/8", className)}
+      glowIntensity="none"
+      shadowIntensity="xs"
+      {...props}
+    />
+  );
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {

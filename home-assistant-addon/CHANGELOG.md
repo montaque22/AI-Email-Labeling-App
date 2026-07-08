@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.79
+
+- Fixed desktop AI Draft so it opens as a side drawer beside the compose/reply modal.
+- Added the LiquidGlassCard component and routed shared cards through it.
+- Tightened the desktop Inbox Accounts and Labels layout and sticky behavior.
+
 ## 0.1.78
 
 - Tightened the Inbox search and filter layout.

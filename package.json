@@ -32,6 +32,7 @@
     "imapflow": "^1.3.7",
     "lucide-react": "latest",
     "mailparser": "^3.9.14",
+    "motion": "^12.42.2",
     "nodemailer": "^8.0.11",
     "pg": "latest",
     "react": "^18.3.1",

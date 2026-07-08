@@ -52,6 +52,7 @@ import {
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
+import { LiquidGlassCard } from "./components/ui/liquid-glass";
 import { authClient } from "./lib/auth-client";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
@@ -3537,7 +3538,8 @@ function InboxPage({
       <div className={cn("grid min-w-0 gap-4 xl:gap-5", isLabelFilteredInboxMode(inboxMode) ? "xl:grid-cols-[280px_1px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
         {isLabelFilteredInboxMode(inboxMode) ? (
           <>
-            <div className="hidden space-y-4 pr-1 xl:block">
+            <div className="sticky top-16 hidden max-h-[calc(100vh-5rem)] min-h-0 self-start overflow-y-auto pr-1 xl:block">
+              <div className="space-y-3">
               <Card>
                 <CardHeader>
                   <CardTitle>Accounts</CardTitle>
@@ -3545,13 +3547,14 @@ function InboxPage({
                 </CardHeader>
                 <CardContent>{accountPicker}</CardContent>
               </Card>
-              <Card className="sticky top-16 flex max-h-[calc(100vh-5rem)] min-h-0 flex-col overflow-hidden">
+              <Card className="flex min-h-0 flex-col overflow-hidden">
                 <CardHeader>
                   <CardTitle>Labels</CardTitle>
                   <CardDescription>Choose a label or folder.</CardDescription>
                 </CardHeader>
                 <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto">{labelButtons}</CardContent>
               </Card>
+              </div>
             </div>
             <div className="hidden xl:flex xl:items-start xl:justify-center">
               <div className="mt-3 h-96 w-px rounded-full bg-gradient-to-b from-transparent via-white/80 to-transparent shadow-[0_0_18px_rgba(148,163,184,0.35)]" />
@@ -7098,11 +7101,16 @@ function InboxComposeModal({
   return (
     <>
 	    <div className={cn("fixed inset-0 z-50", isPush ? "flex h-[100dvh] w-screen flex-col overflow-hidden bg-[#f7f7f7] md:hidden" : "flex items-center justify-center gap-3 overflow-hidden bg-slate-950/20 p-4")}>
-	      <div className={cn(
+	      <LiquidGlassCard
+	        borderRadius="8px"
+	        className={cn(
 	        isPush
 	          ? "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden"
 	          : cn("h-[92vh] w-full overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]", isAiDraftOpen ? "max-w-3xl" : "max-w-5xl"),
-	      )}>
+	        )}
+	        glowIntensity="none"
+	        shadowIntensity="xs"
+	      >
         <div className={cn(
           isPush
             ? "flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
@@ -7136,7 +7144,7 @@ function InboxComposeModal({
                 <Button aria-label="Send email" disabled={isSaving || !accountId || !to.trim() || !bodyText.trim()} form={composeFormId} size="icon" type="submit" variant="ghost">
                   {isSaving ? <Loader /> : <Send className="h-4 w-4" />}
                 </Button>
-              </div>
+	              </div>
             ) : (
               <Button aria-label={isAiDraftOpen ? "Back to email draft" : "Close compose"} onClick={isAiDraftOpen ? () => setIsAiDraftOpen(false) : onClose} size="icon" type="button" variant="ghost">
                 <X className="h-4 w-4" />
@@ -7216,8 +7224,8 @@ function InboxComposeModal({
                         </span>
                       </button>
                     ))}
-                  </div>
-                </div>
+	                  </div>
+	                </div>
               ) : null}
               <div className="flex items-center gap-2">
                 <textarea
@@ -7246,8 +7254,8 @@ function InboxComposeModal({
                 <Button className="h-9 w-9 border border-white/70 bg-white/55 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/75" disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} size="icon" type="button" variant="outline">
                   {isGeneratingAiSuggestion ? <Loader /> : <Send className="h-4 w-4" />}
                 </Button>
-              </div>
-            </div>
+	              </div>
+	            </div>
           </div>
         ) : (
 	        <form className="flex min-h-0 flex-1 flex-col overflow-hidden" id={composeFormId} onSubmit={submitEmail}>
@@ -7275,8 +7283,8 @@ function InboxComposeModal({
                   >
                     <ChevronRight className={cn("h-4 w-4 transition-transform", isOriginalMessageExpanded && "rotate-90")} />
                   </Button>
-                </div>
-              </div>
+	                </div>
+	              </div>
               {isOriginalMessageExpanded ? (
                 <div className="max-h-[46vh] min-h-64 overflow-y-auto rounded-lg border border-white/70 bg-white/80 p-3">
                   {replyContext.bodyHtml ? (
@@ -7321,8 +7329,8 @@ function InboxComposeModal({
                 placeholder="Bcc"
                 value={bcc}
               />
-            </div>
-          </div>
+	        </div>
+	            </div>
           <div className="space-y-2 rounded-xl bg-white/55 p-3 ring-1 ring-white/60">
             <input
               className="w-full rounded-lg border border-zinc-200 bg-white/25 px-3 py-3 text-xl font-semibold text-zinc-950 outline-none placeholder:text-zinc-400 focus:border-zinc-400"
@@ -7379,11 +7387,15 @@ function InboxComposeModal({
           </div>
         </form>
         )}
-        </div>
-      </div>
-	    </div>
+	        </div>
+	      </LiquidGlassCard>
 	    {isAiDraftOpen && !isPush ? (
-	      <aside className="inbox-ai-action-drawer hidden h-[92vh] w-[380px] shrink-0 flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)] md:flex">
+	      <LiquidGlassCard
+	        borderRadius="8px"
+	        className="inbox-ai-action-drawer hidden h-[92vh] w-[380px] shrink-0 flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)] md:flex"
+	        glowIntensity="none"
+	        shadowIntensity="xs"
+	      >
 	        <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/70 px-4">
 	          <div className="min-w-0">
 	            <h3 className="text-base font-semibold text-zinc-950">AI Draft</h3>
@@ -7488,8 +7500,9 @@ function InboxComposeModal({
 	            </Button>
 	          </div>
 	        </footer>
-	      </aside>
+	      </LiquidGlassCard>
 	    ) : null}
+	    </div>
 	    {linkAction ? <EmailLinkActionSheet link={linkAction} onClose={() => setLinkAction(null)} /> : null}
 	    </>
 	  );
