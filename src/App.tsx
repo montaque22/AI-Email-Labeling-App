@@ -530,6 +530,10 @@ type InboxToast = {
 };
 
 type InboxCelebration = "confetti" | "thumbs-down" | null;
+type InboxCommitmentConfirm = {
+  kind: "complete" | "renege";
+  messages: InboxMessage[];
+} | null;
 
 type InboxAiActionPlan = {
   toolClientId: string;
@@ -1812,6 +1816,7 @@ function InboxPage({
   const [commitmentText, setCommitmentText] = useState("");
   const [commitmentDueAt, setCommitmentDueAt] = useState("");
   const [commitmentError, setCommitmentError] = useState<string | null>(null);
+  const [commitmentConfirm, setCommitmentConfirm] = useState<InboxCommitmentConfirm>(null);
   const [celebration, setCelebration] = useState<InboxCelebration>(null);
   const [mobilePullDistance, setMobilePullDistance] = useState(0);
   const [isMobilePullRefreshing, setIsMobilePullRefreshing] = useState(false);
@@ -1994,6 +1999,7 @@ function InboxPage({
         ruleEditorMessage ||
         isComposeOpen ||
         commitmentDraftOpen ||
+        commitmentConfirm ||
         isMobileFilterOpen ||
         isMobileLabelPickerOpen,
     );
@@ -2011,7 +2017,7 @@ function InboxPage({
       document.body.style.overflow = previousBodyOverflow;
       document.documentElement.style.overflow = previousHtmlOverflow;
     };
-  }, [selectedMessage, ruleEditorMessage, isComposeOpen, commitmentDraftOpen, isMobileFilterOpen, isMobileLabelPickerOpen]);
+  }, [selectedMessage, ruleEditorMessage, isComposeOpen, commitmentDraftOpen, commitmentConfirm, isMobileFilterOpen, isMobileLabelPickerOpen]);
 
   useEffect(() => {
     function refreshWhenVisible() {
@@ -2198,10 +2204,10 @@ function InboxPage({
     if (isLoading || isLoadingMore || isMobilePullRefreshing || selectedMessage || ruleEditorMessage || isComposeOpen || isMobileFilterOpen || isMobileLabelPickerOpen || commitmentDraftOpen) {
       return false;
     }
-    if ((target as HTMLElement | null)?.closest("button, input, textarea, select, a, [role='button']")) {
+    if ((target as HTMLElement | null)?.closest("button, input, textarea, select, a")) {
       return false;
     }
-    return (document.scrollingElement?.scrollTop ?? window.scrollY) <= 1;
+    return getDocumentScrollTop() <= 8;
   }
 
   function handleMobilePullStart(event: ReactTouchEvent<HTMLDivElement>) {
@@ -2226,7 +2232,7 @@ function InboxPage({
 
     const currentY = event.touches[0]?.clientY ?? startY;
     const distance = currentY - startY;
-    if (distance <= 0 || (document.scrollingElement?.scrollTop ?? window.scrollY) > 1) {
+    if (distance <= 0 || getDocumentScrollTop() > 8) {
       setMobilePullDistance(0);
       mobilePullActiveRef.current = false;
       mobilePullReadyHapticRef.current = false;
@@ -2379,6 +2385,10 @@ function InboxPage({
       setNextPageToken(encodeInboxPageToken(nextPageState));
       if (reset) {
         setSelectedMessageKeys([]);
+        setMobilePullDistance(0);
+        mobilePullActiveRef.current = false;
+        mobilePullReadyHapticRef.current = false;
+        mobilePullStartYRef.current = null;
         void refreshPwaUnreadBadge();
       }
       if (loadedMessages.length === 0 && failures.length > 0) {
@@ -2799,7 +2809,7 @@ function InboxPage({
 
   async function completeCommitment(messagesToComplete: InboxMessage[]) {
     const committedMessagesToComplete = messagesToComplete.filter((message) => Boolean(message.commitment));
-    if (committedMessagesToComplete.length === 0 || !window.confirm("Is this commitment complete and okay to archive?")) {
+    if (committedMessagesToComplete.length === 0) {
       return;
     }
 
@@ -2835,6 +2845,7 @@ function InboxPage({
         setMessageDetail(null);
       }
       setIsMobileEditMode(false);
+      setCommitmentConfirm(null);
       void refreshPwaUnreadBadge();
       showInboxToast("Commitment completed and email archived.");
       showCelebration("confetti");
@@ -2848,7 +2859,7 @@ function InboxPage({
 
   async function renegeCommitment(messagesToRenege: InboxMessage[]) {
     const committedMessagesToRenege = messagesToRenege.filter((message) => Boolean(message.commitment));
-    if (committedMessagesToRenege.length === 0 || !window.confirm("Break this commitment and move the email back into the inbox?")) {
+    if (committedMessagesToRenege.length === 0) {
       return;
     }
 
@@ -2879,6 +2890,7 @@ function InboxPage({
       updateMessagesWithCommitment(clearedKeys, null);
       setSelectedMessageKeys((current) => current.filter((key) => !clearedKeys.has(key)));
       setIsMobileEditMode(false);
+      setCommitmentConfirm(null);
       showInboxToast("Commitment removed.");
       showCelebration("thumbs-down");
     } catch {
@@ -3705,8 +3717,8 @@ function InboxPage({
               onDelete={(message) => void deleteSelectedMessages([message])}
               onArchive={(message) => void archiveSelectedMessages([message])}
               onCommitment={(message) => openCommitmentModal([message])}
-              onCompleteCommitment={(message) => void completeCommitment([message])}
-              onRenegeCommitment={(message) => void renegeCommitment([message])}
+              onCompleteCommitment={(message) => setCommitmentConfirm({ kind: "complete", messages: [message] })}
+              onRenegeCommitment={(message) => setCommitmentConfirm({ kind: "renege", messages: [message] })}
               onEditRule={(message) => setRuleEditorMessage(message)}
               onAiAction={isByoAiActive ? (message) => openAiAction(message) : undefined}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
@@ -3748,8 +3760,8 @@ function InboxPage({
               onDelete={(message) => void deleteSelectedMessages([message])}
               onArchive={(message) => void archiveSelectedMessages([message])}
               onCommitment={(message) => openCommitmentModal([message])}
-              onCompleteCommitment={(message) => void completeCommitment([message])}
-              onRenegeCommitment={(message) => void renegeCommitment([message])}
+              onCompleteCommitment={(message) => setCommitmentConfirm({ kind: "complete", messages: [message] })}
+              onRenegeCommitment={(message) => setCommitmentConfirm({ kind: "renege", messages: [message] })}
               onEditRule={(message) => setRuleEditorMessage(message)}
               onAiAction={isByoAiActive ? (message) => openAiAction(message) : undefined}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
@@ -3848,6 +3860,17 @@ function InboxPage({
           onSave={() => void saveCommitment()}
           onTextChange={setCommitmentText}
           text={commitmentText}
+        />
+      ) : null}
+      {commitmentConfirm ? (
+        <InboxCommitmentConfirmModal
+          isBusy={isCommitmentActionRunning}
+          kind={commitmentConfirm.kind}
+          messageCount={commitmentConfirm.messages.length}
+          onCancel={() => setCommitmentConfirm(null)}
+          onConfirm={() => commitmentConfirm.kind === "complete"
+            ? void completeCommitment(commitmentConfirm.messages)
+            : void renegeCommitment(commitmentConfirm.messages)}
         />
       ) : null}
       {celebration ? <InboxCelebrationOverlay type={celebration} /> : null}
@@ -4727,6 +4750,7 @@ function InboxMessageRow({
   onToggle: () => void;
 }) {
   const replyCount = typeof message.replyCount === "number" ? message.replyCount : 0;
+  const commitmentTone = getCommitmentTone(message.commitment);
   const longPressTimeoutRef = useRef<number | null>(null);
   const touchStartXRef = useRef(0);
   const touchStartYRef = useRef(0);
@@ -4813,7 +4837,7 @@ function InboxMessageRow({
         </button>
         <button className="flex min-w-0 cursor-pointer items-center gap-2 text-left" onClick={onOpen} type="button">
           {message.commitment ? (
-            <Badge className="shrink-0 border-amber-200 bg-amber-50 text-amber-700">
+            <Badge className={cn("shrink-0", commitmentTone.labelClassName)}>
               <FileCheck2 className="mr-1 h-3 w-3" />
               Commitment
             </Badge>
@@ -4894,7 +4918,7 @@ function InboxMessageRow({
             {message.commitment || message.labels.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {message.commitment ? (
-                  <Badge className="w-fit border-amber-200 bg-amber-50 text-amber-700">
+                  <Badge className={cn("w-fit", commitmentTone.labelClassName)}>
                     <FileCheck2 className="mr-1 h-3 w-3" />
                     Commitment
                   </Badge>
@@ -5511,21 +5535,30 @@ function InboxCommitmentPanel({
   onComplete: () => void;
   onRenege: () => void;
 }) {
+  const tone = getCommitmentTone(commitment);
   return (
-    <section className="rounded-xl border border-amber-200/80 bg-amber-50/85 p-4 text-sm text-amber-950 shadow-sm">
+    <section className={cn("mb-4 rounded-xl border p-4 text-sm shadow-sm", tone.panelClassName)}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 space-y-1">
-          <div className="flex items-center gap-2 font-semibold">
-            <FileCheck2 className="h-4 w-4" />
-            <span>Commitment</span>
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-center gap-2 font-semibold">
+              <FileCheck2 className="h-4 w-4" />
+              <span>Commitment</span>
+            </div>
+            <p className={cn("text-xs font-medium", tone.metaClassName)}>
+              Created {formatRelativeDuration(commitment.setAt, { suffix: "ago" })}
+            </p>
           </div>
-          <p className="break-words">{commitment.text}</p>
-          <p className="text-xs text-amber-800">
-            Due {formatDateTime(commitment.dueAt)} · Set {formatDateTime(commitment.setAt)}
+          <div
+            className="prose prose-sm max-w-none break-words prose-p:my-1 prose-ul:my-1 prose-ol:my-1"
+            dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(commitment.text) }}
+          />
+          <p className={cn("text-xs font-semibold", tone.metaClassName)}>
+            Due {formatRelativeDuration(commitment.dueAt, { prefix: "in" })}
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
-          <Button disabled={isBusy} onClick={onRenege} size="sm" type="button" variant="outline">
+          <Button className="border-red-200 bg-red-50 text-red-700 hover:bg-red-100" disabled={isBusy} onClick={onRenege} size="sm" type="button" variant="outline">
             Renege
           </Button>
           <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={isBusy} onClick={onComplete} size="sm" type="button">
@@ -5609,6 +5642,52 @@ function InboxCommitmentModal({
             <Button disabled={isSaving || !text.trim() || !dueAt} onClick={onSave} type="button">
               {isSaving ? <Loader /> : <FileCheck2 className="h-4 w-4" />}
               Save commitment
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InboxCommitmentConfirmModal({
+  isBusy,
+  kind,
+  messageCount,
+  onCancel,
+  onConfirm,
+}: {
+  isBusy: boolean;
+  kind: "complete" | "renege";
+  messageCount: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const isRenege = kind === "renege";
+  return (
+    <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-950/20 p-4">
+      <div className="w-full max-w-md rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+        <div className="rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60">
+          <h3 className="text-lg font-semibold text-zinc-950">
+            {isRenege ? "Break this commitment?" : "Complete this commitment?"}
+          </h3>
+          <p className="mt-2 text-sm text-zinc-600">
+            {isRenege
+              ? `This will remove the commitment data from ${messageCount === 1 ? "this email" : `${messageCount} emails`} and keep it in the inbox.`
+              : `This confirms ${messageCount === 1 ? "this commitment is" : "these commitments are"} complete and archives ${messageCount === 1 ? "the email" : "the emails"}.`}
+          </p>
+          <div className="mt-6 flex justify-end gap-2">
+            <Button disabled={isBusy} onClick={onCancel} type="button" variant="outline">
+              Cancel
+            </Button>
+            <Button
+              className={isRenege ? "bg-red-600 text-white hover:bg-red-700" : "bg-emerald-600 text-white hover:bg-emerald-700"}
+              disabled={isBusy}
+              onClick={onConfirm}
+              type="button"
+            >
+              {isBusy ? <Loader /> : isRenege ? <X className="h-4 w-4" /> : <Check className="h-4 w-4" />}
+              {isRenege ? "Renege" : "Complete"}
             </Button>
           </div>
         </div>
@@ -10597,23 +10676,25 @@ function McpServerModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
-      <div className="w-full max-w-4xl rounded-2xl border border-white/70 bg-white/35 p-3 shadow-2xl backdrop-blur-[5px]">
-        <div className="rounded-xl border border-white/80 bg-white/40 p-5 shadow-sm">
-          <div className="mb-5 flex items-start justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-zinc-950">{isSystem ? "System MCP Tools" : isSaved ? "Edit MCP server" : "Add MCP server"}</h2>
-              <p className="text-sm text-zinc-500">
-                {isSystem
-                  ? "Choose which built-in Emailable MCP tools AI endpoints can reference. This server is managed by the system."
-                  : "Connect to a Streamable HTTP MCP server and choose which tools Emailable can reference."}
-              </p>
+      <div className="flex max-h-[92vh] w-full max-w-4xl rounded-2xl border border-white/70 bg-white/35 p-3 shadow-2xl backdrop-blur-[5px]">
+        <div className="flex min-h-0 w-full flex-col overflow-hidden rounded-xl border border-white/80 bg-white/40 shadow-sm">
+          <div className="shrink-0 border-b border-white/70 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-950">{isSystem ? "System MCP Tools" : isSaved ? "Edit MCP server" : "Add MCP server"}</h2>
+                <p className="text-sm text-zinc-500">
+                  {isSystem
+                    ? "Choose which built-in Emailable MCP tools AI endpoints can reference. This server is managed by the system."
+                    : "Connect to a Streamable HTTP MCP server and choose which tools Emailable can reference."}
+                </p>
+              </div>
+              <Button aria-label="Close MCP server modal" disabled={isSaving} onClick={onCancel} size="icon" type="button" variant="ghost">
+                <X className="h-4 w-4" />
+              </Button>
             </div>
-            <Button aria-label="Close MCP server modal" disabled={isSaving} onClick={onCancel} size="icon" type="button" variant="ghost">
-              <X className="h-4 w-4" />
-            </Button>
           </div>
 
-          <div className="space-y-4">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
             {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
             {message ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</p> : null}
 
@@ -10679,7 +10760,7 @@ function McpServerModal({
             ) : null}
           </div>
 
-          <div className="mt-6 flex flex-wrap justify-end gap-2">
+          <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-white/70 p-5">
             <Button disabled={isSaving} onClick={onCancel} type="button" variant="outline">
               Cancel
             </Button>
@@ -14457,6 +14538,62 @@ function formatDateTime(value: string) {
   }).format(date);
 }
 
+function getCommitmentTone(commitment: InboxCommitment | null | undefined) {
+  const dueAt = commitment?.dueAt ? new Date(commitment.dueAt).getTime() : Number.NaN;
+  const hoursUntilDue = Number.isNaN(dueAt) ? Number.POSITIVE_INFINITY : (dueAt - Date.now()) / (60 * 60 * 1000);
+  if (hoursUntilDue <= 8) {
+    return {
+      labelClassName: "border-red-200 bg-red-50 text-red-700",
+      metaClassName: "text-red-800",
+      panelClassName: "border-red-200/90 bg-red-50/90 text-red-950",
+    };
+  }
+  if (hoursUntilDue <= 24) {
+    return {
+      labelClassName: "border-amber-200 bg-amber-50 text-amber-700",
+      metaClassName: "text-amber-800",
+      panelClassName: "border-amber-200/90 bg-amber-50/90 text-amber-950",
+    };
+  }
+  return {
+    labelClassName: "border-violet-200 bg-violet-50 text-violet-700",
+    metaClassName: "text-violet-800",
+    panelClassName: "border-violet-200/90 bg-violet-50/90 text-violet-950",
+  };
+}
+
+function formatRelativeDuration(value: string, options: { prefix?: string; suffix?: string } = {}) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const diffMs = date.getTime() - Date.now();
+  const absoluteSeconds = Math.max(1, Math.round(Math.abs(diffMs) / 1000));
+  const units = [
+    { label: "Year", seconds: 365 * 24 * 60 * 60 },
+    { label: "Month", seconds: 30 * 24 * 60 * 60 },
+    { label: "Week", seconds: 7 * 24 * 60 * 60 },
+    { label: "Day", seconds: 24 * 60 * 60 },
+    { label: "Hour", seconds: 60 * 60 },
+    { label: "Minute", seconds: 60 },
+    { label: "Second", seconds: 1 },
+  ];
+  const unit = units.find((candidate) => absoluteSeconds >= candidate.seconds) ?? units[units.length - 1];
+  const valueCount = Math.max(1, Math.floor(absoluteSeconds / unit.seconds));
+  const unitText = `${unit.label}${valueCount === 1 ? "" : "s"}`;
+  const phrase = `${valueCount} ${unitText}`;
+
+  if (diffMs < 0 && options.prefix === "in") {
+    return `${phrase} overdue`;
+  }
+
+  return [options.prefix, phrase, options.suffix].filter(Boolean).join(" ");
+}
+
 function formatDateTimeLocalInput(value: Date) {
   if (Number.isNaN(value.getTime())) {
     return "";
@@ -14464,6 +14601,15 @@ function formatDateTimeLocalInput(value: Date) {
 
   const offsetMs = value.getTimezoneOffset() * 60_000;
   return new Date(value.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function getDocumentScrollTop() {
+  return Math.max(
+    window.scrollY || 0,
+    document.documentElement.scrollTop || 0,
+    document.body.scrollTop || 0,
+    document.scrollingElement?.scrollTop || 0,
+  );
 }
 
 function formatInboxListDate(value: string) {

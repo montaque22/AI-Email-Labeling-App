@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.75
+
+- Improved commitment urgency colors, markdown rendering, and relative due/created timing.
+- Replaced commitment browser confirmations with glass app modals.
+- Fixed mobile pull-to-refresh so pulling from email rows works consistently.
+- Constrained the BYOAI MCP server modal so the header and footer stay accessible with long tool lists.
+
 ## 0.1.74
 
 - Added inbox commitments with due dates, completion and renege flows, and committed-email archive/delete protection.
