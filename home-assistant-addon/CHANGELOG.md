@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.78
+
+- Tightened the Inbox search and filter layout.
+- Made desktop Labels sticky again while keeping Accounts separate.
+- Updated compose/reply modal scrolling so the header and footer remain in view without a blurred sticky footer.
+- Adjusted desktop AI Draft to open beside the compose modal like the AI Actions drawer.
+
 ## 0.1.77
 
 - Added attachment payload support when sending emails and saving drafts, including IMAP-backed accounts.

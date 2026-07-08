@@ -3191,12 +3191,12 @@ function InboxPage({
   }
 
   const accountPicker = (
-    <div className="relative z-10" data-inbox-account-menu>
-      <Button className="w-full justify-between sm:w-auto" onClick={() => setIsAccountMenuOpen((current) => !current)} type="button" variant="outline">
+    <div className="relative z-10 w-full" data-inbox-account-menu>
+      <Button className="w-full justify-between" onClick={() => setIsAccountMenuOpen((current) => !current)} type="button" variant="outline">
         Accounts {selectedAccountIds.length}/{accounts.length}
       </Button>
       {isAccountMenuOpen ? (
-        <div className="absolute left-0 top-11 z-20 w-[calc(100vw-2rem)] max-w-80 rounded-md border border-zinc-200 bg-white p-2 shadow-xl">
+        <div className="absolute left-0 top-11 z-20 w-full min-w-72 rounded-md border border-zinc-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex gap-2">
             <Button onClick={() => setSelectedAccountIds(accounts.map((account) => account.id))} size="sm" type="button" variant="outline">
               All
@@ -3257,7 +3257,6 @@ function InboxPage({
 
   const labelSelect = (
     <label className="block">
-      <span className="mb-2 block text-xs font-medium uppercase text-zinc-500">Labels</span>
       <select
         className="h-10 w-full min-w-0 rounded-md border border-zinc-200 bg-white/70 px-3 text-sm"
         onChange={(event) => setSelectedLabelId(event.target.value)}
@@ -3538,7 +3537,7 @@ function InboxPage({
       <div className={cn("grid min-w-0 gap-4 xl:gap-5", isLabelFilteredInboxMode(inboxMode) ? "xl:grid-cols-[280px_1px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
         {isLabelFilteredInboxMode(inboxMode) ? (
           <>
-            <div className="hidden max-h-[calc(100vh-5rem)] min-h-0 space-y-4 overflow-y-auto pr-1 xl:block">
+            <div className="hidden space-y-4 pr-1 xl:block">
               <Card>
                 <CardHeader>
                   <CardTitle>Accounts</CardTitle>
@@ -3546,7 +3545,7 @@ function InboxPage({
                 </CardHeader>
                 <CardContent>{accountPicker}</CardContent>
               </Card>
-              <Card className="flex min-h-0 flex-col overflow-hidden">
+              <Card className="sticky top-16 flex max-h-[calc(100vh-5rem)] min-h-0 flex-col overflow-hidden">
                 <CardHeader>
                   <CardTitle>Labels</CardTitle>
                   <CardDescription>Choose a label or folder.</CardDescription>
@@ -3566,7 +3565,7 @@ function InboxPage({
               <CardContent className="flex flex-row flex-wrap items-center justify-between gap-3 p-3 sm:p-4">
               <div className="min-w-0 flex-1">
                 <InboxSearchBox
-                  className="w-full sm:w-72 lg:w-80"
+                  className="w-full"
                   isLoading={isInboxSearchPending}
                   isOpen={isInboxSearchMenuOpen}
                   onClear={clearInboxSearch}
@@ -7098,19 +7097,19 @@ function InboxComposeModal({
 
   return (
     <>
-    <div className={cn("fixed inset-0 z-50", isPush ? "flex h-[100dvh] w-screen flex-col overflow-hidden bg-[#f7f7f7] md:hidden" : "flex items-center justify-center overflow-hidden bg-slate-950/20 p-4")}>
-      <div className={cn(
-        isPush
-          ? "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden"
-          : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]",
-      )}>
+	    <div className={cn("fixed inset-0 z-50", isPush ? "flex h-[100dvh] w-screen flex-col overflow-hidden bg-[#f7f7f7] md:hidden" : "flex items-center justify-center gap-3 overflow-hidden bg-slate-950/20 p-4")}>
+	      <div className={cn(
+	        isPush
+	          ? "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden"
+	          : cn("h-[92vh] w-full overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]", isAiDraftOpen ? "max-w-3xl" : "max-w-5xl"),
+	      )}>
         <div className={cn(
           isPush
             ? "flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
-          : "flex max-h-[calc(92vh-2rem)] min-h-0 flex-col overflow-hidden rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60",
-        )}>
-          <div className={cn(
-            "mb-4 flex items-center justify-between gap-4",
+	          : "flex h-full min-h-0 flex-col overflow-hidden rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60",
+	        )}>
+	          <div className={cn(
+	            "mb-4 flex h-14 shrink-0 items-center justify-between gap-4",
             isPush && (isAiDraftOpen
               ? "z-20 mb-0 h-16 shrink-0 border-b border-zinc-200 bg-white/90 px-2 py-2 backdrop-blur-xl"
               : "z-20 mb-0 h-16 shrink-0 border-b border-zinc-200 bg-white/90 px-2 py-2 backdrop-blur-xl"),
@@ -7251,9 +7250,10 @@ function InboxComposeModal({
             </div>
           </div>
         ) : (
-        <form className={cn("min-h-0 flex-1 space-y-4 overflow-y-auto", isPush ? "p-4 pb-28" : "pr-1")} id={composeFormId} onSubmit={submitEmail}>
-          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-          {savedMessage ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{savedMessage}</p> : null}
+	        <form className="flex min-h-0 flex-1 flex-col overflow-hidden" id={composeFormId} onSubmit={submitEmail}>
+	          <div className={cn("min-h-0 flex-1 space-y-4 overflow-y-auto", isPush ? "p-4 pb-28" : "pr-1")}>
+	          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+	          {savedMessage ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{savedMessage}</p> : null}
           {replyContext ? (
             <div className="rounded-xl border border-zinc-200 bg-white/60 p-4 shadow-sm">
               <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-zinc-200 pb-3">
@@ -7352,16 +7352,17 @@ function InboxComposeModal({
               type="file"
             />
             <p className="mt-1 text-xs text-zinc-500">Attachments are included when sending or saving drafts.</p>
-            {attachments.length > 0 ? (
-              <div className="mt-2 flex flex-wrap gap-2">
+	            {attachments.length > 0 ? (
+	              <div className="mt-2 flex flex-wrap gap-2">
                 {attachments.map((attachment) => (
                   <Badge key={`${attachment.filename}-${attachment.size}`}>{attachment.filename}</Badge>
                 ))}
               </div>
-            ) : null}
-          </label>
-          <div className={cn("sticky bottom-0 z-10 flex justify-end gap-2 border-t border-zinc-200 bg-white/70 pt-4 backdrop-blur-xl", isPush && "hidden")}>
-            <Button onClick={onClose} type="button" variant="outline">Cancel</Button>
+	            ) : null}
+	          </label>
+	          </div>
+	          <div className={cn("flex h-16 shrink-0 items-center justify-end gap-2 border-t border-zinc-200 pt-3", isPush && "hidden")}>
+	            <Button onClick={onClose} type="button" variant="outline">Cancel</Button>
             {isByoAiActive ? (
               <Button onClick={() => setIsAiDraftOpen(true)} type="button" variant="outline">
                 <Sparkles className="h-4 w-4" />
@@ -7382,7 +7383,7 @@ function InboxComposeModal({
       </div>
 	    </div>
 	    {isAiDraftOpen && !isPush ? (
-	      <aside className="fixed right-4 top-1/2 z-[60] hidden h-[min(720px,86vh)] w-[min(420px,34vw)] -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/60 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:flex">
+	      <aside className="inbox-ai-action-drawer hidden h-[92vh] w-[380px] shrink-0 flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)] md:flex">
 	        <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/70 px-4">
 	          <div className="min-w-0">
 	            <h3 className="text-base font-semibold text-zinc-950">AI Draft</h3>
