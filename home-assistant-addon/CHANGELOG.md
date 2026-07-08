@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.77
+
+- Added attachment payload support when sending emails and saving drafts, including IMAP-backed accounts.
+- Updated compose/reply modals so the header and footer stay visible while the message body scrolls.
+- Changed desktop AI Draft into a side drawer with chat-style drafting controls.
+- Reworked the desktop and tablet Inbox filter layout with separate Accounts and Labels sections.
+- Removed created timing from commitment cards.
+
 ## 0.1.76
 
 - Changed AI Actions to show available actions for every selected custom MCP tool.

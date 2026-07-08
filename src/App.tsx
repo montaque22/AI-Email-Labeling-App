@@ -496,6 +496,7 @@ type InboxThreadMessage = {
 
 type InboxAttachment = {
   attachmentId?: string;
+  data?: string;
   filename: string;
   type: string;
   size?: number | null;
@@ -3189,6 +3190,92 @@ function InboxPage({
     }
   }
 
+  const accountPicker = (
+    <div className="relative z-10" data-inbox-account-menu>
+      <Button className="w-full justify-between sm:w-auto" onClick={() => setIsAccountMenuOpen((current) => !current)} type="button" variant="outline">
+        Accounts {selectedAccountIds.length}/{accounts.length}
+      </Button>
+      {isAccountMenuOpen ? (
+        <div className="absolute left-0 top-11 z-20 w-[calc(100vw-2rem)] max-w-80 rounded-md border border-zinc-200 bg-white p-2 shadow-xl">
+          <div className="mb-2 flex gap-2">
+            <Button onClick={() => setSelectedAccountIds(accounts.map((account) => account.id))} size="sm" type="button" variant="outline">
+              All
+            </Button>
+            <Button onClick={() => setSelectedAccountIds([])} size="sm" type="button" variant="outline">
+              None
+            </Button>
+          </div>
+          <div className="max-h-72 space-y-1 overflow-y-auto">
+            {accounts.map((account) => (
+              <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm text-zinc-700 hover:bg-zinc-50" key={account.id}>
+                <input checked={selectedAccountIds.includes(account.id)} onChange={() => toggleAccount(account.id)} type="checkbox" />
+                <span className="min-w-0 flex-1 truncate">{formatEmailForPrivacy(account.email, privacyMode)}</span>
+                <Badge className="capitalize">{providerLabel(account.provider)}</Badge>
+              </label>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+
+  const labelButtons = (
+    <>
+      <button
+        className={cn(
+          "flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-white/60 hover:text-zinc-950",
+          selectedLabelId === INBOX_ALL_LABEL_ID && "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl",
+        )}
+        onClick={() => setSelectedLabelId(INBOX_ALL_LABEL_ID)}
+        type="button"
+      >
+        <span className="truncate">All</span>
+        <span className="flex min-w-5 justify-end text-xs text-zinc-500">
+          {isCountsLoading ? <Loader /> : allLabelCount ?? "-"}
+        </span>
+      </button>
+      {labels.length === 0 ? (
+        <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">No labels yet.</p>
+      ) : labels.map((label) => (
+          <button
+            className={cn(
+              "flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-white/60 hover:text-zinc-950",
+              selectedLabelId === label.id && "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl",
+            )}
+            key={label.id}
+            onClick={() => setSelectedLabelId(label.id)}
+            type="button"
+          >
+            <span className="truncate">{label.name}</span>
+            <span className="flex min-w-5 justify-end text-xs text-zinc-500">
+              {isCountsLoading ? <Loader /> : labelCounts[label.id] ?? "-"}
+            </span>
+          </button>
+        ))}
+    </>
+  );
+
+  const labelSelect = (
+    <label className="block">
+      <span className="mb-2 block text-xs font-medium uppercase text-zinc-500">Labels</span>
+      <select
+        className="h-10 w-full min-w-0 rounded-md border border-zinc-200 bg-white/70 px-3 text-sm"
+        onChange={(event) => setSelectedLabelId(event.target.value)}
+        value={selectedLabelId}
+      >
+        <option value={INBOX_ALL_LABEL_ID}>
+          All{typeof allLabelCount === "number" ? ` (${allLabelCount})` : ""}
+        </option>
+        {labels.map((label) => (
+          <option key={label.id} value={label.id}>
+            {label.name}
+            {typeof labelCounts[label.id] === "number" ? ` (${labelCounts[label.id]})` : ""}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+
   return (
     <div
       className="space-y-6 pt-20 md:pt-0"
@@ -3429,56 +3516,55 @@ function InboxPage({
         />
       </div>
 
-      <div className={cn("grid min-w-0 gap-4 xl:gap-5", isLabelFilteredInboxMode(inboxMode) ? "xl:grid-cols-[260px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
-        {isLabelFilteredInboxMode(inboxMode) ? (
-        <div className="hidden self-start xl:sticky xl:top-20 xl:z-20 xl:block">
-          <Card className="flex max-h-[calc(100vh-6rem)] flex-col overflow-hidden">
+      {isLabelFilteredInboxMode(inboxMode) ? (
+        <div className="hidden gap-4 md:grid xl:hidden xl:gap-5 md:grid-cols-2">
+          <Card>
             <CardHeader>
               <CardTitle>Labels</CardTitle>
               <CardDescription>Choose a label or folder.</CardDescription>
             </CardHeader>
-            <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto">
-              <button
-                className={cn(
-                  "flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-white/60 hover:text-zinc-950",
-                  selectedLabelId === INBOX_ALL_LABEL_ID && "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl",
-                )}
-                onClick={() => setSelectedLabelId(INBOX_ALL_LABEL_ID)}
-                type="button"
-              >
-                <span className="truncate">All</span>
-                <span className="flex min-w-5 justify-end text-xs text-zinc-500">
-                  {isCountsLoading ? <Loader /> : allLabelCount ?? "-"}
-                </span>
-              </button>
-              {labels.length === 0 ? (
-                <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">No labels yet.</p>
-              ) : labels.map((label) => (
-                  <button
-                    className={cn(
-                      "flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-white/60 hover:text-zinc-950",
-                      selectedLabelId === label.id && "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl",
-                    )}
-                    key={label.id}
-                    onClick={() => setSelectedLabelId(label.id)}
-                    type="button"
-                  >
-                    <span className="truncate">{label.name}</span>
-                    <span className="flex min-w-5 justify-end text-xs text-zinc-500">
-                      {isCountsLoading ? <Loader /> : labelCounts[label.id] ?? "-"}
-                    </span>
-                  </button>
-                ))}
-            </CardContent>
+            <CardContent>{labelSelect}</CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Accounts</CardTitle>
+              <CardDescription>Include or exclude connected accounts.</CardDescription>
+            </CardHeader>
+            <CardContent>{accountPicker}</CardContent>
           </Card>
         </div>
+      ) : null}
+
+      <div className={cn("grid min-w-0 gap-4 xl:gap-5", isLabelFilteredInboxMode(inboxMode) ? "xl:grid-cols-[280px_1px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
+        {isLabelFilteredInboxMode(inboxMode) ? (
+          <>
+            <div className="hidden max-h-[calc(100vh-5rem)] min-h-0 space-y-4 overflow-y-auto pr-1 xl:block">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Accounts</CardTitle>
+                  <CardDescription>Include connected accounts.</CardDescription>
+                </CardHeader>
+                <CardContent>{accountPicker}</CardContent>
+              </Card>
+              <Card className="flex min-h-0 flex-col overflow-hidden">
+                <CardHeader>
+                  <CardTitle>Labels</CardTitle>
+                  <CardDescription>Choose a label or folder.</CardDescription>
+                </CardHeader>
+                <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto">{labelButtons}</CardContent>
+              </Card>
+            </div>
+            <div className="hidden xl:flex xl:items-start xl:justify-center">
+              <div className="mt-3 h-96 w-px rounded-full bg-gradient-to-b from-transparent via-white/80 to-transparent shadow-[0_0_18px_rgba(148,163,184,0.35)]" />
+            </div>
+          </>
         ) : null}
 
         <div className="min-w-0 space-y-4">
-          <div className="sticky top-20 z-30 hidden min-w-0 max-w-full md:block">
+          <div className="sticky top-16 z-30 hidden min-w-0 max-w-full md:block">
             <Card className="inbox-sticky-surface">
-              <CardContent className="flex flex-row flex-wrap items-start justify-between gap-3 p-3 sm:p-4">
-              <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:items-center">
+              <CardContent className="flex flex-row flex-wrap items-center justify-between gap-3 p-3 sm:p-4">
+              <div className="min-w-0 flex-1">
                 <InboxSearchBox
                   className="w-full sm:w-72 lg:w-80"
                   isLoading={isInboxSearchPending}
@@ -3492,57 +3578,10 @@ function InboxPage({
                   suggestions={inboxSearchSuggestions}
                   value={inboxSearch}
                 />
-                <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
-                {isLabelFilteredInboxMode(inboxMode) ? (
-                <label className="block xl:hidden">
-                  <span className="sr-only">Label filter</span>
-                  <select
-                    className="h-10 w-full min-w-0 rounded-md border border-zinc-200 bg-white/70 px-3 text-sm sm:w-56"
-                    onChange={(event) => setSelectedLabelId(event.target.value)}
-                    value={selectedLabelId}
-                  >
-                    <option value={INBOX_ALL_LABEL_ID}>
-                      All{typeof allLabelCount === "number" ? ` (${allLabelCount})` : ""}
-                    </option>
-                    {labels.length > 0 ? (
-                      labels.map((label) => (
-                        <option key={label.id} value={label.id}>
-                          {label.name}
-                          {typeof labelCounts[label.id] === "number" ? ` (${labelCounts[label.id]})` : ""}
-                        </option>
-                      ))
-                    ) : null}
-                  </select>
-                </label>
-                ) : null}
-                <div className="relative z-10" data-inbox-account-menu>
-                  <Button className="w-full sm:w-auto" onClick={() => setIsAccountMenuOpen((current) => !current)} type="button" variant="outline">
-                    Accounts {selectedAccountIds.length}/{accounts.length}
-                  </Button>
-                  {isAccountMenuOpen ? (
-                    <div className="absolute left-0 top-11 z-20 w-[calc(100vw-2rem)] max-w-80 rounded-md border border-zinc-200 bg-white p-2 shadow-xl">
-                      <div className="mb-2 flex gap-2">
-                        <Button onClick={() => setSelectedAccountIds(accounts.map((account) => account.id))} size="sm" type="button" variant="outline">
-                          All
-                        </Button>
-                        <Button onClick={() => setSelectedAccountIds([])} size="sm" type="button" variant="outline">
-                          None
-                        </Button>
-                      </div>
-                      <div className="max-h-72 space-y-1 overflow-y-auto">
-                        {accounts.map((account) => (
-                          <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm text-zinc-700 hover:bg-zinc-50" key={account.id}>
-                            <input checked={selectedAccountIds.includes(account.id)} onChange={() => toggleAccount(account.id)} type="checkbox" />
-                            <span className="min-w-0 flex-1 truncate">{formatEmailForPrivacy(account.email, privacyMode)}</span>
-                            <Badge className="capitalize">{providerLabel(account.provider)}</Badge>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
               </div>
-              <div className="ml-auto flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center" />
+              <div className="ml-auto flex shrink-0 items-center justify-end">
+                <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
+              </div>
               </CardContent>
             </Card>
           </div>
@@ -4556,16 +4595,16 @@ function InboxSearchBox({
 }
 
 function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode: InboxMode) => void }) {
-  const options: Array<{ id: InboxMode; label: string }> = [
-    { id: "inbox", label: "Inbox" },
-    { id: "drafts", label: "Drafts" },
-    { id: "sent", label: "Sent" },
-    { id: "archive", label: "Archive" },
+  const options: Array<{ id: InboxMode; icon: ComponentType<{ className?: string }>; label: string }> = [
+    { id: "inbox", icon: Inbox, label: "Inbox" },
+    { id: "drafts", icon: Pencil, label: "Drafts" },
+    { id: "sent", icon: Send, label: "Sent" },
+    { id: "archive", icon: Archive, label: "Archive" },
   ];
   const selectedIndex = options.findIndex((option) => option.id === mode);
 
   return (
-    <div className="relative inline-grid h-10 w-full grid-cols-4 rounded-md border border-zinc-200 bg-[#f7f7f7] p-1 shadow-sm backdrop-blur-xl md:w-96">
+    <div className="relative inline-grid h-10 w-full grid-cols-4 rounded-md border border-zinc-200 bg-[#f7f7f7] p-1 shadow-sm backdrop-blur-xl md:w-52 xl:w-96">
       <span
         className={cn(
           "absolute bottom-1 left-1 top-1 w-[calc((100%-0.5rem)/4)] rounded-md bg-white shadow-sm transition-transform duration-300 ease-out",
@@ -4574,19 +4613,24 @@ function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode:
           selectedIndex === 3 && "translate-x-[300%]",
         )}
       />
-      {options.map((option) => (
+      {options.map((option) => {
+        const Icon = option.icon;
+        return (
         <button
           className={cn(
-            "relative z-10 cursor-pointer rounded-md px-4 text-sm font-medium transition-colors duration-200",
+            "relative z-10 flex cursor-pointer items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-200",
             mode === option.id ? "text-zinc-950" : "text-zinc-500 hover:text-zinc-800",
           )}
           key={option.id}
           onClick={() => onChange(option.id)}
+          title={option.label}
           type="button"
         >
-          {option.label}
+          <Icon className="hidden h-4 w-4 md:block xl:hidden" />
+          <span className="md:hidden xl:inline">{option.label}</span>
         </button>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -5160,7 +5204,7 @@ function InboxMessagePushView({
 
           {detail ? <InboxThreadConversation detail={detail} onLinkAction={setLinkAction} privacyMode={privacyMode} /> : null}
         </div>
-      </div>
+        </div>
       {linkAction ? <EmailLinkActionSheet link={linkAction} onClose={() => setLinkAction(null)} /> : null}
       {isAiActionOpen ? (
         <InboxAiActionBottomSheet
@@ -5548,9 +5592,8 @@ function InboxCommitmentPanel({
             className="prose prose-sm max-w-none break-words prose-p:my-1 prose-ul:my-1 prose-ol:my-1"
             dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(commitment.text) }}
           />
-          <div className={cn("flex flex-col gap-1 text-xs font-semibold sm:flex-row sm:items-center sm:justify-between", tone.metaClassName)}>
+          <div className={cn("text-xs font-semibold", tone.metaClassName)}>
             <p>Due {formatRelativeDuration(commitment.dueAt, { prefix: "in" })}</p>
-            <p className="sm:text-right">Created {formatRelativeDuration(commitment.setAt, { suffix: "ago" })}</p>
           </div>
         </div>
         <div className="flex shrink-0 gap-2">
@@ -6768,6 +6811,30 @@ function InboxComposeModal({
     return [...prompt.matchAll(/\[Use tool:\s*([A-Za-z0-9_+.:/-]+)]/g)].map((match) => match[1]);
   }
 
+  async function readAttachmentFiles(fileList: FileList | null) {
+    const files = Array.from(fileList ?? []);
+    const nextAttachments = await Promise.all(
+      files.map(
+        (file) =>
+          new Promise<InboxAttachment>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const result = typeof reader.result === "string" ? reader.result : "";
+              resolve({
+                data: result.includes(",") ? result.split(",").pop() || "" : result,
+                filename: file.name,
+                type: file.type || "application/octet-stream",
+                size: file.size,
+              });
+            };
+            reader.onerror = () => reject(reader.error ?? new Error("Could not read attachment."));
+            reader.readAsDataURL(file);
+          }),
+      ),
+    );
+    setAttachments(nextAttachments);
+  }
+
   async function submitEmail(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSaving(true);
@@ -6840,6 +6907,7 @@ function InboxComposeModal({
       }
       setSavedMessage("Draft saved.");
       onSaved?.("draft");
+      onClose();
     } catch {
       setError("Could not save draft.");
     } finally {
@@ -7034,16 +7102,12 @@ function InboxComposeModal({
       <div className={cn(
         isPush
           ? "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden"
-          : isAiDraftOpen
-            ? "max-h-[92vh] w-full max-w-5xl overflow-visible rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]"
-            : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]",
+          : "max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]",
       )}>
         <div className={cn(
           isPush
             ? "flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
-            : isAiDraftOpen
-              ? "max-h-[calc(92vh-2rem)] overflow-visible rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60"
-              : "max-h-[calc(92vh-2rem)] overflow-y-auto rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60",
+          : "flex max-h-[calc(92vh-2rem)] min-h-0 flex-col overflow-hidden rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60",
         )}>
           <div className={cn(
             "mb-4 flex items-center justify-between gap-4",
@@ -7080,7 +7144,7 @@ function InboxComposeModal({
               </Button>
             )}
           </div>
-        {isAiDraftOpen ? (
+        {isAiDraftOpen && isPush ? (
           <div className={cn("flex flex-col", isPush ? "min-h-0 flex-1 overflow-hidden" : "min-h-[560px] overflow-visible")}>
             <div className={cn("min-h-0 flex-1 overflow-y-auto p-4", aiMessages.length > 0 || aiError ? "space-y-3" : "flex items-center justify-center")}>
               {aiMessages.length === 0 && !aiError ? (
@@ -7187,7 +7251,7 @@ function InboxComposeModal({
             </div>
           </div>
         ) : (
-        <form className={cn("space-y-4", isPush && "min-h-0 flex-1 overflow-y-auto p-4 pb-28")} id={composeFormId} onSubmit={submitEmail}>
+        <form className={cn("min-h-0 flex-1 space-y-4 overflow-y-auto", isPush ? "p-4 pb-28" : "pr-1")} id={composeFormId} onSubmit={submitEmail}>
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           {savedMessage ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{savedMessage}</p> : null}
           {replyContext ? (
@@ -7284,18 +7348,10 @@ function InboxComposeModal({
             <input
               className="block w-full text-sm text-zinc-600"
               multiple
-              onChange={(event) =>
-                setAttachments(
-                  Array.from(event.target.files ?? []).map((file) => ({
-                    filename: file.name,
-                    type: file.type || "application/octet-stream",
-                    size: file.size,
-                  })),
-                )
-              }
+              onChange={(event) => void readAttachmentFiles(event.target.files)}
               type="file"
             />
-            <p className="mt-1 text-xs text-zinc-500">Files are listed for now; binary upload and previews are out of scope for this first pass.</p>
+            <p className="mt-1 text-xs text-zinc-500">Attachments are included when sending or saving drafts.</p>
             {attachments.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 {attachments.map((attachment) => (
@@ -7304,7 +7360,7 @@ function InboxComposeModal({
               </div>
             ) : null}
           </label>
-          <div className={cn("flex justify-end gap-2 border-t border-zinc-200 pt-4", isPush && "hidden")}>
+          <div className={cn("sticky bottom-0 z-10 flex justify-end gap-2 border-t border-zinc-200 bg-white/70 pt-4 backdrop-blur-xl", isPush && "hidden")}>
             <Button onClick={onClose} type="button" variant="outline">Cancel</Button>
             {isByoAiActive ? (
               <Button onClick={() => setIsAiDraftOpen(true)} type="button" variant="outline">
@@ -7324,10 +7380,118 @@ function InboxComposeModal({
         )}
         </div>
       </div>
-    </div>
-    {linkAction ? <EmailLinkActionSheet link={linkAction} onClose={() => setLinkAction(null)} /> : null}
-    </>
-  );
+	    </div>
+	    {isAiDraftOpen && !isPush ? (
+	      <aside className="fixed right-4 top-1/2 z-[60] hidden h-[min(720px,86vh)] w-[min(420px,34vw)] -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-white/70 bg-white/60 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:flex">
+	        <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/70 px-4">
+	          <div className="min-w-0">
+	            <h3 className="text-base font-semibold text-zinc-950">AI Draft</h3>
+	            <p className="truncate text-sm text-zinc-500">{subject || (replyContext ? "Reply draft" : "New email")}</p>
+	          </div>
+	          <Button aria-label="Close AI Draft" onClick={() => setIsAiDraftOpen(false)} size="icon" type="button" variant="ghost">
+	            <X className="h-4 w-4" />
+	          </Button>
+	        </header>
+	        <main className={cn("min-h-0 flex-1 overflow-y-auto p-4", aiMessages.length > 0 || aiError ? "space-y-3" : "flex items-center justify-center")}>
+	          {aiMessages.length === 0 && !aiError ? (
+	            <div className="mx-auto max-w-xs text-center">
+	              <p className="text-sm font-medium text-zinc-900">Ask AI to help draft this message.</p>
+	              <p className="mt-2 text-sm leading-6 text-zinc-500">Describe the tone, facts, or tools to use. Apply any response you like to the email body.</p>
+	            </div>
+	          ) : null}
+	          {aiMessages.map((message) => (
+	            <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")} key={message.id}>
+	              {message.role === "assistant" ? (
+	                <button
+	                  className={cn(
+	                    "max-w-[85%] whitespace-pre-wrap break-words rounded-xl border border-white/70 bg-white/70 px-4 py-3 text-left text-sm leading-6 text-zinc-800 shadow-sm backdrop-blur-xl transition",
+	                    message.isLoading ? "cursor-default" : "cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/80",
+	                  )}
+	                  disabled={message.isLoading}
+	                  onClick={() => {
+	                    if (message.isLoading) return;
+	                    setBodyText(message.text);
+	                    setIsAiDraftOpen(false);
+	                  }}
+	                  title="Apply this draft"
+	                  type="button"
+	                >
+	                  {message.isLoading ? (
+	                    <span className="inline-flex items-center gap-2">
+	                      <Loader />
+	                      {message.text}
+	                    </span>
+	                  ) : (
+	                    <>
+	                      {message.text}
+	                      <span className="mt-2 block text-xs font-medium text-emerald-700">Click to apply</span>
+	                    </>
+	                  )}
+	                </button>
+	              ) : (
+	                <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-xl border border-white/70 bg-zinc-950/85 px-4 py-3 text-sm leading-6 text-white shadow-sm">
+	                  {message.text}
+	                </div>
+	              )}
+	            </div>
+	          ))}
+	          {aiError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p> : null}
+	        </main>
+	        <footer className="relative shrink-0 border-t border-white/70 bg-white/50 p-3 backdrop-blur-xl">
+	          {isToolPickerOpen && filteredToolOptions.length > 0 ? (
+	            <div className="absolute bottom-[calc(100%+0.5rem)] left-3 right-3 z-[110] overflow-hidden rounded-xl border border-white/70 bg-white/95 shadow-2xl shadow-slate-900/15 backdrop-blur-xl">
+	              <div className="border-b border-zinc-200/70 px-3 py-2 text-xs font-medium uppercase tracking-normal text-zinc-500">Available tools</div>
+	              <div className="max-h-64 overflow-y-auto p-1">
+	                {filteredToolOptions.map((tool) => (
+	                  <button
+	                    className="flex w-full cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-zinc-100/70"
+	                    key={tool.name}
+	                    onMouseDown={(event) => event.preventDefault()}
+	                    onClick={() => insertToolDirective(tool)}
+	                    type="button"
+	                  >
+	                    <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" />
+	                    <span className="min-w-0">
+	                      <span className="block truncate text-sm font-medium text-zinc-950">{tool.name}</span>
+	                      <span className="line-clamp-2 text-xs leading-5 text-zinc-500">{tool.description || "Available AI tool."}</span>
+	                    </span>
+	                  </button>
+	                ))}
+	              </div>
+	            </div>
+	          ) : null}
+	          <div className="flex items-center gap-2">
+	            <textarea
+	              className="min-h-10 min-w-0 flex-1 resize-none rounded-md border border-zinc-200 bg-white/70 px-3 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400 shadow-sm backdrop-blur-xl focus:border-zinc-400"
+	              maxLength={1000}
+	              onBlur={() => window.setTimeout(() => setIsToolPickerOpen(false), 120)}
+	              onChange={(event) => updateAiInstruction(event.target.value, event.target.selectionStart)}
+	              onClick={() => updateToolPickerForCursor()}
+	              onFocus={() => updateToolPickerForCursor()}
+	              onKeyDown={(event) => {
+	                if (event.key === "Escape") setIsToolPickerOpen(false);
+	                if (event.key === "Enter" && !event.shiftKey && aiInstruction.trim() && !isGeneratingAiSuggestion) {
+	                  event.preventDefault();
+	                  void generateAiSuggestion();
+	                }
+	              }}
+	              onKeyUp={() => updateToolPickerForCursor()}
+	              onSelect={() => updateToolPickerForCursor()}
+	              placeholder={replyContext ? "Ask AI how to draft this reply..." : "Ask AI how to draft this email..."}
+	              ref={aiInstructionTextareaRef}
+	              rows={1}
+	              value={aiInstruction}
+	            />
+	            <Button className="h-10 w-10 border border-white/70 bg-white/70 text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/85" disabled={isGeneratingAiSuggestion || !aiInstruction.trim()} onClick={() => void generateAiSuggestion()} size="icon" type="button" variant="outline">
+	              {isGeneratingAiSuggestion ? <Loader /> : <Send className="h-4 w-4" />}
+	            </Button>
+	          </div>
+	        </footer>
+	      </aside>
+	    ) : null}
+	    {linkAction ? <EmailLinkActionSheet link={linkAction} onClose={() => setLinkAction(null)} /> : null}
+	    </>
+	  );
 }
 
 function LabelsPage({ privacyMode }: { privacyMode: boolean }) {

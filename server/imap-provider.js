@@ -1,6 +1,7 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { decryptToken } from "./email-accounts.js";
+import nodemailer from "nodemailer";
 
 const DEFAULT_IMAP_MAILBOX = "INBOX";
 const DEFAULT_DRAFTS_MAILBOX = "Drafts";
@@ -256,6 +257,36 @@ export async function updateImapComposeDraft({ account, draftId, mailbox, input,
       toRecipients: parseAddressList(input.to || ""),
     };
   }, accessToken);
+}
+
+export async function sendImapComposeMessage({ account, input, accessToken = "" }) {
+  const metadata = account.metadata ?? {};
+  const transport = nodemailer.createTransport({
+    host: metadata.smtpHost || inferSmtpHost(account, metadata),
+    port: Number(metadata.smtpPort ?? 587),
+    secure: metadata.smtpSecure === true,
+    requireTLS: metadata.smtpSecure !== true,
+    auth: getSmtpAuth(account, accessToken),
+  });
+
+  try {
+    const result = await transport.sendMail({
+      from: account.email,
+      to: parseAddressList(input.to || ""),
+      cc: parseAddressList(input.cc || ""),
+      bcc: parseAddressList(input.bcc || ""),
+      subject: input.subject || "",
+      text: input.bodyText || "",
+      attachments: normalizeComposeAttachments(input.attachments).map((attachment) => ({
+        filename: attachment.filename,
+        contentType: attachment.type,
+        content: Buffer.from(attachment.data, "base64"),
+      })),
+    });
+    return { id: result.messageId || cryptoRandomId(), threadId: input.threadId || null };
+  } finally {
+    transport.close();
+  }
 }
 
 export async function searchImapInboxMessages(account, { folder, limit, pageToken = "", query = "", accessToken = "" }) {
@@ -654,36 +685,107 @@ async function findImapMessage(client, mailbox, emailId) {
 function buildDraftMessage(from, input, original) {
   const to = input.to || original?.from || "";
   const subject = getReplySubject(input.subject || original?.subject || "");
-  const body = input.bodyHtml || input.bodyText || "";
-  const contentType = input.bodyHtml ? "text/html" : "text/plain";
+  return buildMimeMessage({
+    attachments: input.attachments,
+    body: input.bodyHtml || input.bodyText || "",
+    contentType: input.bodyHtml ? "text/html" : "text/plain",
+    from,
+    subject,
+    to,
+  });
+}
 
-  return [
+function buildComposeMessage(from, input) {
+  return buildMimeMessage({
+    attachments: input.attachments,
+    body: input.bodyText || "",
+    contentType: "text/plain",
+    from,
+    subject: input.subject || "",
+    to: input.to,
+    cc: input.cc,
+    bcc: input.bcc,
+  });
+}
+
+function buildMimeMessage({ attachments = [], bcc = "", body = "", cc = "", contentType = "text/plain", from, subject = "", to }) {
+  const normalizedAttachments = normalizeComposeAttachments(attachments);
+  const headers = [
     `From: ${from}`,
     `To: ${to}`,
+    cc ? `Cc: ${cc}` : null,
+    bcc ? `Bcc: ${bcc}` : null,
     `Subject: ${subject}`,
     "MIME-Version: 1.0",
+  ].filter((line) => line !== null);
+
+  if (normalizedAttachments.length === 0) {
+    return [
+      ...headers,
+      `Content-Type: ${contentType}; charset=UTF-8`,
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      body,
+    ].join("\r\n");
+  }
+
+  const boundary = `emailable-${cryptoRandomId()}`;
+  return [
+    ...headers,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
     `Content-Type: ${contentType}; charset=UTF-8`,
     "Content-Transfer-Encoding: 8bit",
     "",
     body,
+    ...normalizedAttachments.flatMap((attachment) => [
+      `--${boundary}`,
+      `Content-Type: ${attachment.type}; name="${escapeMimeHeader(attachment.filename)}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${escapeMimeHeader(attachment.filename)}"`,
+      "",
+      wrapBase64(attachment.data),
+    ]),
+    `--${boundary}--`,
+    "",
   ].join("\r\n");
 }
 
-function buildComposeMessage(from, input) {
-  const lines = [
-    `From: ${from}`,
-    `To: ${input.to}`,
-    input.cc ? `Cc: ${input.cc}` : null,
-    input.bcc ? `Bcc: ${input.bcc}` : null,
-    `Subject: ${input.subject || ""}`,
-    "MIME-Version: 1.0",
-    "Content-Type: text/plain; charset=UTF-8",
-    "Content-Transfer-Encoding: 8bit",
-    "",
-    input.bodyText || "",
-  ].filter((line) => line !== null);
+function normalizeComposeAttachments(attachments = []) {
+  return (Array.isArray(attachments) ? attachments : [])
+    .filter((attachment) => attachment?.data && attachment?.filename)
+    .map((attachment) => ({
+      data: String(attachment.data).replace(/^data:[^;]+;base64,/, ""),
+      filename: String(attachment.filename || "Attachment").replace(/["\r\n]/g, "").replace(/[\\/]/g, "_"),
+      type: String(attachment.type || "application/octet-stream"),
+    }));
+}
 
-  return lines.join("\r\n");
+function escapeMimeHeader(value) {
+  return String(value || "").replace(/["\r\n]/g, "");
+}
+
+function wrapBase64(value) {
+  return String(value || "").replace(/\s+/g, "").replace(/.{1,76}/g, "$&\r\n").trim();
+}
+
+function getSmtpAuth(account, accessToken) {
+  const user = account.metadata?.imapUsername || account.email;
+  if ((account.provider === "yahoo" || account.provider === "microsoft") && accessToken) {
+    return { type: "OAuth2", user, accessToken };
+  }
+  return { user, pass: decryptToken(account.access_token) };
+}
+
+function inferSmtpHost(account, metadata) {
+  if (account.provider === "yahoo") return "smtp.mail.yahoo.com";
+  if (account.provider === "microsoft") return "smtp-mail.outlook.com";
+  const imapHost = String(metadata.imapHost || "");
+  if (imapHost.startsWith("imap.")) {
+    return imapHost.replace(/^imap\./, "smtp.");
+  }
+  return imapHost || "localhost";
 }
 
 function buildImapSearchQuery(query) {

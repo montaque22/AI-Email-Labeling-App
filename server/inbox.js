@@ -27,6 +27,7 @@ import {
   moveImapInboxMessageToFolder,
   moveImapInboxMessageToTrash,
   searchImapInboxMessages,
+  sendImapComposeMessage,
   updateImapComposeDraft,
 } from "./imap-provider.js";
 import { modifyGmailMessageLabels } from "./integrations.js";
@@ -639,16 +640,20 @@ async function sendInboxEmail(userId, compose) {
     throw error;
   }
 
-  if (account.provider !== "gmail" && account.provider !== "microsoft") {
+  if (account.provider !== "gmail" && account.provider !== "microsoft" && !isImapBackedProvider(account.provider)) {
     const error = new Error(`${providerDisplayName(account.provider)} sending is not implemented yet. Save as draft for this provider for now.`);
     error.status = 501;
     throw error;
   }
 
-  const accessToken = await getValidEmailAccountAccessToken(account);
+  const accessToken = account.provider === "gmail" || account.provider === "microsoft"
+    ? await getValidEmailAccountAccessToken(account)
+    : await getImapAccessToken(account);
   const sent = account.provider === "gmail"
     ? await sendGmailComposeMessage(accessToken, account, compose)
-    : await sendMicrosoftComposeMessage(accessToken, account, compose);
+    : account.provider === "microsoft"
+      ? await sendMicrosoftComposeMessage(accessToken, account, compose)
+      : await sendImapComposeMessage({ account, input: compose, accessToken });
   await upsertEmailIndexEntry(userId, {
     emailAccountId: account.id,
     accountEmail: account.email,
@@ -1443,15 +1448,20 @@ async function sendMicrosoftComposeMessage(accessToken, account, compose) {
     },
   });
 
-  try {
-    const result = await transport.sendMail({
-      from: account.email,
-      to: splitAddressList(compose.to),
-      cc: splitAddressList(compose.cc),
-      bcc: splitAddressList(compose.bcc),
-      subject: compose.subject,
-      text: compose.bodyText,
-    });
+	  try {
+	    const result = await transport.sendMail({
+	      from: account.email,
+	      to: splitAddressList(compose.to),
+	      cc: splitAddressList(compose.cc),
+	      bcc: splitAddressList(compose.bcc),
+	      subject: compose.subject,
+	      text: compose.bodyText,
+	      attachments: normalizeComposeAttachments(compose.attachments).map((attachment) => ({
+	        filename: attachment.filename,
+	        contentType: attachment.type,
+	        content: Buffer.from(attachment.data, "base64"),
+	      })),
+	    });
     return { id: result.messageId || null, threadId: null };
   } catch (error) {
     const providerError = new Error(
@@ -1661,6 +1671,7 @@ function parseComposeInput(body) {
             filename: typeof attachment.filename === "string" ? attachment.filename : "Attachment",
             type: typeof attachment.type === "string" ? attachment.type : "application/octet-stream",
             size: Number.isFinite(attachment.size) ? attachment.size : null,
+            data: typeof attachment.data === "string" ? attachment.data : "",
           }))
       : [],
   };
@@ -1814,7 +1825,8 @@ function buildGmailComposeMessage(from, compose, original = null) {
   const originalHeaders = original ? getGmailHeaders(original) : {};
   const originalMessageId = originalHeaders["message-id"] || "";
   const references = [originalHeaders.references, originalMessageId].filter(Boolean).join(" ");
-  const lines = [
+  const attachments = normalizeComposeAttachments(compose.attachments);
+  const baseHeaders = [
     `From: ${from}`,
     `To: ${compose.to}`,
     compose.cc ? `Cc: ${compose.cc}` : null,
@@ -1823,13 +1835,65 @@ function buildGmailComposeMessage(from, compose, original = null) {
     originalMessageId ? `In-Reply-To: ${originalMessageId}` : null,
     references ? `References: ${references}` : null,
     "MIME-Version: 1.0",
-    "Content-Type: text/plain; charset=UTF-8",
-    "Content-Transfer-Encoding: 7bit",
-    "",
-    compose.bodyText,
   ].filter((line) => line !== null);
 
-  return Buffer.from(lines.join("\r\n"), "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  if (attachments.length > 0) {
+    const boundary = `emailable-${crypto.randomUUID()}`;
+    const lines = [
+      ...baseHeaders,
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      compose.bodyText || "",
+      ...attachments.flatMap((attachment) => [
+        `--${boundary}`,
+        `Content-Type: ${attachment.type}; name="${escapeMimeHeader(attachment.filename)}"`,
+        "Content-Transfer-Encoding: base64",
+        `Content-Disposition: attachment; filename="${escapeMimeHeader(attachment.filename)}"`,
+        "",
+        wrapBase64(attachment.data),
+      ]),
+      `--${boundary}--`,
+      "",
+    ];
+
+    return encodeGmailRawMessage(lines.join("\r\n"));
+  }
+
+  const lines = [
+    ...baseHeaders,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    compose.bodyText,
+  ];
+
+  return encodeGmailRawMessage(lines.join("\r\n"));
+}
+
+function encodeGmailRawMessage(raw) {
+  return Buffer.from(raw, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function normalizeComposeAttachments(attachments = []) {
+  return (Array.isArray(attachments) ? attachments : [])
+    .filter((attachment) => attachment?.data && attachment?.filename)
+    .map((attachment) => ({
+      data: String(attachment.data).replace(/^data:[^;]+;base64,/, ""),
+      filename: sanitizeDownloadFilename(attachment.filename),
+      type: String(attachment.type || "application/octet-stream"),
+    }));
+}
+
+function escapeMimeHeader(value) {
+  return String(value || "").replace(/["\r\n]/g, "");
+}
+
+function wrapBase64(value) {
+  return String(value || "").replace(/\s+/g, "").replace(/.{1,76}/g, "$&\r\n").trim();
 }
 
 function providerDisplayName(provider) {
