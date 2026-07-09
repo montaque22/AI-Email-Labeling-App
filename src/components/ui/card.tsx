@@ -6,7 +6,7 @@ export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElemen
   return (
     <LiquidGlassCard
       borderRadius="8px"
-      className={cn("text-zinc-950 bg-white/8", className)}
+      className={cn("text-zinc-950 bg-white/50", className)}
       glowIntensity="none"
       shadowIntensity="xs"
       {...props}

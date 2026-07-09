@@ -13,6 +13,7 @@ interface LiquidGlassCardProps extends React.HTMLAttributes<HTMLDivElement> {
   shadowIntensity?: "none" | "xs" | "sm" | "md" | "lg" | "xl";
   borderRadius?: string;
   glowIntensity?: "none" | "xs" | "sm" | "md" | "lg" | "xl";
+  contentClassName?: string;
 }
 
 export function LiquidGlassCard({
@@ -29,6 +30,7 @@ export function LiquidGlassCard({
   shadowIntensity = "xs",
   onClick,
   style,
+  contentClassName,
   ...props
 }: LiquidGlassCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -84,7 +86,7 @@ export function LiquidGlassCard({
       <div className={cn("absolute inset-0 z-0", blurClasses[blurIntensity])} style={{ borderRadius }} />
       <div className="absolute inset-0 z-10" style={{ borderRadius, boxShadow: glowStyles[glowIntensity] }} />
       <div className="absolute inset-0 z-20" style={{ borderRadius, boxShadow: shadowStyles[shadowIntensity] }} />
-      <div className="relative z-30 flex h-full min-h-0 flex-col">{children}</div>
+      <div className={cn("relative z-30 flex h-full min-h-0 flex-col", contentClassName)}>{children}</div>
     </div>
   );
 }

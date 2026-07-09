@@ -3191,12 +3191,20 @@ function InboxPage({
     }
   }
 
+  const areInboxFilterSectionsDisabled = !isLabelFilteredInboxMode(inboxMode);
+
   const accountPicker = (
     <div className="relative z-10 w-full" data-inbox-account-menu>
-      <Button className="w-full justify-between" onClick={() => setIsAccountMenuOpen((current) => !current)} type="button" variant="outline">
+      <Button
+        className="w-full justify-between"
+        disabled={areInboxFilterSectionsDisabled}
+        onClick={() => setIsAccountMenuOpen((current) => !current)}
+        type="button"
+        variant="outline"
+      >
         Accounts {selectedAccountIds.length}/{accounts.length}
       </Button>
-      {isAccountMenuOpen ? (
+      {isAccountMenuOpen && !areInboxFilterSectionsDisabled ? (
         <div className="absolute left-0 top-11 z-20 w-full min-w-72 rounded-md border border-zinc-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex gap-2">
             <Button onClick={() => setSelectedAccountIds(accounts.map((account) => account.id))} size="sm" type="button" variant="outline">
@@ -3226,7 +3234,9 @@ function InboxPage({
         className={cn(
           "flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-white/60 hover:text-zinc-950",
           selectedLabelId === INBOX_ALL_LABEL_ID && "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl",
+          areInboxFilterSectionsDisabled && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-zinc-600",
         )}
+        disabled={areInboxFilterSectionsDisabled}
         onClick={() => setSelectedLabelId(INBOX_ALL_LABEL_ID)}
         type="button"
       >
@@ -3242,7 +3252,9 @@ function InboxPage({
             className={cn(
               "flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-white/60 hover:text-zinc-950",
               selectedLabelId === label.id && "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl",
+              areInboxFilterSectionsDisabled && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-zinc-600",
             )}
+            disabled={areInboxFilterSectionsDisabled}
             key={label.id}
             onClick={() => setSelectedLabelId(label.id)}
             type="button"
@@ -3259,7 +3271,8 @@ function InboxPage({
   const labelSelect = (
     <label className="block">
       <select
-        className="h-10 w-full min-w-0 rounded-md border border-zinc-200 bg-white/70 px-3 text-sm"
+        className="h-10 w-full min-w-0 rounded-md border border-zinc-200 bg-white/70 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={areInboxFilterSectionsDisabled}
         onChange={(event) => setSelectedLabelId(event.target.value)}
         value={selectedLabelId}
       >
@@ -3516,8 +3529,7 @@ function InboxPage({
         />
       </div>
 
-      {isLabelFilteredInboxMode(inboxMode) ? (
-        <div className="hidden gap-4 md:grid xl:hidden xl:gap-5 md:grid-cols-2">
+      <div className="hidden gap-4 md:grid xl:hidden xl:gap-5 md:grid-cols-2">
           <Card>
             <CardHeader>
               <CardTitle>Labels</CardTitle>
@@ -3533,10 +3545,8 @@ function InboxPage({
             <CardContent>{accountPicker}</CardContent>
           </Card>
         </div>
-      ) : null}
 
-      <div className={cn("grid min-w-0 gap-4 xl:gap-5", isLabelFilteredInboxMode(inboxMode) ? "xl:grid-cols-[280px_1px_minmax(0,1fr)]" : "xl:grid-cols-1")}>
-        {isLabelFilteredInboxMode(inboxMode) ? (
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[280px_1px_minmax(0,1fr)] xl:gap-5">
           <>
             <div className="sticky top-16 hidden max-h-[calc(100vh-5rem)] min-h-0 self-start overflow-y-auto pr-1 xl:block">
               <div className="space-y-3">
@@ -3560,12 +3570,10 @@ function InboxPage({
               <div className="mt-3 h-96 w-px rounded-full bg-gradient-to-b from-transparent via-white/80 to-transparent shadow-[0_0_18px_rgba(148,163,184,0.35)]" />
             </div>
           </>
-        ) : null}
 
         <div className="min-w-0 space-y-4">
           <div className="sticky top-16 z-50 hidden min-w-0 max-w-full md:block">
-            <Card className="inbox-sticky-surface relative z-50 bg-white/85">
-              <CardContent className="flex flex-row flex-wrap items-center justify-between gap-3 p-3 sm:p-4">
+            <div className="relative z-50 flex flex-row flex-wrap items-center justify-between gap-3 p-0">
               <div className="min-w-0 flex-1">
                 <InboxSearchBox
                   className="w-full"
@@ -3584,11 +3592,10 @@ function InboxPage({
               <div className="ml-auto flex shrink-0 items-center justify-end">
                 <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
               </div>
-              </CardContent>
-            </Card>
+            </div>
           </div>
 
-          <Card className="relative z-0 min-w-0 max-w-full overflow-hidden max-md:relative max-md:left-1/2 max-md:min-h-[calc(100svh-11rem)] max-md:w-screen max-md:-translate-x-1/2 max-md:rounded-none max-md:border-x-0 max-md:shadow-none">
+          <Card className="relative z-0 min-w-0 max-w-full overflow-hidden bg-white/50 max-md:relative max-md:left-1/2 max-md:min-h-[calc(100svh-11rem)] max-md:w-screen max-md:-translate-x-1/2 max-md:rounded-none max-md:border-x-0 max-md:shadow-none">
             <div className="block border-b border-white/60 px-3 pb-2 pt-3 md:hidden">
               <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
             </div>
@@ -3613,7 +3620,7 @@ function InboxPage({
                 </select>
               </label>
             </CardHeader>
-            <CardContent className={cn("space-y-3 max-md:min-h-[calc(100svh-14rem)] max-md:px-0 max-md:pb-18 max-md:pt-0", isMobileEditMode && "pb-28 md:pb-6")}>
+            <CardContent className={cn("space-y-0 max-md:min-h-[calc(100svh-14rem)] max-md:px-0 max-md:pb-18 max-md:pt-0", isMobileEditMode && "pb-28 md:pb-6")}>
               <div className="hidden justify-start md:flex">
                 {filteredMessages.length > 0 ? (
                   <button
@@ -4529,7 +4536,7 @@ function InboxSearchBox({
 }) {
   return (
     <div className={cn("relative z-20 w-full", className)}>
-      <div className="flex h-10 items-center gap-2 rounded-md border border-white/70 bg-white/70 px-3 shadow-sm backdrop-blur-xl transition focus-within:border-zinc-300">
+      <div className="flex h-10 items-center gap-2 rounded-full border border-white/70 bg-white/50 px-4 shadow-sm backdrop-blur-xl transition focus-within:border-zinc-300">
         <Search className="h-4 w-4 shrink-0 text-zinc-400" />
         <input
           className="min-w-0 flex-1 bg-transparent text-sm text-zinc-950 outline-none placeholder:text-zinc-400"
@@ -4606,10 +4613,16 @@ function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode:
   const selectedIndex = options.findIndex((option) => option.id === mode);
 
   return (
-    <div className="relative inline-grid h-10 w-full grid-cols-4 rounded-md border border-zinc-200 bg-[#f7f7f7] p-1 shadow-sm backdrop-blur-xl md:w-52 xl:w-96">
+    <LiquidGlassCard
+      borderRadius="999px"
+      className="relative h-10 w-full rounded-full border border-white/60 bg-white/10 p-1 shadow-sm backdrop-blur-xl md:w-52 xl:w-96"
+      contentClassName="grid grid-cols-4"
+      glowIntensity="none"
+      shadowIntensity="xs"
+    >
       <span
         className={cn(
-          "absolute bottom-1 left-1 top-1 w-[calc((100%-0.5rem)/4)] rounded-md bg-white shadow-sm transition-transform duration-300 ease-out",
+          "absolute bottom-[1%] left-1 top-[1%] w-[calc((100%-0.5rem)/4)] rounded-full bg-white/50 shadow-sm transition-transform duration-300 ease-out",
           selectedIndex === 1 && "translate-x-full",
           selectedIndex === 2 && "translate-x-[200%]",
           selectedIndex === 3 && "translate-x-[300%]",
@@ -4620,7 +4633,7 @@ function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode:
         return (
         <button
           className={cn(
-            "relative z-10 flex cursor-pointer items-center justify-center rounded-md px-3 text-sm font-medium transition-colors duration-200",
+            "relative z-10 flex cursor-pointer items-center justify-center rounded-full px-3 text-sm font-medium transition-colors duration-200",
             mode === option.id ? "text-zinc-950" : "text-zinc-500 hover:text-zinc-800",
           )}
           key={option.id}
@@ -4633,7 +4646,7 @@ function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode:
         </button>
         );
       })}
-    </div>
+    </LiquidGlassCard>
   );
 }
 
@@ -4863,7 +4876,7 @@ function InboxMessageRow({
     <div
       aria-busy={isDeleting}
       className={cn(
-        "relative select-none border-b border-zinc-200 bg-white/45 transition last:border-b-0 hover:bg-white/80",
+        "relative select-none border-b border-zinc-200 bg-white/45 transition last:border-b-0 hover:bg-white/80 md:bg-transparent",
         isDeleting ? "pointer-events-none opacity-60" : null,
       )}
     >
@@ -4872,7 +4885,7 @@ function InboxMessageRow({
           <Loader />
         </div>
       ) : null}
-      <div className="hidden w-full grid-cols-[auto_auto_minmax(110px,180px)_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 md:grid">
+      <div className="hidden w-full grid-cols-[auto_auto_minmax(110px,180px)_minmax(0,1fr)_auto] items-center gap-3 px-3 py-1.5 md:grid">
         <GlassCheckbox checked={isSelected} onChange={onToggle} />
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-600">
           {getSenderInitial(message.sender || message.from)}

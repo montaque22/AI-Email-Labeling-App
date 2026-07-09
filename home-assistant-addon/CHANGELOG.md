@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.81
+
+- Updated Inbox glass surfaces with lighter section cards and transparent desktop rows.
+- Restyled the Inbox search field and mode selector as pill-shaped glass controls.
+- Kept Labels and Accounts visible in Drafts and Sent modes while disabling their controls to prevent layout jumps.
+
 ## 0.1.80
 
 - Fixed Inbox layering so the email list stays visually below the sticky search controls.
