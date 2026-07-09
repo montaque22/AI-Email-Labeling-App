@@ -43,6 +43,7 @@ export async function ensureEmailIndexTable() {
   await dbPool.query("alter table email_index add column if not exists commitment_text text");
   await dbPool.query("alter table email_index add column if not exists commitment_due_at timestamptz");
   await dbPool.query("alter table email_index add column if not exists commitment_set_at timestamptz");
+  await dbPool.query("alter table email_index add column if not exists commitment_completed_at timestamptz");
   await dbPool.query(`
     create unique index if not exists email_index_message_unique
       on email_index (user_id, email_account_id, email_id, mailbox)
@@ -242,6 +243,7 @@ export async function setEmailIndexCommitment(userId, messages, { text, dueAt })
           and email_account_id = $2
           and email_id = $3
           and mailbox = $4
+          and commitment_completed_at is null
         returning *
       `,
       [userId, message.accountId, message.emailId, message.mailbox || "", text, dueAt],
@@ -269,6 +271,7 @@ export async function clearEmailIndexCommitment(userId, messages) {
           and email_account_id = $2
           and email_id = $3
           and mailbox = $4
+          and commitment_completed_at is null
         returning *
       `,
       [userId, message.accountId, message.emailId, message.mailbox || ""],
@@ -276,6 +279,33 @@ export async function clearEmailIndexCommitment(userId, messages) {
     cleared.push(...result.rows.map(mapEmailIndexRow));
   }
   return cleared;
+}
+
+export async function completeEmailIndexCommitments(userId, messages) {
+  if (!dbPool || !messages.length) {
+    return [];
+  }
+
+  const completed = [];
+  for (const message of messages) {
+    const result = await dbPool.query(
+      `
+        update email_index
+        set archived = true,
+            commitment_completed_at = coalesce(commitment_completed_at, now()),
+            updated_at = now()
+        where user_id = $1
+          and email_account_id = $2
+          and email_id = $3
+          and mailbox = $4
+          and commitment_set_at is not null
+        returning *
+      `,
+      [userId, message.accountId, message.emailId, message.mailbox || ""],
+    );
+    completed.push(...result.rows.map(mapEmailIndexRow));
+  }
+  return completed;
 }
 
 export async function listEmailIndexEntries(userId, query) {
@@ -409,6 +439,8 @@ export function mapEmailIndexRow(row) {
       text: row.commitment_text || "",
       dueAt: row.commitment_due_at ? new Date(row.commitment_due_at).toISOString() : "",
       setAt: row.commitment_set_at ? new Date(row.commitment_set_at).toISOString() : "",
+      completedAt: row.commitment_completed_at ? new Date(row.commitment_completed_at).toISOString() : "",
+      isCompleted: Boolean(row.commitment_completed_at),
     } : null,
     replyCount: Number(row.reply_count || 0),
     respondingToEmailId: row.responding_to_email_id || null,

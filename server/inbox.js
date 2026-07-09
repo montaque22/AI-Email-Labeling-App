@@ -9,6 +9,7 @@ import {
 import {
   archiveEmailIndexEntries,
   clearEmailIndexCommitment,
+  completeEmailIndexCommitments,
   countUnreadEmailIndexEntries,
   deleteEmailIndexEntries,
   getEmailIndexLabelCounts,
@@ -985,12 +986,13 @@ async function setInboxMessageCommitments(userId, action) {
 }
 
 async function completeInboxMessageCommitments(userId, messages) {
-  const archivedRows = await archiveEmailIndexEntries(userId, messages, { allowCommitted: true });
-  const archivedKeys = new Set(archivedRows.map((message) => `${message.accountId}:${message.id}:${message.mailbox ?? ""}`));
+  const completedRows = await completeEmailIndexCommitments(userId, messages);
+  const completedKeys = new Set(completedRows.map((message) => `${message.accountId}:${message.id}:${message.mailbox ?? ""}`));
   const results = messages.map((message) => ({
     ...message,
-    ok: archivedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`),
-    error: archivedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`) ? undefined : "Message was not found",
+    ok: completedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`),
+    commitment: completedRows.find((row) => row.accountId === message.accountId && row.id === message.emailId && (row.mailbox ?? "") === (message.mailbox ?? ""))?.commitment ?? null,
+    error: completedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`) ? undefined : "Message was not found",
   }));
   const archived = results.filter((result) => result.ok).length;
   const failed = results.filter((result) => !result.ok);

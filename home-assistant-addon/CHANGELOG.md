@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.82
+
+- Persist completed commitments with a completed timestamp while archiving the email.
+- Render completed commitments in green and show Completed instead of due timing.
+- Hide commitment update, renege, and complete controls for completed commitments.
+- Updated commitment iconography to use a ring-like gem icon.
+
 ## 0.1.81
 
 - Updated Inbox glass surfaces with lighter section cards and transparent desktop rows.

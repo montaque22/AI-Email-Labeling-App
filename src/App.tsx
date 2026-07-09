@@ -26,6 +26,7 @@ import {
   ExternalLink,
   FileCheck2,
   Gauge,
+  Gem,
   GripVertical,
   Inbox,
   LogOut,
@@ -431,6 +432,8 @@ type InboxCommitment = {
   text: string;
   dueAt: string;
   setAt: string;
+  completedAt?: string;
+  isCompleted?: boolean;
 };
 
 type InboxMessage = {
@@ -2484,6 +2487,7 @@ function InboxPage({
   const selectedMessages = messages.filter((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
   const hasSelectedMessages = selectedMessages.length > 0;
   const selectedHasCommitments = selectedMessages.some((message) => Boolean(message.commitment));
+  const selectedHasCompletedCommitments = selectedMessages.some((message) => Boolean(message.commitment?.isCompleted || message.commitment?.completedAt));
   const allVisibleSelected = filteredMessages.length > 0 && filteredMessages.every((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
   const selectedMessagesLabelValue = getCommonMessageLabelId(selectedMessages, labels);
 
@@ -2840,12 +2844,39 @@ function InboxPage({
           ))
           .map(getInboxMessageKey),
       );
-      setMessages((current) => current.filter((message) => !completedKeys.has(getInboxMessageKey(message))));
-      setSelectedMessageKeys((current) => current.filter((key) => !completedKeys.has(key)));
-      if (selectedMessage && completedKeys.has(getInboxMessageKey(selectedMessage))) {
-        setSelectedMessage(null);
-        setMessageDetail(null);
+      const completedCommitmentsByKey = new Map<string, InboxCommitment>();
+      data.results?.forEach((result: { accountId: string; emailId: string; mailbox?: string; ok: boolean; commitment?: InboxCommitment | null }) => {
+        if (result.ok && result.commitment) {
+          completedCommitmentsByKey.set(`${result.accountId}:${result.mailbox ?? ""}:${result.emailId}`, result.commitment);
+        }
+      });
+      if (inboxMode === "archive") {
+        setMessages((current) => current.map((message) => {
+          const commitment = completedCommitmentsByKey.get(getInboxMessageKey(message));
+          return commitment ? { ...message, commitment } : message;
+        }));
+        setSelectedMessage((current) => {
+          if (!current) {
+            return current;
+          }
+          const commitment = completedCommitmentsByKey.get(getInboxMessageKey(current));
+          return commitment ? { ...current, commitment } : current;
+        });
+        setMessageDetail((current) => {
+          if (!current) {
+            return current;
+          }
+          const commitment = completedCommitmentsByKey.get(`${current.accountId}:${current.mailbox ?? ""}:${current.id}`);
+          return commitment ? { ...current, commitment } : current;
+        });
+      } else {
+        setMessages((current) => current.filter((message) => !completedKeys.has(getInboxMessageKey(message))));
+        if (selectedMessage && completedKeys.has(getInboxMessageKey(selectedMessage))) {
+          setSelectedMessage(null);
+          setMessageDetail(null);
+        }
       }
+      setSelectedMessageKeys((current) => current.filter((key) => !completedKeys.has(key)));
       setIsMobileEditMode(false);
       setCommitmentConfirm(null);
       void refreshPwaUnreadBadge();
@@ -3413,18 +3444,22 @@ function InboxPage({
               <div className="h-8 w-px bg-zinc-200/80" />
             </>
           ) : null}
-          <Button
-            aria-label="Set commitment"
-            className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
-            disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning || selectedMessages.length === 0}
-            onClick={() => openCommitmentModal(selectedMessages)}
-            size="icon"
-            type="button"
-            variant="ghost"
-          >
-            {isCommitmentActionRunning ? <Loader /> : <FileCheck2 className="h-5 w-5" />}
-          </Button>
-          <div className="h-8 w-px bg-zinc-200/80" />
+          {!selectedHasCompletedCommitments ? (
+            <>
+              <Button
+                aria-label="Set commitment"
+                className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
+                disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning || selectedMessages.length === 0}
+                onClick={() => openCommitmentModal(selectedMessages)}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                {isCommitmentActionRunning ? <Loader /> : <Gem className="h-5 w-5" />}
+              </Button>
+              <div className="h-8 w-px bg-zinc-200/80" />
+            </>
+          ) : null}
           <div className="relative" data-bulk-label-menu>
             <Button
               aria-label="Change selected email labels"
@@ -4897,7 +4932,7 @@ function InboxMessageRow({
         <button className="flex min-w-0 cursor-pointer items-center gap-2 text-left" onClick={onOpen} type="button">
           {message.commitment ? (
             <Badge className={cn("shrink-0", commitmentTone.labelClassName)}>
-              <FileCheck2 className="mr-1 h-3 w-3" />
+              <Gem className="mr-1 h-3 w-3" />
               Commitment
             </Badge>
           ) : null}
@@ -4978,7 +5013,7 @@ function InboxMessageRow({
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {message.commitment ? (
                   <Badge className={cn("w-fit", commitmentTone.labelClassName)}>
-                    <FileCheck2 className="mr-1 h-3 w-3" />
+                    <Gem className="mr-1 h-3 w-3" />
                     Commitment
                   </Badge>
                 ) : null}
@@ -5149,6 +5184,7 @@ function InboxMessagePushView({
 }) {
   const rule = detail?.rule ?? summary.rule ?? null;
   const commitment = detail?.commitment ?? summary.commitment ?? null;
+  const isCommitmentCompleted = Boolean(commitment?.isCompleted || commitment?.completedAt);
   const replyCount = detail?.replyCount ?? summary.replyCount ?? 0;
   const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
   const isAiActionOpen = Boolean(aiAction.message && getInboxMessageKey(aiAction.message) === getInboxMessageKey(summary));
@@ -5171,9 +5207,11 @@ function InboxMessagePushView({
               </Button>
             </>
           )}
-          <Button aria-label="Set commitment" onClick={() => onCommitment(summary)} size="icon" type="button" variant="ghost">
-            <FileCheck2 className="h-4 w-4" />
-          </Button>
+          {!isCommitmentCompleted ? (
+            <Button aria-label="Set commitment" onClick={() => onCommitment(summary)} size="icon" type="button" variant="ghost">
+              <Gem className="h-4 w-4" />
+            </Button>
+          ) : null}
           {onAiAction ? (
             <Button aria-label="AI Actions" onClick={() => isAiActionOpen ? aiAction.onCancel() : onAiAction(summary)} size="icon" type="button" variant="ghost">
               <Sparkles className="h-4 w-4" />
@@ -5391,6 +5429,7 @@ function InboxMessageModal({
 }) {
   const rule = detail?.rule ?? summary.rule ?? null;
   const commitment = detail?.commitment ?? summary.commitment ?? null;
+  const isCommitmentCompleted = Boolean(commitment?.isCompleted || commitment?.completedAt);
   const currentLabelId = getCommonMessageLabelId([summary], labels);
   const replyCount = detail?.replyCount ?? summary.replyCount ?? 0;
   const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
@@ -5447,11 +5486,13 @@ function InboxMessageModal({
                   </Tooltip>
                 </>
               )}
-              <Tooltip side="bottom" text={commitment ? "Update commitment" : "Set commitment"}>
-                <Button aria-label={commitment ? "Update commitment" : "Set commitment"} onClick={() => onCommitment(summary)} size="icon" type="button" variant="outline">
-                  <FileCheck2 className="h-4 w-4" />
-                </Button>
-              </Tooltip>
+              {!isCommitmentCompleted ? (
+                <Tooltip side="bottom" text={commitment ? "Update commitment" : "Set commitment"}>
+                  <Button aria-label={commitment ? "Update commitment" : "Set commitment"} onClick={() => onCommitment(summary)} size="icon" type="button" variant="outline">
+                    <Gem className="h-4 w-4" />
+                  </Button>
+                </Tooltip>
+              ) : null}
               {onAiAction ? (
                 <Tooltip side="bottom" text="AI Actions">
                   <Button aria-label="AI Actions" onClick={() => isAiActionOpen ? aiAction.onCancel() : onAiAction(summary)} size="icon" type="button" variant="outline">
@@ -5600,12 +5641,13 @@ function InboxCommitmentPanel({
   onRenege: () => void;
 }) {
   const tone = getCommitmentTone(commitment);
+  const isCompleted = Boolean(commitment.isCompleted || commitment.completedAt);
   return (
     <section className={cn("mb-4 rounded-xl border p-4 text-sm shadow-sm", tone.panelClassName)}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex items-center gap-2 font-semibold">
-            <FileCheck2 className="h-4 w-4" />
+            <Gem className="h-4 w-4" />
             <span>Commitment</span>
           </div>
           <div
@@ -5613,17 +5655,19 @@ function InboxCommitmentPanel({
             dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(commitment.text) }}
           />
           <div className={cn("text-xs font-semibold", tone.metaClassName)}>
-            <p>Due {formatRelativeDuration(commitment.dueAt, { prefix: "in" })}</p>
+            <p>{isCompleted ? "Completed" : `Due ${formatRelativeDuration(commitment.dueAt, { prefix: "in" })}`}</p>
           </div>
         </div>
-        <div className="flex shrink-0 gap-2">
-          <Button className="border-red-200 bg-red-50 text-red-700 hover:bg-red-100" disabled={isBusy} onClick={onRenege} size="sm" type="button" variant="outline">
-            Renege
-          </Button>
-          <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={isBusy} onClick={onComplete} size="sm" type="button">
-            Complete
-          </Button>
-        </div>
+        {!isCompleted ? (
+          <div className="flex shrink-0 gap-2">
+            <Button className="border-red-200 bg-red-50 text-red-700 hover:bg-red-100" disabled={isBusy} onClick={onRenege} size="sm" type="button" variant="outline">
+              Renege
+            </Button>
+            <Button className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={isBusy} onClick={onComplete} size="sm" type="button">
+              Complete
+            </Button>
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -5699,7 +5743,7 @@ function InboxCommitmentModal({
               Cancel
             </Button>
             <Button disabled={isSaving || !text.trim() || !dueAt} onClick={onSave} type="button">
-              {isSaving ? <Loader /> : <FileCheck2 className="h-4 w-4" />}
+              {isSaving ? <Loader /> : <Gem className="h-4 w-4" />}
               Save commitment
             </Button>
           </div>
@@ -14731,6 +14775,13 @@ function formatDateTime(value: string) {
 }
 
 function getCommitmentTone(commitment: InboxCommitment | null | undefined) {
+  if (commitment?.isCompleted || commitment?.completedAt) {
+    return {
+      labelClassName: "border-emerald-200 bg-emerald-50 text-emerald-700",
+      metaClassName: "text-emerald-800",
+      panelClassName: "border-emerald-200/90 bg-emerald-50/90 text-emerald-950",
+    };
+  }
   const dueAt = commitment?.dueAt ? new Date(commitment.dueAt).getTime() : Number.NaN;
   const hoursUntilDue = Number.isNaN(dueAt) ? Number.POSITIVE_INFINITY : (dueAt - Date.now()) / (60 * 60 * 1000);
   if (hoursUntilDue <= 8) {
