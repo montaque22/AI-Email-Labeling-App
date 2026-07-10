@@ -221,6 +221,8 @@ This is useful when an email should trigger an outside action, such as creating 
 
 When you open AI Actions, Emailable looks at your active custom MCP tools and asks AI to create available actions from those real tools. The actions are not hard-coded. They are based on the tools you enabled in BYOAI.
 
+When an email is opened, Emailable loads available AI actions at the top of the email. The first time those actions are created, Emailable saves them with the indexed email metadata. Opening the same email later uses the saved actions instead of asking AI again, which keeps repeat views faster. If you add or change MCP tools later, use the **Refresh** link beside the available actions to regenerate the cards and update the saved result.
+
 The flow is:
 
 1. Choose an available action.

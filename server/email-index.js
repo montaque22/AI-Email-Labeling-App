@@ -419,6 +419,8 @@ export async function countUnreadEmailIndexEntries(userId) {
 }
 
 export function mapEmailIndexRow(row) {
+  const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+  const hasCachedAiActions = Object.prototype.hasOwnProperty.call(metadata, "aiActionSuggestions");
   return {
     id: row.email_id,
     threadId: row.thread_id || row.email_id,
@@ -445,6 +447,8 @@ export function mapEmailIndexRow(row) {
     replyCount: Number(row.reply_count || 0),
     respondingToEmailId: row.responding_to_email_id || null,
     direction: row.direction || "inbox",
+    aiActionSuggestions: hasCachedAiActions && Array.isArray(metadata.aiActionSuggestions) ? metadata.aiActionSuggestions : undefined,
+    aiActionSuggestionsCachedAt: hasCachedAiActions ? metadata.aiActionSuggestionsUpdatedAt || null : undefined,
   };
 }
 

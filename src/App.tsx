@@ -455,6 +455,8 @@ type InboxMessage = {
   commitment?: InboxCommitment | null;
   replyCount?: number;
   rule?: InboxRuleStatus | null;
+  aiActionSuggestions?: InboxAiActionSuggestion[];
+  aiActionSuggestionsCachedAt?: string | null;
 };
 
 type InboxMessageDetail = {
@@ -1807,8 +1809,11 @@ function InboxPage({
   const [aiActionPreviewText, setAiActionPreviewText] = useState("");
   const [aiActionResult, setAiActionResult] = useState<InboxAiActionResult | null>(null);
   const [aiActionSuggestions, setAiActionSuggestions] = useState<InboxAiActionSuggestion[]>([]);
+  const [emailAiActionSuggestions, setEmailAiActionSuggestions] = useState<InboxAiActionSuggestion[]>([]);
+  const [emailAiActionError, setEmailAiActionError] = useState<string | null>(null);
   const [selectedAiActionSuggestion, setSelectedAiActionSuggestion] = useState<InboxAiActionSuggestion | null>(null);
   const [aiActionError, setAiActionError] = useState<string | null>(null);
+  const [isEmailAiActionsLoading, setIsEmailAiActionsLoading] = useState(false);
   const [isAiActionSuggestionsLoading, setIsAiActionSuggestionsLoading] = useState(false);
   const [isAiActionPlanning, setIsAiActionPlanning] = useState(false);
   const [isAiActionExecuting, setIsAiActionExecuting] = useState(false);
@@ -1829,6 +1834,7 @@ function InboxPage({
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreInFlightRef = useRef(false);
   const messageRequestIdRef = useRef(0);
+  const emailAiActionsRequestIdRef = useRef(0);
   const searchSuggestionRequestIdRef = useRef(0);
   const mobilePullStartYRef = useRef<number | null>(null);
   const mobilePullActiveRef = useRef(false);
@@ -2423,6 +2429,16 @@ function InboxPage({
   async function openMessage(message: InboxMessage) {
     if (inboxMode !== "drafts") {
       setSelectedMessage(message);
+      setEmailAiActionSuggestions([]);
+      setEmailAiActionError(null);
+      if (isByoAiActive) {
+        if (Array.isArray(message.aiActionSuggestions)) {
+          setEmailAiActionSuggestions(message.aiActionSuggestions);
+          setIsEmailAiActionsLoading(false);
+        } else {
+          void loadEmailAiActionSuggestions(message);
+        }
+      }
     }
     setMessageDetail(null);
     setDetailError(null);
@@ -3091,10 +3107,21 @@ function InboxPage({
     setAiActionPlan(null);
     setAiActionPreviewText("");
     setAiActionResult(null);
-    setAiActionSuggestions([]);
+    setAiActionSuggestions(emailAiActionSuggestions);
     setSelectedAiActionSuggestion(null);
     setAiActionError(null);
-    void loadAiActionSuggestions(message);
+  }
+
+  function startAiActionFromSuggestion(message: InboxMessage, suggestion: InboxAiActionSuggestion) {
+    setAiActionMessage(message);
+    setAiActionInstruction(suggestion.prompt);
+    setAiActionPlan(null);
+    setAiActionPreviewText("");
+    setAiActionResult(null);
+    setAiActionSuggestions(emailAiActionSuggestions);
+    setSelectedAiActionSuggestion(suggestion);
+    setAiActionError(null);
+    void planAiAction(suggestion.prompt, suggestion, message);
   }
 
   function closeAiAction() {
@@ -3148,8 +3175,66 @@ function InboxPage({
     }
   }
 
-  async function planAiAction(instructionOverride?: string, suggestion?: InboxAiActionSuggestion | null) {
-    if (!aiActionMessage || isAiActionPlanning || isAiActionExecuting) {
+  async function loadEmailAiActionSuggestions(message: InboxMessage, options: { refresh?: boolean } = {}) {
+    const requestId = emailAiActionsRequestIdRef.current + 1;
+    emailAiActionsRequestIdRef.current = requestId;
+    setIsEmailAiActionsLoading(true);
+    setEmailAiActionError(null);
+    try {
+      const response = await fetch("/api/byoai/email-action/suggestions", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountEmail: message.accountEmail,
+          accountId: message.accountId,
+          emailId: message.id,
+          from: message.from || message.sender,
+          mailbox: message.mailbox || "",
+          refresh: Boolean(options.refresh),
+          snippet: message.snippet,
+          subject: message.subject,
+        }),
+      });
+      const data = await response.json();
+      if (emailAiActionsRequestIdRef.current !== requestId) {
+        return;
+      }
+      if (!response.ok) {
+        setEmailAiActionError(data.error ?? "Could not load AI actions.");
+        return;
+      }
+      const nextActions = Array.isArray(data.actions) ? data.actions : [];
+      setEmailAiActionSuggestions(nextActions);
+      const messageKey = getInboxMessageKey(message);
+      setMessages((current) => current.map((currentMessage) =>
+        getInboxMessageKey(currentMessage) === messageKey
+          ? { ...currentMessage, aiActionSuggestions: nextActions, aiActionSuggestionsCachedAt: data.cachedAt ?? new Date().toISOString() }
+          : currentMessage,
+      ));
+      setSelectedMessage((current) =>
+        current && getInboxMessageKey(current) === messageKey
+          ? { ...current, aiActionSuggestions: nextActions, aiActionSuggestionsCachedAt: data.cachedAt ?? new Date().toISOString() }
+          : current,
+      );
+    } catch {
+      if (emailAiActionsRequestIdRef.current === requestId) {
+        setEmailAiActionError("Could not load AI actions.");
+      }
+    } finally {
+      if (emailAiActionsRequestIdRef.current === requestId) {
+        setIsEmailAiActionsLoading(false);
+      }
+    }
+  }
+
+  async function planAiAction(
+    instructionOverride?: string,
+    suggestion?: InboxAiActionSuggestion | null,
+    messageOverride?: InboxMessage | null,
+  ) {
+    const targetMessage = messageOverride ?? aiActionMessage;
+    if (!targetMessage || isAiActionPlanning || isAiActionExecuting) {
       return;
     }
     const instruction = (instructionOverride ?? aiActionInstruction).trim();
@@ -3171,12 +3256,12 @@ function InboxPage({
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          accountEmail: aiActionMessage.accountEmail,
-          emailId: aiActionMessage.id,
+          accountEmail: targetMessage.accountEmail,
+          emailId: targetMessage.id,
           instruction,
           preferredToolClientId: suggestion?.toolClientId ?? "",
           preferredToolName: suggestion?.toolName ?? "",
-          subject: aiActionMessage.subject,
+          subject: targetMessage.subject,
         }),
       });
       const data = await response.json();
@@ -3782,8 +3867,11 @@ function InboxPage({
           <div className="md:hidden">
             <InboxMessagePushView
               aiAction={{
+                availableError: emailAiActionError,
+                availableSuggestions: emailAiActionSuggestions,
                 error: aiActionError,
                 isExecuting: isAiActionExecuting,
+                isAvailableLoading: isEmailAiActionsLoading,
                 isPlanning: isAiActionPlanning,
                 isSuggestionsLoading: isAiActionSuggestionsLoading,
                 message: aiActionMessage,
@@ -3792,6 +3880,8 @@ function InboxPage({
                 onConfirm: () => void confirmAiAction(),
                 onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void planAiAction(instruction, suggestion),
                 onPreviewTextChange: setAiActionPreviewText,
+                onRefreshAvailable: () => void loadEmailAiActionSuggestions(selectedMessage, { refresh: true }),
+                onStartSuggestion: (suggestion) => startAiActionFromSuggestion(selectedMessage, suggestion),
                 plan: aiActionPlan,
                 previewText: aiActionPreviewText,
                 result: aiActionResult,
@@ -3815,7 +3905,6 @@ function InboxPage({
               onCompleteCommitment={(message) => setCommitmentConfirm({ kind: "complete", messages: [message] })}
               onRenegeCommitment={(message) => setCommitmentConfirm({ kind: "renege", messages: [message] })}
               onEditRule={(message) => setRuleEditorMessage(message)}
-              onAiAction={isByoAiActive ? (message) => openAiAction(message) : undefined}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
               onReply={(detail, summary) => openReplyComposer(detail, summary)}
               onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
@@ -3833,8 +3922,11 @@ function InboxPage({
               isLabelActionRunning={isLabelActionRunning}
               labels={labels}
               aiAction={{
+                availableError: emailAiActionError,
+                availableSuggestions: emailAiActionSuggestions,
                 error: aiActionError,
                 isExecuting: isAiActionExecuting,
+                isAvailableLoading: isEmailAiActionsLoading,
                 isPlanning: isAiActionPlanning,
                 isSuggestionsLoading: isAiActionSuggestionsLoading,
                 message: aiActionMessage,
@@ -3843,6 +3935,8 @@ function InboxPage({
                 onConfirm: () => void confirmAiAction(),
                 onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void planAiAction(instruction, suggestion),
                 onPreviewTextChange: setAiActionPreviewText,
+                onRefreshAvailable: () => void loadEmailAiActionSuggestions(selectedMessage, { refresh: true }),
+                onStartSuggestion: (suggestion) => startAiActionFromSuggestion(selectedMessage, suggestion),
                 plan: aiActionPlan,
                 previewText: aiActionPreviewText,
                 result: aiActionResult,
@@ -3860,7 +3954,6 @@ function InboxPage({
               onCompleteCommitment={(message) => setCommitmentConfirm({ kind: "complete", messages: [message] })}
               onRenegeCommitment={(message) => setCommitmentConfirm({ kind: "renege", messages: [message] })}
               onEditRule={(message) => setRuleEditorMessage(message)}
-              onAiAction={isByoAiActive ? (message) => openAiAction(message) : undefined}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
               onReply={(detail, summary) => openReplyComposer(detail, summary)}
               onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
@@ -5152,7 +5245,6 @@ function InboxMessagePushView({
   onCompleteCommitment,
   onDelete,
   onEditRule,
-  onAiAction,
   onRenegeCommitment,
   onSetLabel,
   onReply,
@@ -5161,8 +5253,11 @@ function InboxMessagePushView({
   summary,
 }: {
   aiAction: {
+    availableError: string | null;
+    availableSuggestions: InboxAiActionSuggestion[];
     error: string | null;
     isExecuting: boolean;
+    isAvailableLoading: boolean;
     isPlanning: boolean;
     isSuggestionsLoading: boolean;
     message: InboxMessage | null;
@@ -5171,6 +5266,8 @@ function InboxMessagePushView({
     onConfirm: () => void;
     onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
     onPreviewTextChange: (value: string) => void;
+    onRefreshAvailable: () => void;
+    onStartSuggestion: (suggestion: InboxAiActionSuggestion) => void;
     plan: InboxAiActionPlan | null;
     previewText: string;
     result: InboxAiActionResult | null;
@@ -5190,7 +5287,6 @@ function InboxMessagePushView({
   onCompleteCommitment: (message: InboxMessage) => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
-  onAiAction?: (message: InboxMessage) => void;
   onRenegeCommitment: (message: InboxMessage) => void;
   onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
@@ -5228,11 +5324,6 @@ function InboxMessagePushView({
               <Gem className="h-4 w-4" />
             </Button>
           ) : null}
-          {onAiAction ? (
-            <Button aria-label="AI Actions" onClick={() => isAiActionOpen ? aiAction.onCancel() : onAiAction(summary)} size="icon" type="button" variant="ghost">
-              <Sparkles className="h-4 w-4" />
-            </Button>
-          ) : null}
           <Button aria-label="Reply" onClick={() => onReply(detail, summary)} size="icon" type="button" variant="ghost">
             <Reply className="h-4 w-4" />
           </Button>
@@ -5262,6 +5353,15 @@ function InboxMessagePushView({
 
           {isLoading ? <p className="rounded-xl border border-white/70 bg-white/60 p-4 text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          <InboxAiActionCards
+            actions={aiAction.availableSuggestions}
+            error={aiAction.availableError}
+            isLoading={aiAction.isAvailableLoading}
+            isPlanning={aiAction.isPlanning}
+            onRefresh={aiAction.onRefreshAvailable}
+            onSelect={aiAction.onStartSuggestion}
+            selectedSuggestion={aiAction.selectedSuggestion}
+          />
           {commitment ? (
             <InboxCommitmentPanel
               commitment={commitment}
@@ -5292,6 +5392,102 @@ function InboxMessagePushView({
           selectedSuggestion={aiAction.selectedSuggestion}
           suggestions={aiAction.suggestions}
         />
+      ) : null}
+    </section>
+  );
+}
+
+function InboxAiActionCards({
+  actions,
+  error,
+  isLoading,
+  isPlanning,
+  onRefresh,
+  onSelect,
+  selectedSuggestion,
+}: {
+  actions: InboxAiActionSuggestion[];
+  error: string | null;
+  isLoading: boolean;
+  isPlanning: boolean;
+  onRefresh: () => void;
+  onSelect: (suggestion: InboxAiActionSuggestion) => void;
+  selectedSuggestion: InboxAiActionSuggestion | null;
+}) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const shouldRender = isLoading || Boolean(error) || actions.length > 0;
+  if (!shouldRender) {
+    return null;
+  }
+
+  const scrollCards = (direction: "left" | "right") => {
+    scrollerRef.current?.scrollBy({
+      behavior: "smooth",
+      left: direction === "left" ? -320 : 320,
+    });
+  };
+  const isDisabled = isLoading || isPlanning;
+
+  return (
+    <section className="mb-4 space-y-3 rounded-xl border border-white/70 bg-white/40 p-3 shadow-sm backdrop-blur-xl">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Sparkles className="h-4 w-4 shrink-0 text-zinc-600" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-zinc-950">Available AI actions</p>
+            <p className="text-xs text-zinc-500">Actions are prepared from your active MCP tools.</p>
+          </div>
+        </div>
+        <button
+          className="inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-blue-600 transition hover:bg-white/70 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={isDisabled}
+          onClick={onRefresh}
+          type="button"
+        >
+          {isLoading ? <Loader /> : <RefreshCw className="h-3.5 w-3.5" />}
+          Refresh
+        </button>
+      </div>
+
+      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+
+      {isLoading && actions.length === 0 ? (
+        <div className="flex h-28 items-center justify-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-white/35 text-sm text-zinc-500">
+          <Loader />
+          Finding available actions...
+        </div>
+      ) : actions.length > 0 ? (
+        <div className="flex items-center gap-2">
+          <Button aria-label="Previous AI actions" disabled={isDisabled || actions.length < 2} onClick={() => scrollCards("left")} size="icon" type="button" variant="outline">
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <div
+            className="flex min-w-0 flex-1 snap-x gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            ref={scrollerRef}
+          >
+            {actions.map((action) => {
+              const isSelected = selectedSuggestion?.toolClientId === action.toolClientId && selectedSuggestion?.toolName === action.toolName && selectedSuggestion?.label === action.label;
+              return (
+                <button
+                  className="min-h-28 w-[300px] min-w-[300px] snap-start rounded-xl border border-white/70 bg-white/60 p-4 text-left shadow-sm transition hover:bg-white/80 disabled:cursor-not-allowed disabled:opacity-70"
+                  disabled={isDisabled}
+                  key={`${action.toolClientId}-${action.toolName}-${action.label}`}
+                  onClick={() => onSelect(action)}
+                  type="button"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-semibold text-zinc-950">{action.label}</p>
+                    {isSelected && isPlanning ? <Loader /> : <Sparkles className="h-4 w-4 shrink-0 text-zinc-500" />}
+                  </div>
+                  <p className="mt-2 line-clamp-3 text-xs leading-5 text-zinc-500">{action.tooltip || action.prompt}</p>
+                </button>
+              );
+            })}
+          </div>
+          <Button aria-label="Next AI actions" disabled={isDisabled || actions.length < 2} onClick={() => scrollCards("right")} size="icon" type="button" variant="outline">
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
       ) : null}
     </section>
   );
@@ -5401,7 +5597,6 @@ function InboxMessageModal({
   onCompleteCommitment,
   onDelete,
   onEditRule,
-  onAiAction,
   onRenegeCommitment,
   onSetLabel,
   onReply,
@@ -5410,8 +5605,11 @@ function InboxMessageModal({
   summary,
 }: {
   aiAction: {
+    availableError: string | null;
+    availableSuggestions: InboxAiActionSuggestion[];
     error: string | null;
     isExecuting: boolean;
+    isAvailableLoading: boolean;
     isPlanning: boolean;
     isSuggestionsLoading: boolean;
     message: InboxMessage | null;
@@ -5420,6 +5618,8 @@ function InboxMessageModal({
     onConfirm: () => void;
     onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
     onPreviewTextChange: (value: string) => void;
+    onRefreshAvailable: () => void;
+    onStartSuggestion: (suggestion: InboxAiActionSuggestion) => void;
     plan: InboxAiActionPlan | null;
     previewText: string;
     result: InboxAiActionResult | null;
@@ -5439,7 +5639,6 @@ function InboxMessageModal({
   onCompleteCommitment: (message: InboxMessage) => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
-  onAiAction?: (message: InboxMessage) => void;
   onRenegeCommitment: (message: InboxMessage) => void;
   onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
@@ -5513,13 +5712,6 @@ function InboxMessageModal({
                   </Button>
                 </Tooltip>
               ) : null}
-              {onAiAction ? (
-                <Tooltip side="bottom" text="AI Actions">
-                  <Button aria-label="AI Actions" onClick={() => isAiActionOpen ? aiAction.onCancel() : onAiAction(summary)} size="icon" type="button" variant="outline">
-                    <Sparkles className="h-4 w-4" />
-                  </Button>
-                </Tooltip>
-              ) : null}
               <Tooltip side="bottom" text="Reply">
                 <Button aria-label="Reply" onClick={() => onReply(detail, summary)} size="icon" type="button" variant="outline">
                   <Reply className="h-4 w-4" />
@@ -5533,6 +5725,15 @@ function InboxMessageModal({
           <div className="max-h-[calc(92vh-112px)] overflow-y-auto px-5 pb-10 pt-5">
           {isLoading ? <p className="text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          <InboxAiActionCards
+            actions={aiAction.availableSuggestions}
+            error={aiAction.availableError}
+            isLoading={aiAction.isAvailableLoading}
+            isPlanning={aiAction.isPlanning}
+            onRefresh={aiAction.onRefreshAvailable}
+            onSelect={aiAction.onStartSuggestion}
+            selectedSuggestion={aiAction.selectedSuggestion}
+          />
           {commitment ? (
             <InboxCommitmentPanel
               commitment={commitment}
@@ -5632,15 +5833,11 @@ function InboxAiActionDrawer({
             error={error}
             isExecuting={isExecuting}
             isPlanning={isPlanning}
-            isSuggestionsLoading={isSuggestionsLoading}
-            onBack={onBack}
-            onPlan={onPlan}
             onPreviewTextChange={onPreviewTextChange}
             plan={plan}
             previewText={previewText}
             result={result}
             selectedSuggestion={selectedSuggestion}
-            suggestions={suggestions}
           />
 
           <div className="flex justify-end gap-2 border-t border-white/60 px-5 py-4">
@@ -5911,15 +6108,11 @@ function InboxAiActionBottomSheet({
             error={error}
             isExecuting={isExecuting}
             isPlanning={isPlanning}
-            isSuggestionsLoading={isSuggestionsLoading}
-            onBack={onBack}
-            onPlan={onPlan}
             onPreviewTextChange={onPreviewTextChange}
             plan={plan}
             previewText={previewText}
             result={result}
             selectedSuggestion={selectedSuggestion}
-            suggestions={suggestions}
           />
         </div>
         <div className="flex justify-end gap-2 border-t border-white/70 px-3 pt-3">
@@ -5942,99 +6135,44 @@ function AiActionCarousel({
   error,
   isExecuting,
   isPlanning,
-  isSuggestionsLoading,
-  onBack,
-  onPlan,
   onPreviewTextChange,
   plan,
   previewText,
   result,
   selectedSuggestion,
-  suggestions,
 }: {
   error: string | null;
   isExecuting: boolean;
   isPlanning: boolean;
-  isSuggestionsLoading: boolean;
-  onBack: () => void;
-  onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
   onPreviewTextChange: (value: string) => void;
   plan: InboxAiActionPlan | null;
   previewText: string;
   result: InboxAiActionResult | null;
   selectedSuggestion: InboxAiActionSuggestion | null;
-  suggestions: InboxAiActionSuggestion[];
 }) {
-  const activeStep = result ? 2 : plan || (error && selectedSuggestion) ? 1 : 0;
+  const activeStep = result ? 1 : 0;
   const [isPreviewEditing, setIsPreviewEditing] = useState(false);
 
   return (
     <div className="min-h-0 flex-1 overflow-hidden">
       <div
         className={cn(
-          "flex h-full w-[300%] transition-transform duration-300 ease-out",
-          activeStep === 1 && "-translate-x-1/3",
-          activeStep === 2 && "-translate-x-2/3",
+          "flex h-full w-[200%] transition-transform duration-300 ease-out",
+          activeStep === 1 && "-translate-x-1/2",
         )}
       >
-        <div className="h-full w-1/3 min-w-0 space-y-4 overflow-y-auto px-5 py-5">
-          <div>
-            <p className="text-sm font-medium text-zinc-950">What should Emailable do with this email?</p>
-            <p className="mt-1 text-sm text-zinc-500">
-              AI will prepare an MCP tool call for review. Nothing runs until you confirm it.
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Available actions</p>
-              {isSuggestionsLoading ? <Loader /> : null}
-            </div>
-            {isSuggestionsLoading ? (
-              <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">Finding valid actions from your active MCP tools...</p>
-            ) : suggestions.length === 0 ? (
-              <p className="rounded-md border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">No available actions were found for the active custom MCP tools.</p>
-            ) : (
-              <div className="overflow-hidden rounded-xl border border-white/70 bg-white/45 shadow-sm backdrop-blur-xl">
-                {suggestions.map((action) => (
-                  <button
-                    className="flex w-full cursor-pointer flex-col items-start gap-1 border-b border-zinc-200/70 px-4 py-3 text-left transition last:border-b-0 hover:bg-zinc-100/80 disabled:cursor-not-allowed disabled:opacity-60"
-                    disabled={isPlanning || isExecuting}
-                    key={`${action.toolClientId}-${action.toolName}-${action.label}`}
-                    onClick={() => onPlan(action.prompt, action)}
-                    type="button"
-                  >
-                    <span className="text-sm font-medium text-zinc-950">{action.label}</span>
-                    <span className="text-xs leading-5 text-zinc-500">{action.tooltip || action.prompt}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {isPlanning ? (
-            <p className="flex items-center gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-700">
-              <Loader />
-              Preparing preview...
-            </p>
-          ) : null}
-        </div>
-
-        <div className="h-full w-1/3 min-w-0 space-y-4 overflow-y-auto px-5 py-5">
-          <button
-            className="inline-flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-950"
-            disabled={isPlanning || isExecuting}
-            onClick={onBack}
-            type="button"
-          >
-            <ChevronLeft className="h-4 w-4" />
-            Back to suggestions
-          </button>
-
+        <div className="h-full w-1/2 min-w-0 space-y-4 overflow-y-auto px-5 py-5">
           <div>
             <p className="text-sm font-medium text-zinc-950">The AI agent will attempt to do the following:</p>
             {selectedSuggestion ? <p className="mt-1 text-sm leading-5 text-zinc-500">{selectedSuggestion.tooltip || selectedSuggestion.prompt}</p> : null}
           </div>
+
+          {isPlanning && !plan ? (
+            <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-zinc-300 bg-white/40 text-sm text-zinc-500">
+              <Loader />
+              Preparing preview...
+            </div>
+          ) : null}
 
           {error ? (
             <p className={cn(
@@ -6076,7 +6214,7 @@ function AiActionCarousel({
           ) : null}
         </div>
 
-        <div className="h-full w-1/3 min-w-0 space-y-4 overflow-y-auto px-5 py-5">
+        <div className="h-full w-1/2 min-w-0 space-y-4 overflow-y-auto px-5 py-5">
           <div>
             <p className="text-sm font-semibold text-zinc-950">Result</p>
             <p className="mt-1 text-sm text-zinc-500">

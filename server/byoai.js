@@ -682,7 +682,16 @@ export function registerByoAiRoutes(app) {
         return;
       }
 
+      if (!input.request.refresh) {
+        const cachedActions = await getCachedEmailActionSuggestions(req.user.id, input.request);
+        if (cachedActions) {
+          res.json({ actions: cachedActions.actions, cached: true, cachedAt: cachedActions.cachedAt });
+          return;
+        }
+      }
+
       const suggestions = await suggestEmailActions(req.user.id, input.request);
+      await saveCachedEmailActionSuggestions(req.user.id, input.request, suggestions.actions);
       await logSystemEvent(req.user.id, {
         category: "ai",
         eventName: "ai_email_action.suggestions",
@@ -1229,6 +1238,77 @@ async function suggestEmailActions(userId, request) {
     aiResponse: parsed,
     fallbackUsed: true,
   };
+}
+
+function normalizeEmailActionSuggestions(actions) {
+  if (!Array.isArray(actions)) {
+    return [];
+  }
+  return actions
+    .map((action) => ({
+      toolClientId: String(action?.toolClientId || "").trim(),
+      toolName: String(action?.toolName || "").trim(),
+      label: truncateText(action?.label, 32),
+      prompt: truncateText(action?.prompt, 500),
+      tooltip: truncateText(action?.tooltip, 180),
+    }))
+    .filter((action) => action.toolClientId && action.toolName && action.label && action.prompt);
+}
+
+async function getCachedEmailActionSuggestions(userId, request) {
+  if (!request.accountId || !request.emailId) {
+    return null;
+  }
+
+  const result = await dbPool.query(
+    `select
+       metadata -> 'aiActionSuggestions' as "actions",
+       metadata ->> 'aiActionSuggestionsUpdatedAt' as "cachedAt"
+     from email_index
+     where user_id = $1
+       and email_account_id = $2
+       and email_id = $3
+       and mailbox = $4
+     limit 1`,
+    [userId, request.accountId, request.emailId, request.mailbox || ""],
+  );
+  if (result.rowCount === 0 || result.rows[0].actions === null || result.rows[0].actions === undefined) {
+    return null;
+  }
+
+  return {
+    actions: normalizeEmailActionSuggestions(result.rows[0].actions),
+    cachedAt: result.rows[0].cachedAt || null,
+  };
+}
+
+async function saveCachedEmailActionSuggestions(userId, request, actions) {
+  if (!request.accountId || !request.emailId) {
+    return;
+  }
+
+  await dbPool.query(
+    `update email_index
+     set metadata = jsonb_set(
+           jsonb_set(coalesce(metadata, '{}'::jsonb), '{aiActionSuggestions}', $5::jsonb, true),
+           '{aiActionSuggestionsUpdatedAt}',
+           to_jsonb($6::text),
+           true
+         ),
+         updated_at = now()
+     where user_id = $1
+       and email_account_id = $2
+       and email_id = $3
+       and mailbox = $4`,
+    [
+      userId,
+      request.accountId,
+      request.emailId,
+      request.mailbox || "",
+      JSON.stringify(normalizeEmailActionSuggestions(actions)),
+      new Date().toISOString(),
+    ],
+  );
 }
 
 async function planEmailAction(userId, request) {
@@ -2095,7 +2175,12 @@ function parseEmailActionSuggestionInput(body) {
   return {
     ok: true,
     request: {
+      accountEmail: typeof body?.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : "",
+      accountId: typeof body?.accountId === "string" ? body.accountId.trim() : "",
+      emailId: typeof body?.emailId === "string" ? body.emailId.trim() : "",
       from: typeof body?.from === "string" ? body.from.trim().slice(0, 300) : "",
+      mailbox: typeof body?.mailbox === "string" ? body.mailbox.trim().slice(0, 100) : "",
+      refresh: Boolean(body?.refresh),
       snippet: typeof body?.snippet === "string" ? body.snippet.trim().slice(0, 600) : "",
       subject: typeof body?.subject === "string" ? body.subject.trim().slice(0, 500) : "",
     },
