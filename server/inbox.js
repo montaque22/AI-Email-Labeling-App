@@ -116,7 +116,7 @@ export function registerInboxRoutes(app) {
       const attachment = await getInboxAttachment(req.user.id, input.query);
       res.setHeader("Content-Type", attachment.type);
       res.setHeader("Content-Length", String(attachment.buffer.length));
-      res.setHeader("Content-Disposition", `attachment; filename="${sanitizeDownloadFilename(attachment.filename)}"`);
+      res.setHeader("Content-Disposition", `${input.query.inline ? "inline" : "attachment"}; filename="${sanitizeDownloadFilename(attachment.filename)}"`);
       res.send(attachment.buffer);
     } catch (error) {
       handleProviderError(res, error);
@@ -1244,6 +1244,7 @@ async function fetchGmailInboxMessage(accessToken, account, emailId) {
   const message = await response.json();
   const headers = getGmailHeaders(message);
   const body = extractGmailBodies(message.payload);
+  const attachments = collectGmailAttachments(message.payload);
   const threadMessages = await fetchGmailThreadMessages(accessToken, account, message.threadId);
 
   return {
@@ -1260,8 +1261,8 @@ async function fetchGmailInboxMessage(accessToken, account, emailId) {
     date: new Date(Number(message.internalDate || Date.parse(headers.date) || Date.now())).toISOString(),
     isRead: !Array.isArray(message.labelIds) || !message.labelIds.includes("UNREAD"),
     bodyText: body.text,
-    bodyHtml: sanitizeEmailHtml(body.html),
-    attachments: collectGmailAttachments(message.payload),
+    bodyHtml: rewriteGmailInlineImageSources(sanitizeEmailHtml(body.html), account.id, message.id, attachments),
+    attachments,
     threadMessages,
     replyCount: threadMessages.filter((threadMessage) => threadMessage.id !== message.id && threadMessage.isSent).length,
   };
@@ -1294,6 +1295,7 @@ async function fetchGmailThreadMessages(accessToken, account, threadId) {
     .map((message) => {
       const headers = getGmailHeaders(message);
       const body = extractGmailBodies(message.payload);
+      const attachments = collectGmailAttachments(message.payload);
       return {
         id: message.id,
         threadId: message.threadId,
@@ -1306,8 +1308,8 @@ async function fetchGmailThreadMessages(accessToken, account, threadId) {
         subject: headers.subject || "",
         date: new Date(Number(message.internalDate || Date.parse(headers.date) || Date.now())).toISOString(),
         bodyText: body.text,
-        bodyHtml: sanitizeEmailHtml(body.html),
-        attachments: collectGmailAttachments(message.payload),
+        bodyHtml: rewriteGmailInlineImageSources(sanitizeEmailHtml(body.html), account.id, message.id, attachments),
+        attachments,
         isSent: Array.isArray(message.labelIds) && message.labelIds.includes("SENT"),
       };
     })
@@ -1645,6 +1647,7 @@ function parseAttachmentDownloadQuery(query) {
       attachmentId,
       emailId,
       filename: typeof query.filename === "string" ? query.filename : "",
+      inline: query.inline === "true",
       mailbox: typeof query.mailbox === "string" ? query.mailbox : "",
       type: typeof query.type === "string" ? query.type : "",
     },
@@ -1778,6 +1781,16 @@ function getGmailHeaders(message) {
   return headers;
 }
 
+function getGmailPartHeader(part, name) {
+  const target = String(name || "").toLowerCase();
+  const header = (part?.headers ?? []).find((entry) => String(entry.name || "").toLowerCase() === target);
+  return header?.value || "";
+}
+
+function normalizeContentId(value) {
+  return String(value || "").trim().replace(/^<|>$/g, "");
+}
+
 function extractGmailBodies(part) {
   const result = { text: "", html: "" };
   collectGmailBodies(part, result);
@@ -1807,8 +1820,10 @@ function collectGmailAttachments(part, attachments = []) {
   }
 
   if (part.filename && part.body?.attachmentId) {
+    const contentId = normalizeContentId(getGmailPartHeader(part, "content-id"));
     attachments.push({
       attachmentId: part.body.attachmentId,
+      contentId,
       filename: part.filename,
       type: part.mimeType || "application/octet-stream",
       size: part.body.size ?? null,
@@ -1821,6 +1836,37 @@ function collectGmailAttachments(part, attachments = []) {
   }
 
   return attachments;
+}
+
+function rewriteGmailInlineImageSources(html, accountId, emailId, attachments) {
+  if (!html || !attachments.length) {
+    return html;
+  }
+  const attachmentByCid = new Map(
+    attachments
+      .filter((attachment) => attachment.contentId && attachment.attachmentId)
+      .map((attachment) => [attachment.contentId.toLowerCase(), attachment]),
+  );
+  if (attachmentByCid.size === 0) {
+    return html;
+  }
+
+  return String(html).replace(/cid:([^"')\s>]+)/gi, (match, rawContentId) => {
+    const contentId = normalizeContentId(decodeURIComponentSafe(rawContentId)).toLowerCase();
+    const attachment = attachmentByCid.get(contentId);
+    if (!attachment) {
+      return match;
+    }
+    const params = new URLSearchParams({
+      accountId,
+      attachmentId: attachment.attachmentId,
+      emailId,
+      filename: attachment.filename || "inline-image",
+      inline: "true",
+      type: attachment.type || "application/octet-stream",
+    });
+    return `/api/inbox/attachment?${params.toString()}`;
+  });
 }
 
 function buildGmailComposeMessage(from, compose, original = null) {
@@ -1930,6 +1976,14 @@ function sanitizeEmailHtml(html) {
 
 function decodeBase64Url(value) {
   return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+}
+
+function decodeURIComponentSafe(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return String(value || "");
+  }
 }
 
 function splitAddressList(value) {

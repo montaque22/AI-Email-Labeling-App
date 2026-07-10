@@ -9888,6 +9888,7 @@ function ByoAiPage() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [isTogglingAi, setIsTogglingAi] = useState(false);
   const [isSavingMcp, setIsSavingMcp] = useState(false);
+  const [isRefreshingMcpTools, setIsRefreshingMcpTools] = useState(false);
   const [isTogglingMcp, setIsTogglingMcp] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [messages, setMessages] = useState<Record<string, string>>({});
@@ -10513,6 +10514,40 @@ function ByoAiPage() {
     });
   }
 
+  async function refreshAllMcpTools() {
+    if (isRefreshingMcpTools) {
+      return;
+    }
+
+    setIsRefreshingMcpTools(true);
+    setPageError(null);
+
+    try {
+      const response = await fetch("/api/byoai/mcp-clients/refresh-tools", {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setPageError(data.error ?? "Could not refresh MCP server tools.");
+        return;
+      }
+
+      const nextClients = ensureSystemMcpClient(data.mcpClients ?? []);
+      setMcpClients(nextClients);
+      setMcpClient(data.mcpClient ?? (nextClients.length ? nextClients[0] : mcpClient));
+      setToast({
+        tone: data.failed?.length ? "warning" : "success",
+        message: data.message ?? "MCP server tools refreshed.",
+      });
+    } catch {
+      setPageError("Could not refresh MCP server tools.");
+    } finally {
+      setIsRefreshingMcpTools(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       {toast ? (
@@ -10689,7 +10724,20 @@ function ByoAiPage() {
                     <th className="px-4 py-3">URL</th>
                     <th className="px-4 py-3">Selected tools</th>
                     <th className="px-4 py-3">Status</th>
-                    <th className="w-12 px-4 py-3" />
+                    <th className="w-12 px-4 py-3 text-right">
+                      <Tooltip align="end" text="Refresh tool names, descriptions, and schemas from every saved MCP server.">
+                        <Button
+                          aria-label="Refresh all MCP tools"
+                          disabled={mcpSectionDisabled || externalMcpClientCount === 0 || isRefreshingMcpTools}
+                          onClick={() => void refreshAllMcpTools()}
+                          size="icon"
+                          type="button"
+                          variant="ghost"
+                        >
+                          {isRefreshingMcpTools ? <Loader /> : <RefreshCw className="h-4 w-4" />}
+                        </Button>
+                      </Tooltip>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200">
@@ -11049,7 +11097,10 @@ function McpServerModal({
                         <input checked={mcpClient.selectedTools.includes(tool.name)} disabled={isSaving} onChange={() => onToggleTool(tool.name)} type="checkbox" />
                         <span>
                           <span className="block font-medium text-zinc-950">{tool.name}</span>
-                          <span className="block text-zinc-500">{tool.description || "No description provided."}</span>
+                          <span
+                            className="prose prose-xs mt-1 block max-w-none break-words text-zinc-500 [&_*]:break-words [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1"
+                            dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(formatMcpToolDescription(tool.description)) }}
+                          />
                         </span>
                       </label>
                     ))}
@@ -11078,6 +11129,11 @@ function McpServerModal({
       </div>
     </div>
   );
+}
+
+function formatMcpToolDescription(description?: string) {
+  const value = description?.trim() || "No description provided.";
+  return value.replace(/\\n/g, "\n");
 }
 
 function ConfirmModal({

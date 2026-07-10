@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.84
+
+- Added a refresh-all-tools action to the BYOAI MCP Client table.
+- Rendered MCP tool descriptions as markdown in the MCP server modal.
+- Summarized AI Action MCP tool results into concise markdown before showing them in the UI.
+
 ## 0.1.83
 
 - Added editable AI Actions preview text before confirmation.

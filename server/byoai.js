@@ -114,6 +114,17 @@ const AI_EMAIL_ACTION_SUGGESTIONS_SCHEMA = {
   required: ["actions"],
   additionalProperties: false,
 };
+const AI_EMAIL_ACTION_RESULT_SUMMARY_SCHEMA = {
+  type: "object",
+  properties: {
+    markdown: {
+      type: "string",
+      description: "Concise markdown summary of the completed MCP tool result for the user.",
+    },
+  },
+  required: ["markdown"],
+  additionalProperties: false,
+};
 const SYSTEM_MCP_CLIENT_ID = "system";
 const SYSTEM_MCP_TOOLS = [
   {
@@ -496,6 +507,59 @@ export function registerByoAiRoutes(app) {
     }
   });
 
+  app.post("/api/byoai/mcp-clients/refresh-tools", requireSession, async (req, res) => {
+    try {
+      const clients = await listMcpClientConfigs(req.user.id, { includeSecret: true });
+      const externalClients = clients.filter((client) => !client.isSystem);
+      const refreshed = [];
+      const failed = [];
+
+      for (const client of externalClients) {
+        const baseConfig = {
+          id: client.id,
+          name: client.name || "",
+          serverUrl: client.serverUrl,
+          authType: client.authType || "none",
+          bearerToken: client.bearerToken || "",
+        };
+
+        try {
+          const tools = await fetchMcpServerTools(baseConfig);
+          const selectedTools = client.selectedTools.filter((name) => tools.some((tool) => tool.name === name));
+          await updateMcpClientConfig(req.user.id, client.id, {
+            ...baseConfig,
+            enabled: Boolean(client.enabled),
+            status: "connected",
+            lastError: "",
+            tools,
+            selectedTools,
+          });
+          refreshed.push(client.id);
+        } catch (error) {
+          const message = error?.message || "Could not refresh MCP server tools.";
+          failed.push({ id: client.id, name: client.name || client.serverUrl, error: message });
+          await updateMcpClientConfig(req.user.id, client.id, {
+            ...baseConfig,
+            enabled: Boolean(client.enabled),
+            status: "failed",
+            lastError: message,
+            tools: client.tools,
+            selectedTools: client.selectedTools,
+          });
+        }
+      }
+
+      const mcpClients = await listMcpClientConfigs(req.user.id);
+      const message = failed.length
+        ? `Refreshed ${refreshed.length} MCP ${refreshed.length === 1 ? "server" : "servers"}. ${failed.length} failed.`
+        : `Refreshed ${refreshed.length} MCP ${refreshed.length === 1 ? "server" : "servers"}.`;
+
+      res.json({ refreshed, failed, mcpClients, message });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   app.put("/api/byoai/mcp-clients/:id", requireSession, async (req, res) => {
     try {
       if (req.params.id === SYSTEM_MCP_CLIENT_ID) {
@@ -663,7 +727,8 @@ export function registerByoAiRoutes(app) {
         message: `AI action executed: ${input.request.toolName}`,
         payload: { request: input.request, response: result },
       });
-      res.json(result);
+      const { rawResult: _rawResult, ...clientResult } = result;
+      res.json(clientResult);
     } catch (error) {
       await logSystemEvent(req.user?.id, {
         category: "ai",
@@ -1272,13 +1337,67 @@ async function executeEmailAction(userId, request) {
   }
 
   const response = await callRemoteMcpTool(match.client, match.tool.name, toolArguments);
+  const summaryMarkdown = await summarizeEmailActionResult(userId, {
+    request,
+    toolName: match.tool.name,
+    toolArguments,
+    rawResult: response,
+  });
   return {
     ok: true,
     toolClientId: match.client.id,
     toolName: match.tool.name,
     arguments: toolArguments,
-    result: response,
+    result: {
+      content: [{ type: "text", text: summaryMarkdown }],
+      markdown: summaryMarkdown,
+    },
+    rawResult: response,
   };
+}
+
+async function summarizeEmailActionResult(userId, { request, toolName, toolArguments, rawResult }) {
+  const rawResultText = truncateText(safeJsonStringify(rawResult), 12000);
+  const aiRequest = {
+    systemPrompt: [
+      "You summarize the result of a completed MCP tool call for an Emailable user.",
+      "Return only useful, user-facing information as markdown.",
+      "Do not dump raw JSON, stack traces, metadata, etags, internal ids, or irrelevant provider fields.",
+      "If the result contains calendar events, tasks, notes, messages, or links, summarize the important names, dates, times, statuses, and links.",
+      "If the result is empty but the action appears successful, say that the action completed successfully.",
+      "Keep it concise and readable.",
+    ].join("\n"),
+    userPrompt: [
+      `Requested action: ${request.editedPreview || request.instruction || request.confirmLabel || "Run MCP tool"}`,
+      `Tool name: ${toolName}`,
+      `Tool arguments: ${safeJsonStringify(toolArguments)}`,
+      "",
+      "Raw MCP tool result:",
+      rawResultText || "(empty)",
+    ].join("\n"),
+    responseShape: "email_action_result_summary",
+    responseSchema: AI_EMAIL_ACTION_RESULT_SUMMARY_SCHEMA,
+  };
+
+  try {
+    const aiResponse = await callBestAvailableAi(userId, aiRequest);
+    const parsed = parseJsonResponse(aiResponse, ["markdown"]);
+    const markdown = String(parsed.markdown || "").trim();
+    if (markdown) {
+      return markdown;
+    }
+  } catch (error) {
+    await logSystemEvent(userId, {
+      category: "ai",
+      eventName: "ai_email_action.result_summary_failed",
+      status: "warning",
+      message: error.message,
+      payload: { request: aiRequest, rawResult },
+    });
+  }
+
+  const fallback = extractMcpResultText(rawResult);
+  return fallback || "Action completed successfully.";
 }
 
 async function listActiveCustomMcpActionTools(userId) {
@@ -1834,6 +1953,43 @@ function normalizeAiLabelCandidates(value) {
 
 function truncateText(value, maxLength) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function safeJsonStringify(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function extractMcpResultText(result) {
+  if (typeof result === "string") {
+    return result.trim();
+  }
+  if (!result || typeof result !== "object") {
+    return "";
+  }
+
+  const content = Array.isArray(result.content) ? result.content : [];
+  const text = content
+    .filter((entry) => entry && typeof entry === "object" && entry.type === "text" && typeof entry.text === "string")
+    .map((entry) => entry.text.trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+  if (text) {
+    return text;
+  }
+
+  for (const key of ["markdown", "summary", "message", "text", "result"]) {
+    const value = result[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return "";
 }
 
 function badAiResponse(message) {
@@ -2836,11 +2992,35 @@ async function callRemoteMcpTool(client, toolName, input) {
       arguments: input,
     },
   });
-  return data.result ?? data;
+  const result = data.result ?? data;
+  if (isMcpToolError(result)) {
+    const error = new Error(extractMcpToolErrorMessage(result) || `MCP tool failed: ${toolName}`);
+    error.status = 502;
+    error.mcpResult = result;
+    throw error;
+  }
+  return result;
 }
 
 function getLocalMcpServerUrl() {
   return `http://127.0.0.1:${process.env.PORT || 3000}/mcp`;
+}
+
+function isMcpToolError(result) {
+  return Boolean(result && typeof result === "object" && result.isError);
+}
+
+function extractMcpToolErrorMessage(result) {
+  if (!result || typeof result !== "object") {
+    return "";
+  }
+  const content = Array.isArray(result.content) ? result.content : [];
+  const text = content
+    .filter((entry) => entry && typeof entry === "object" && entry.type === "text" && typeof entry.text === "string")
+    .map((entry) => entry.text.trim())
+    .filter(Boolean)
+    .join("\n");
+  return text || (typeof result.message === "string" ? result.message : "");
 }
 
 function cleanAiTextResponse(value) {

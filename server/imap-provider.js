@@ -379,7 +379,7 @@ export async function fetchImapInboxMessage(account, { emailId, mailbox, accessT
       date: (message.internalDate ?? message.envelope?.date ?? new Date()).toISOString(),
       isRead: hasImapFlag(message.flags, "\\Seen"),
       bodyText: parsed.text,
-      bodyHtml: parsed.html,
+      bodyHtml: rewriteImapInlineImageSources(parsed.html, account.id, String(message.uid), mailboxInfo.path, parsed.attachments),
       attachments: parsed.attachments,
     };
   }, accessToken);
@@ -883,6 +883,7 @@ async function parseRawEmail(raw) {
     return {
       attachments: (parsed.attachments ?? []).map((attachment, index) => ({
         attachmentId: String(index),
+        contentId: normalizeContentId(attachment.cid || attachment.contentId || ""),
         filename: attachment.filename || "Attachment",
         type: attachment.contentType || "application/octet-stream",
         size: attachment.size ?? null,
@@ -893,6 +894,50 @@ async function parseRawEmail(raw) {
     };
   } catch {
     return { attachments: [], html: "", text: extractTextFromRawMessage(raw) };
+  }
+}
+
+function rewriteImapInlineImageSources(html, accountId, emailId, mailbox, attachments = []) {
+  if (!html || !attachments.length) {
+    return html;
+  }
+  const attachmentByCid = new Map(
+    attachments
+      .filter((attachment) => attachment.contentId && attachment.attachmentId)
+      .map((attachment) => [String(attachment.contentId).toLowerCase(), attachment]),
+  );
+  if (attachmentByCid.size === 0) {
+    return html;
+  }
+
+  return String(html).replace(/cid:([^"')\s>]+)/gi, (match, rawContentId) => {
+    const contentId = normalizeContentId(decodeURIComponentSafe(rawContentId)).toLowerCase();
+    const attachment = attachmentByCid.get(contentId);
+    if (!attachment) {
+      return match;
+    }
+    const params = new URLSearchParams({
+      accountId,
+      attachmentId: attachment.attachmentId,
+      emailId,
+      filename: attachment.filename || "inline-image",
+      inline: "true",
+      mailbox,
+      type: attachment.type || "application/octet-stream",
+    });
+    return `/api/inbox/attachment?${params.toString()}`;
+  });
+}
+
+function normalizeContentId(value) {
+  return String(value || "").trim().replace(/^<|>$/g, "");
+}
+
+function decodeURIComponentSafe(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return String(value || "");
   }
 }
 
