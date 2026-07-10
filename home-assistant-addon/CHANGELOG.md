@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.85
+
+- Expanded Inbox documentation with AI Helper, AI Draft, AI Actions, and Commitments sections.
+- Clarified indexed Inbox metadata, search behavior, MCP tool refresh caveats, and commitment resolution behavior.
+
 ## 0.1.84
 
 - Added a refresh-all-tools action to the BYOAI MCP Client table.
