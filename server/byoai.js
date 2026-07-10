@@ -1240,19 +1240,43 @@ async function planEmailAction(userId, request) {
 
 async function executeEmailAction(userId, request) {
   await assertAiEnabled(userId);
+  let toolClientId = request.toolClientId;
+  let toolName = request.toolName;
+  let toolArguments = request.arguments;
+
+  if (request.editedPreview) {
+    if (!request.emailId) {
+      const error = new Error("emailId is required when confirming an edited AI action preview.");
+      error.status = 400;
+      throw error;
+    }
+    const replanned = await planEmailAction(userId, {
+      accountEmail: request.accountEmail,
+      emailId: request.emailId,
+      instruction: request.editedPreview,
+      preferredToolClientId: request.toolClientId,
+      preferredToolName: request.toolName,
+      subject: request.subject,
+    });
+    toolClientId = replanned.plan.toolClientId;
+    toolName = replanned.plan.toolName;
+    toolArguments = replanned.plan.arguments;
+  }
+
   const tools = await listActiveCustomMcpActionTools(userId);
-  const match = tools.find((entry) => entry.client.id === request.toolClientId && entry.tool.name === request.toolName);
+  const match = tools.find((entry) => entry.client.id === toolClientId && entry.tool.name === toolName);
   if (!match) {
     const error = new Error("The selected MCP tool is not active for this account.");
     error.status = 400;
     throw error;
   }
 
-  const response = await callRemoteMcpTool(match.client, match.tool.name, request.arguments);
+  const response = await callRemoteMcpTool(match.client, match.tool.name, toolArguments);
   return {
     ok: true,
     toolClientId: match.client.id,
     toolName: match.tool.name,
+    arguments: toolArguments,
     result: response,
   };
 }
@@ -1925,6 +1949,10 @@ function parseEmailActionSuggestionInput(body) {
 function parseEmailActionConfirmInput(body) {
   const toolClientId = typeof body?.toolClientId === "string" ? body.toolClientId.trim() : "";
   const toolName = typeof body?.toolName === "string" ? body.toolName.trim() : "";
+  const emailId = typeof body?.emailId === "string" ? body.emailId.trim() : "";
+  const accountEmail = typeof body?.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : "";
+  const subject = typeof body?.subject === "string" ? body.subject.trim().slice(0, 500) : "";
+  const editedPreview = typeof body?.editedPreview === "string" ? body.editedPreview.trim() : "";
   const args = body?.arguments;
   const toolArguments = args && typeof args === "object" && !Array.isArray(args) ? args : {};
 
@@ -1934,8 +1962,14 @@ function parseEmailActionConfirmInput(body) {
   if (!toolName) {
     return { ok: false, error: "toolName is required." };
   }
+  if (editedPreview.length > 1000) {
+    return { ok: false, error: "Edited AI action preview must be 1,000 characters or less." };
+  }
+  if (editedPreview && !emailId) {
+    return { ok: false, error: "emailId is required when confirming an edited preview." };
+  }
 
-  return { ok: true, request: { arguments: toolArguments, toolClientId, toolName } };
+  return { ok: true, request: { accountEmail, arguments: toolArguments, editedPreview, emailId, subject, toolClientId, toolName } };
 }
 
 function parsePlatformInput(body) {

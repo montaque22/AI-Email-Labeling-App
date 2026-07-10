@@ -1804,6 +1804,7 @@ function InboxPage({
   const [aiActionMessage, setAiActionMessage] = useState<InboxMessage | null>(null);
   const [aiActionInstruction, setAiActionInstruction] = useState("");
   const [aiActionPlan, setAiActionPlan] = useState<InboxAiActionPlan | null>(null);
+  const [aiActionPreviewText, setAiActionPreviewText] = useState("");
   const [aiActionResult, setAiActionResult] = useState<InboxAiActionResult | null>(null);
   const [aiActionSuggestions, setAiActionSuggestions] = useState<InboxAiActionSuggestion[]>([]);
   const [selectedAiActionSuggestion, setSelectedAiActionSuggestion] = useState<InboxAiActionSuggestion | null>(null);
@@ -3088,6 +3089,7 @@ function InboxPage({
     setAiActionMessage(message);
     setAiActionInstruction(instruction);
     setAiActionPlan(null);
+    setAiActionPreviewText("");
     setAiActionResult(null);
     setAiActionSuggestions([]);
     setSelectedAiActionSuggestion(null);
@@ -3099,6 +3101,7 @@ function InboxPage({
     setAiActionMessage(null);
     setAiActionInstruction("");
     setAiActionPlan(null);
+    setAiActionPreviewText("");
     setAiActionResult(null);
     setAiActionSuggestions([]);
     setSelectedAiActionSuggestion(null);
@@ -3110,6 +3113,7 @@ function InboxPage({
 
   function resetAiActionPreview() {
     setAiActionPlan(null);
+    setAiActionPreviewText("");
     setAiActionResult(null);
     setAiActionError(null);
     setSelectedAiActionSuggestion(null);
@@ -3157,6 +3161,7 @@ function InboxPage({
     setAiActionInstruction(instruction);
     setSelectedAiActionSuggestion(suggestion ?? null);
     setAiActionPlan(null);
+    setAiActionPreviewText("");
     setAiActionResult(null);
     setAiActionError(null);
     setIsAiActionPlanning(true);
@@ -3180,6 +3185,7 @@ function InboxPage({
         return;
       }
       setAiActionPlan(data);
+      setAiActionPreviewText(typeof data.summary === "string" ? data.summary : "");
       if (data.needsMoreInfo && data.question) {
         setAiActionError(data.question);
       }
@@ -3204,6 +3210,10 @@ function InboxPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           arguments: aiActionPlan.arguments,
+          accountEmail: aiActionMessage?.accountEmail ?? "",
+          editedPreview: aiActionPreviewText.trim() !== aiActionPlan.summary.trim() ? aiActionPreviewText : "",
+          emailId: aiActionMessage?.id ?? "",
+          subject: aiActionMessage?.subject ?? "",
           toolClientId: aiActionPlan.toolClientId,
           toolName: aiActionPlan.toolName,
         }),
@@ -3781,7 +3791,9 @@ function InboxPage({
                 onCancel: closeAiAction,
                 onConfirm: () => void confirmAiAction(),
                 onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void planAiAction(instruction, suggestion),
+                onPreviewTextChange: setAiActionPreviewText,
                 plan: aiActionPlan,
+                previewText: aiActionPreviewText,
                 result: aiActionResult,
                 selectedSuggestion: selectedAiActionSuggestion,
                 suggestions: aiActionSuggestions,
@@ -3830,7 +3842,9 @@ function InboxPage({
                 onCancel: closeAiAction,
                 onConfirm: () => void confirmAiAction(),
                 onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void planAiAction(instruction, suggestion),
+                onPreviewTextChange: setAiActionPreviewText,
                 plan: aiActionPlan,
+                previewText: aiActionPreviewText,
                 result: aiActionResult,
                 selectedSuggestion: selectedAiActionSuggestion,
                 suggestions: aiActionSuggestions,
@@ -5156,7 +5170,9 @@ function InboxMessagePushView({
     onCancel: () => void;
     onConfirm: () => void;
     onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
+    onPreviewTextChange: (value: string) => void;
     plan: InboxAiActionPlan | null;
+    previewText: string;
     result: InboxAiActionResult | null;
     selectedSuggestion: InboxAiActionSuggestion | null;
     suggestions: InboxAiActionSuggestion[];
@@ -5269,7 +5285,9 @@ function InboxMessagePushView({
           onCancel={aiAction.onCancel}
           onConfirm={aiAction.onConfirm}
           onPlan={aiAction.onPlan}
+          onPreviewTextChange={aiAction.onPreviewTextChange}
           plan={aiAction.plan}
+          previewText={aiAction.previewText}
           result={aiAction.result}
           selectedSuggestion={aiAction.selectedSuggestion}
           suggestions={aiAction.suggestions}
@@ -5401,7 +5419,9 @@ function InboxMessageModal({
     onCancel: () => void;
     onConfirm: () => void;
     onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
+    onPreviewTextChange: (value: string) => void;
     plan: InboxAiActionPlan | null;
+    previewText: string;
     result: InboxAiActionResult | null;
     selectedSuggestion: InboxAiActionSuggestion | null;
     suggestions: InboxAiActionSuggestion[];
@@ -5538,7 +5558,9 @@ function InboxMessageModal({
           onCancel={aiAction.onCancel}
           onConfirm={aiAction.onConfirm}
           onPlan={aiAction.onPlan}
+          onPreviewTextChange={aiAction.onPreviewTextChange}
           plan={aiAction.plan}
+          previewText={aiAction.previewText}
           privacyMode={privacyMode}
           result={aiAction.result}
           selectedSuggestion={aiAction.selectedSuggestion}
@@ -5561,7 +5583,9 @@ function InboxAiActionDrawer({
   onCancel,
   onConfirm,
   onPlan,
+  onPreviewTextChange,
   plan,
+  previewText,
   privacyMode,
   result,
   selectedSuggestion,
@@ -5576,7 +5600,9 @@ function InboxAiActionDrawer({
   onCancel: () => void;
   onConfirm: () => void;
   onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
+  onPreviewTextChange: (value: string) => void;
   plan: InboxAiActionPlan | null;
+  previewText: string;
   privacyMode: boolean;
   result: InboxAiActionResult | null;
   selectedSuggestion: InboxAiActionSuggestion | null;
@@ -5609,7 +5635,9 @@ function InboxAiActionDrawer({
             isSuggestionsLoading={isSuggestionsLoading}
             onBack={onBack}
             onPlan={onPlan}
+            onPreviewTextChange={onPreviewTextChange}
             plan={plan}
+            previewText={previewText}
             result={result}
             selectedSuggestion={selectedSuggestion}
             suggestions={suggestions}
@@ -5838,7 +5866,9 @@ function InboxAiActionBottomSheet({
   onCancel,
   onConfirm,
   onPlan,
+  onPreviewTextChange,
   plan,
+  previewText,
   result,
   selectedSuggestion,
   suggestions,
@@ -5851,7 +5881,9 @@ function InboxAiActionBottomSheet({
   onCancel: () => void;
   onConfirm: () => void;
   onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
+  onPreviewTextChange: (value: string) => void;
   plan: InboxAiActionPlan | null;
+  previewText: string;
   result: InboxAiActionResult | null;
   selectedSuggestion: InboxAiActionSuggestion | null;
   suggestions: InboxAiActionSuggestion[];
@@ -5882,7 +5914,9 @@ function InboxAiActionBottomSheet({
             isSuggestionsLoading={isSuggestionsLoading}
             onBack={onBack}
             onPlan={onPlan}
+            onPreviewTextChange={onPreviewTextChange}
             plan={plan}
+            previewText={previewText}
             result={result}
             selectedSuggestion={selectedSuggestion}
             suggestions={suggestions}
@@ -5911,7 +5945,9 @@ function AiActionCarousel({
   isSuggestionsLoading,
   onBack,
   onPlan,
+  onPreviewTextChange,
   plan,
+  previewText,
   result,
   selectedSuggestion,
   suggestions,
@@ -5922,12 +5958,15 @@ function AiActionCarousel({
   isSuggestionsLoading: boolean;
   onBack: () => void;
   onPlan: (instruction?: string, suggestion?: InboxAiActionSuggestion | null) => void;
+  onPreviewTextChange: (value: string) => void;
   plan: InboxAiActionPlan | null;
+  previewText: string;
   result: InboxAiActionResult | null;
   selectedSuggestion: InboxAiActionSuggestion | null;
   suggestions: InboxAiActionSuggestion[];
 }) {
   const activeStep = result ? 2 : plan || (error && selectedSuggestion) ? 1 : 0;
+  const [isPreviewEditing, setIsPreviewEditing] = useState(false);
 
   return (
     <div className="min-h-0 flex-1 overflow-hidden">
@@ -6007,8 +6046,32 @@ function AiActionCarousel({
           ) : null}
 
           {plan && !plan.needsMoreInfo ? (
-            <div className="rounded-xl border border-white/70 bg-white/60 p-4 shadow-sm backdrop-blur-xl">
-              <p className="text-sm leading-6 text-zinc-600">{plan.summary}</p>
+            <div
+              className="rounded-xl border border-white/70 bg-white/60 p-4 shadow-sm backdrop-blur-xl"
+              onClick={() => {
+                if (!isPlanning && !isExecuting) {
+                  setIsPreviewEditing(true);
+                }
+              }}
+              role="button"
+              tabIndex={0}
+            >
+              {isPreviewEditing ? (
+                <textarea
+                  autoFocus
+                  className="min-h-40 w-full resize-y rounded-lg border border-zinc-200 bg-white/70 px-3 py-2 text-sm leading-6 text-zinc-700 outline-none transition-colors focus:border-zinc-400"
+                  disabled={isPlanning || isExecuting}
+                  onBlur={() => setIsPreviewEditing(false)}
+                  onChange={(event) => onPreviewTextChange(event.target.value)}
+                  onClick={(event) => event.stopPropagation()}
+                  value={previewText}
+                />
+              ) : (
+                <>
+                  <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-600">{previewText || plan.summary}</p>
+                  <p className="mt-3 text-xs text-zinc-400">Click to edit</p>
+                </>
+              )}
             </div>
           ) : null}
         </div>

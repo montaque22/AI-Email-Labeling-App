@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.83
+
+- Added editable AI Actions preview text before confirmation.
+- Re-plan selected MCP tool arguments from edited preview text before execution.
+
 ## 0.1.82
 
 - Persist completed commitments with a completed timestamp while archiving the email.
