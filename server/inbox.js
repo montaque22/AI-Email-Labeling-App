@@ -13,6 +13,7 @@ import {
   countUnreadEmailIndexEntries,
   deleteEmailIndexEntries,
   getEmailIndexLabelCounts,
+  listEmailIndexEntriesByLabel,
   listEmailIndexEntries,
   setEmailIndexCommitment,
   updateEmailIndexLabels,
@@ -32,13 +33,15 @@ import {
   updateImapComposeDraft,
 } from "./imap-provider.js";
 import { modifyGmailMessageLabels } from "./integrations.js";
-import { UNEMAILABLE_SYSTEM_LABEL_KEY } from "./labels.js";
+import { UNEMAILABLE_SYSTEM_LABEL_KEY, UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
+import { generateAiLabel, isAiActiveForUser } from "./byoai.js";
 import crypto from "node:crypto";
 import nodemailer from "nodemailer";
 
 const INBOX_PAGE_SIZE = 10;
+const activeInboxProcessingJobs = new Map();
 
 export function registerInboxRoutes(app) {
   app.get("/api/inbox/labels", requireSession, async (req, res) => {
@@ -146,6 +149,36 @@ export function registerInboxRoutes(app) {
     try {
       const count = await countUnreadEmailIndexEntries(req.user.id);
       res.json({ count });
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.get("/api/inbox/processing-status", requireSession, async (req, res) => {
+    try {
+      res.json({ job: activeInboxProcessingJobs.get(req.user.id) ?? null });
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.post("/api/inbox/reprocess-unemailable", requireSession, async (req, res) => {
+    try {
+      if (!await isAiActiveForUser(req.user.id)) {
+        res.status(400).json({ error: "Activate AI before reprocessing Unemailable emails." });
+        return;
+      }
+
+      const existingJob = activeInboxProcessingJobs.get(req.user.id);
+      if (existingJob?.status === "running") {
+        res.status(202).json({ job: existingJob });
+        return;
+      }
+
+      const job = createInboxProcessingJob("reprocess_unemailable");
+      activeInboxProcessingJobs.set(req.user.id, job);
+      void runUnemailableReprocessJob(req.user.id, job);
+      res.status(202).json({ job });
     } catch (error) {
       handleProviderError(res, error);
     }
@@ -428,6 +461,104 @@ async function listInboxMessages(userId, query) {
     nextPageToken: result.nextPageToken,
     skippedAccounts: [],
   };
+}
+
+function createInboxProcessingJob(type) {
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(),
+    type,
+    status: "running",
+    total: 0,
+    processed: 0,
+    failed: 0,
+    startedAt: now,
+    updatedAt: now,
+    message: "Preparing emails for processing...",
+  };
+}
+
+function updateInboxProcessingJob(userId, updates) {
+  const current = activeInboxProcessingJobs.get(userId);
+  if (!current) {
+    return null;
+  }
+  const next = {
+    ...current,
+    ...updates,
+    updatedAt: new Date().toISOString(),
+  };
+  activeInboxProcessingJobs.set(userId, next);
+  return next;
+}
+
+async function runUnemailableReprocessJob(userId, job) {
+  const failures = [];
+  try {
+    const messages = await listEmailIndexEntriesByLabel(userId, UNEMAILABLE_SYSTEM_LABEL_NAME, { limit: 2000 });
+    updateInboxProcessingJob(userId, {
+      total: messages.length,
+      message: messages.length ? `Reprocessing ${messages.length} Unemailable email${messages.length === 1 ? "" : "s"}...` : "No Unemailable emails were found.",
+    });
+
+    for (const message of messages) {
+      try {
+        await generateAiLabel(userId, {
+          accountEmail: message.accountEmail,
+          emailId: message.id,
+        });
+        updateInboxProcessingJob(userId, {
+          processed: (activeInboxProcessingJobs.get(userId)?.processed ?? 0) + 1,
+        });
+      } catch (error) {
+        failures.push({
+          accountEmail: message.accountEmail,
+          emailId: message.id,
+          error: error.message,
+        });
+        updateInboxProcessingJob(userId, {
+          failed: (activeInboxProcessingJobs.get(userId)?.failed ?? 0) + 1,
+        });
+      }
+    }
+
+    const completed = updateInboxProcessingJob(userId, {
+      status: "complete",
+      message: `Reprocess complete. ${messages.length - failures.length} succeeded, ${failures.length} failed.`,
+    }) ?? job;
+
+    await logSystemEvent(userId, {
+      category: "email",
+      eventName: "email.unemailable_reprocess_completed",
+      status: failures.length > 0 ? (completed.processed > 0 ? "warning" : "error") : "success",
+      message: completed.message,
+      payload: {
+        total: messages.length,
+        processed: completed.processed,
+        failed: completed.failed,
+        failures,
+      },
+    });
+  } catch (error) {
+    updateInboxProcessingJob(userId, {
+      status: "error",
+      message: `Reprocess failed: ${error.message}`,
+    });
+    await logSystemEvent(userId, {
+      category: "email",
+      eventName: "email.unemailable_reprocess_failed",
+      status: "error",
+      message: error.message,
+      payload: { jobId: job.id, error: error.message },
+    });
+  } finally {
+    windowlessTimeout(() => activeInboxProcessingJobs.delete(userId), 30_000);
+  }
+}
+
+function windowlessTimeout(callback, delay) {
+  const timer = setTimeout(callback, delay);
+  timer.unref?.();
 }
 
 async function getInboxMessage(userId, query) {

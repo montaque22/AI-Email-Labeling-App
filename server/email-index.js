@@ -369,6 +369,27 @@ export async function listEmailIndexEntries(userId, query) {
   };
 }
 
+export async function listEmailIndexEntriesByLabel(userId, labelName, { limit = 1000 } = {}) {
+  if (!dbPool || !labelName) {
+    return [];
+  }
+
+  const result = await dbPool.query(
+    `
+      select *
+      from email_index
+      where user_id = $1
+        and direction = 'inbox'
+        and $2 = any(labels)
+      order by received_at desc, created_at desc
+      limit $3
+    `,
+    [userId, labelName, Math.min(Math.max(Number(limit) || 1000, 1), 2000)],
+  );
+
+  return result.rows.map(mapEmailIndexRow);
+}
+
 export async function getEmailIndexLabelCounts(userId, { accountIds = [], archivedOnly = false, labels = [] }) {
   const counts = {};
   if (!labels.length) {

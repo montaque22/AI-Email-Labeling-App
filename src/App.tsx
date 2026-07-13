@@ -543,6 +543,7 @@ type InboxToast = {
   id: number;
   message: string;
   type: "success" | "error";
+  persistent?: boolean;
 };
 
 type InboxCelebration = "confetti" | "thumbs-down" | null;
@@ -550,6 +551,18 @@ type InboxCommitmentConfirm = {
   kind: "complete" | "renege";
   messages: InboxMessage[];
 } | null;
+
+type InboxProcessingJob = {
+  id: string;
+  type: "reprocess_unemailable" | string;
+  status: "running" | "complete" | "error";
+  total: number;
+  processed: number;
+  failed: number;
+  startedAt: string;
+  updatedAt: string;
+  message: string;
+};
 
 type InboxAiActionPlan = {
   toolClientId: string;
@@ -1840,6 +1853,8 @@ function InboxPage({
   const [celebration, setCelebration] = useState<InboxCelebration>(null);
   const [mobilePullDistance, setMobilePullDistance] = useState(0);
   const [isMobilePullRefreshing, setIsMobilePullRefreshing] = useState(false);
+  const [inboxProcessingJob, setInboxProcessingJob] = useState<InboxProcessingJob | null>(null);
+  const [isUnemailableReprocessing, setIsUnemailableReprocessing] = useState(false);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreInFlightRef = useRef(false);
   const messageRequestIdRef = useRef(0);
@@ -1849,6 +1864,7 @@ function InboxPage({
   const mobilePullActiveRef = useRef(false);
   const mobilePullReadyHapticRef = useRef(false);
   const lastAutoRefreshAtRef = useRef(0);
+  const activeProcessingToastJobRef = useRef<string | null>(null);
   const commitmentDraftOpen = commitmentDraftMessages.length > 0;
 
   useEffect(() => {
@@ -1984,10 +2000,22 @@ function InboxPage({
     if (!toast) {
       return;
     }
+    if (toast.persistent) {
+      return;
+    }
 
     const timeoutId = window.setTimeout(() => setToast(null), 3200);
     return () => window.clearTimeout(timeoutId);
   }, [toast]);
+
+  useEffect(() => {
+    void loadInboxProcessingStatus();
+    const intervalId = window.setInterval(() => {
+      void loadInboxProcessingStatus();
+    }, 3000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   useEffect(() => {
     const sentinel = loadMoreSentinelRef.current;
@@ -2091,6 +2119,9 @@ function InboxPage({
   const regularMessages = filteredMessages.filter((message) => !message.commitment);
   const selectedLabel = labels.find((label) => label.id === selectedLabelId) ?? null;
   const allLabelCount = getInboxAllLabelCount(labels, labelCounts);
+  const unemailableLabel = labels.find((label) => label.systemKey === "unemailable" || label.name.toLowerCase() === "unemailable") ?? null;
+  const unemailableCount = unemailableLabel ? labelCounts[unemailableLabel.id] ?? 0 : 0;
+  const hasUnemailableEmails = typeof unemailableCount === "number" && unemailableCount > 0;
   const isInboxSearchActive = committedInboxSearch.trim().length > 0;
 
   async function loadInboxSearchSuggestions(query: string) {
@@ -2215,6 +2246,55 @@ function InboxPage({
       mobilePullActiveRef.current = false;
       mobilePullReadyHapticRef.current = false;
       mobilePullStartYRef.current = null;
+    }
+  }
+
+  function getInboxProcessingToastMessage(job: InboxProcessingJob) {
+    if (job.status !== "running") {
+      return job.message;
+    }
+
+    const total = job.total > 0 ? job.total : null;
+    const progress = total ? `${job.processed + job.failed}/${total}` : "preparing";
+    return `${job.message || "Processing emails..."} (${progress})`;
+  }
+
+  async function loadInboxProcessingStatus() {
+    try {
+      const response = await fetchNoStore("/api/inbox/processing-status");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        return;
+      }
+
+      const job = (data.job ?? null) as InboxProcessingJob | null;
+      setInboxProcessingJob(job);
+
+      if (job?.status === "running") {
+        activeProcessingToastJobRef.current = job.id;
+        setIsUnemailableReprocessing(job.type === "reprocess_unemailable");
+        setToast({
+          id: Date.now(),
+          message: getInboxProcessingToastMessage(job),
+          persistent: true,
+          type: "success",
+        });
+        return;
+      }
+
+      setIsUnemailableReprocessing(false);
+
+      if (job && activeProcessingToastJobRef.current === job.id) {
+        activeProcessingToastJobRef.current = null;
+        setToast({
+          id: Date.now(),
+          message: job.message || (job.status === "error" ? "Email processing failed." : "Email processing complete."),
+          type: job.status === "error" ? "error" : "success",
+        });
+        void refreshInboxData();
+      }
+    } catch {
+      // Processing status is best-effort. A failed poll should not affect the inbox.
     }
   }
 
@@ -2576,8 +2656,39 @@ function InboxPage({
     });
   }
 
-  function showInboxToast(message: string, type: InboxToast["type"] = "success") {
-    setToast({ id: Date.now(), message, type });
+  function showInboxToast(message: string, type: InboxToast["type"] = "success", options: Pick<InboxToast, "persistent"> = {}) {
+    setToast({ id: Date.now(), message, type, ...options });
+  }
+
+  async function reprocessUnemailableEmails() {
+    if (isUnemailableReprocessing) {
+      return;
+    }
+
+    setIsUnemailableReprocessing(true);
+    showInboxToast("Starting Unemailable email reprocess...", "success", { persistent: true });
+
+    try {
+      const response = await fetchNoStore("/api/inbox/reprocess-unemailable", {
+        method: "POST",
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error ?? "Could not start reprocessing.");
+      }
+
+      const job = (data.job ?? null) as InboxProcessingJob | null;
+      setInboxProcessingJob(job);
+      if (job?.status === "running") {
+        activeProcessingToastJobRef.current = job.id;
+        showInboxToast(getInboxProcessingToastMessage(job), "success", { persistent: true });
+      }
+      void loadInboxProcessingStatus();
+    } catch (error) {
+      setIsUnemailableReprocessing(false);
+      activeProcessingToastJobRef.current = null;
+      showInboxToast(error instanceof Error ? error.message : "Could not start reprocessing.", "error");
+    }
   }
 
   function showCelebration(type: InboxCelebration) {
@@ -3730,15 +3841,32 @@ function InboxPage({
                   value={inboxSearch}
                 />
               </div>
-              <div className="ml-auto flex shrink-0 items-center justify-end">
+              <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
                 <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
+                <UnemailableReprocessButton
+                  disabled={!isByoAiActive || isUnemailableReprocessing}
+                  isLoading={isUnemailableReprocessing}
+                  onClick={reprocessUnemailableEmails}
+                  show={hasUnemailableEmails}
+                />
               </div>
             </div>
           </div>
 
           <Card className="relative z-0 min-w-0 max-w-full overflow-hidden bg-white/50 max-md:relative max-md:left-1/2 max-md:min-h-[calc(100svh-11rem)] max-md:w-screen max-md:-translate-x-1/2 max-md:rounded-none max-md:border-x-0 max-md:shadow-none">
             <div className="block border-b border-white/60 px-3 pb-2 pt-3 md:hidden">
-              <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
+                </div>
+                <UnemailableReprocessButton
+                  compact
+                  disabled={!isByoAiActive || isUnemailableReprocessing}
+                  isLoading={isUnemailableReprocessing}
+                  onClick={reprocessUnemailableEmails}
+                  show={hasUnemailableEmails}
+                />
+              </div>
             </div>
             <CardHeader className="hidden flex-row flex-wrap items-start justify-between gap-3 space-y-0 md:flex">
               <div className="min-w-0">
@@ -4803,6 +4931,47 @@ function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode:
   );
 }
 
+function UnemailableReprocessButton({
+  compact = false,
+  disabled,
+  isLoading,
+  onClick,
+  show,
+}: {
+  compact?: boolean;
+  disabled: boolean;
+  isLoading: boolean;
+  onClick: () => void;
+  show: boolean;
+}) {
+  if (!show) {
+    return null;
+  }
+
+  const tooltipText = disabled && !isLoading
+    ? "Activate AI before retrying Unemailable emails."
+    : "Emailable was unable to tag some emails. Reprocess retries the AI labeling workflow for those emails.";
+
+  return (
+    <Tooltip align="end" text={tooltipText}>
+      <Button
+        aria-label="Reprocess Unemailable emails"
+        className={cn(
+          "h-10 gap-2 rounded-full border-white/70 bg-white/50 shadow-sm backdrop-blur-xl hover:bg-white/70",
+          compact ? "w-10 px-0" : "px-3",
+        )}
+        disabled={disabled}
+        onClick={onClick}
+        type="button"
+        variant="outline"
+      >
+        {isLoading ? <Loader /> : <RefreshCw className="h-4 w-4" />}
+        {compact ? null : <span>Reprocess</span>}
+      </Button>
+    </Tooltip>
+  );
+}
+
 function InboxMobileFilterDrawer({
   accounts,
   onClose,
@@ -5517,7 +5686,10 @@ function InboxToastMessage({ toast }: { toast: InboxToast }) {
             : "border-red-200 bg-red-50/95 text-red-700",
         )}
       >
-        {toast.message}
+        <span className="flex items-center gap-2">
+          {toast.persistent ? <Loader /> : null}
+          <span>{toast.message}</span>
+        </span>
       </div>
     </div>
   );
