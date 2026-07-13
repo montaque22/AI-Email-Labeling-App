@@ -17,6 +17,7 @@ export type PromptEditorDraft = {
 type PromptEditorViewProps = {
   draft: PromptEditorDraft;
   tools: PromptTool[];
+  hasChanges: boolean;
   isSaving: boolean;
   onBack: () => void;
   onDelete: () => void;
@@ -38,6 +39,7 @@ export function toPromptEditorDraft(prompt?: CustomAiPrompt | null): PromptEdito
 export function PromptEditorView({
   draft,
   tools,
+  hasChanges,
   isSaving,
   onBack,
   onDelete,
@@ -70,7 +72,7 @@ export function PromptEditorView({
                 <Trash2 className="h-4 w-4" />
               </Button>
             ) : null}
-            <Button className="cursor-pointer" disabled={isSaving} onClick={onSave} type="button">
+            <Button className="cursor-pointer" disabled={isSaving || !hasChanges} onClick={onSave} type="button">
               <Save className="h-4 w-4" />
               {isSaving ? "Saving..." : "Save"}
             </Button>
@@ -109,7 +111,7 @@ export function PromptEditorView({
             </label>
             <div className="hidden xl:block">
               <p className="mb-2 text-sm font-medium text-zinc-700">Available tools</p>
-              <div className="h-[560px] overflow-auto rounded-md border border-zinc-200 bg-white/40 p-3">
+              <div className="h-[560px] overflow-auto rounded-md border border-zinc-200 bg-white/40 px-3 pb-3">
                 <PromptToolPicker
                   onSelectedToolsChange={(selectedTools) => updateDraft({ selectedTools })}
                   onToolChoiceChange={(toolChoice) => updateDraft({ toolChoice })}

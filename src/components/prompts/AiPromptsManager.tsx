@@ -43,6 +43,8 @@ export function AiPromptsManager() {
   }, [message]);
 
   const selectedPromptCount = useMemo(() => selectedIds.length, [selectedIds]);
+  const savedDraft = useMemo(() => (view.mode === "edit" ? toPromptEditorDraft(view.prompt) : toPromptEditorDraft(null)), [view]);
+  const hasDraftChanges = view.mode === "edit" && !arePromptDraftsEqual(draft, savedDraft);
 
   async function loadPrompts() {
     try {
@@ -80,6 +82,10 @@ export function AiPromptsManager() {
   }
 
   async function savePrompt() {
+    if (!hasDraftChanges) {
+      return;
+    }
+
     setIsSaving(true);
     setError(null);
     setMessage(null);
@@ -160,6 +166,7 @@ export function AiPromptsManager() {
       ) : (
         <PromptEditorView
           draft={draft}
+          hasChanges={hasDraftChanges}
           isSaving={isSaving}
           onBack={() => setView({ mode: "list" })}
           onDelete={() => setDeleteTarget("single")}
@@ -191,6 +198,22 @@ export function AiPromptsManager() {
       ) : null}
     </div>
   );
+}
+
+function arePromptDraftsEqual(left: PromptEditorDraft, right: PromptEditorDraft) {
+  return left.id === right.id
+    && left.name === right.name
+    && left.description === right.description
+    && left.markdown === right.markdown
+    && left.toolChoice === right.toolChoice
+    && normalizeSelectedTools(left.selectedTools) === normalizeSelectedTools(right.selectedTools);
+}
+
+function normalizeSelectedTools(tools: PromptEditorDraft["selectedTools"]) {
+  return tools
+    .map((tool) => `${tool.toolClientId}:${tool.toolName}`)
+    .sort()
+    .join("|");
 }
 
 function extractActiveTools(config: ByoAiToolConfig): PromptTool[] {
