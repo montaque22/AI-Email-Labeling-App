@@ -55,6 +55,11 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { LiquidGlassCard } from "./components/ui/liquid-glass";
 import { AiPromptsManager } from "./components/prompts/AiPromptsManager";
+import { AiUsageChartCard } from "./components/metrics/AiUsageChartCard";
+import { AlarmEditorView } from "./components/metrics/AlarmEditorView";
+import { AlarmListView } from "./components/metrics/AlarmListView";
+import { MetricsTabPill } from "./components/metrics/MetricsTabPill";
+import type { AiUsageSeries, AlarmSimulationPoint, LogAlarm, LogAlarmDraft, MetricsTab } from "./components/metrics/types";
 import { authClient } from "./lib/auth-client";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
@@ -217,11 +222,13 @@ type MetricsData = {
   };
   emailsLabeled: TimelinePoint[];
   draftsCreated: TimelinePoint[];
+  aiUsage: AiUsageSeries[];
+  aiEnabled: boolean;
 };
 
 type SystemLog = {
   id: string;
-  category: "ai" | "endpoints" | "webhook" | "mcp-server";
+  category: "ai" | "email" | "endpoints" | "webhook" | "mcp-server";
   eventName: string;
   status: "success" | "error" | "warning" | "info";
   message: string;
@@ -1850,7 +1857,7 @@ function InboxPage({
 
       try {
         const [labelsResponse, accountsResponse, byoAiResponse] = await Promise.all([
-          fetchNoStore("/api/labels"),
+          fetchNoStore("/api/inbox/labels"),
           fetchNoStore("/api/email-accounts"),
           fetchNoStore("/api/byoai/config"),
         ]);
@@ -3365,6 +3372,7 @@ function InboxPage({
         )}
         disabled={areInboxFilterSectionsDisabled}
         onClick={() => setSelectedLabelId(INBOX_ALL_LABEL_ID)}
+        title="Show all indexed emails for the selected mailbox."
         type="button"
       >
         <span className="truncate">All</span>
@@ -3384,6 +3392,7 @@ function InboxPage({
             disabled={areInboxFilterSectionsDisabled}
             key={label.id}
             onClick={() => setSelectedLabelId(label.id)}
+            title={label.description}
             type="button"
           >
             <span className="truncate">{label.name}</span>
@@ -4909,6 +4918,7 @@ function InboxMobileLabelPicker({
               selectedLabelId === INBOX_ALL_LABEL_ID && "border-blue-100 bg-blue-50/80 text-blue-800",
             )}
             onClick={() => onSelect(INBOX_ALL_LABEL_ID)}
+            title="Show all indexed emails for the selected mailbox."
             type="button"
           >
             <span className="truncate font-medium">All</span>
@@ -4922,6 +4932,7 @@ function InboxMobileLabelPicker({
               )}
               key={label.id}
               onClick={() => onSelect(label.id)}
+              title={label.description}
               type="button"
             >
               <span className="truncate font-medium">{label.name}</span>
@@ -8806,8 +8817,18 @@ function LabelsPage({ privacyMode }: { privacyMode: boolean }) {
 function MetricsPage() {
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
   const [logs, setLogs] = useState<SystemLog[]>([]);
-  const [activeTab, setActiveTab] = useState<"metrics" | "logs">(() => metricsTabFromPath(window.location.pathname));
+  const [activeTab, setActiveTab] = useState<MetricsTab>(() => metricsTabFromPath(window.location.pathname));
   const [logCategory, setLogCategory] = useState("all");
+  const [alarms, setAlarms] = useState<LogAlarm[]>([]);
+  const [selectedAlarmIds, setSelectedAlarmIds] = useState<string[]>([]);
+  const [editingAlarm, setEditingAlarm] = useState<LogAlarm | null>(null);
+  const [alarmDraft, setAlarmDraft] = useState<LogAlarmDraft>(createEmptyAlarmDraft());
+  const [alarmSimulation, setAlarmSimulation] = useState<AlarmSimulationPoint[]>([]);
+  const [alarmError, setAlarmError] = useState<string | null>(null);
+  const [isLoadingAlarms, setIsLoadingAlarms] = useState(false);
+  const [isSavingAlarm, setIsSavingAlarm] = useState(false);
+  const [isAlarmEditorOpen, setIsAlarmEditorOpen] = useState(false);
+  const [isAlarmDeleteConfirmOpen, setIsAlarmDeleteConfirmOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [isExportingLogs, setIsExportingLogs] = useState(false);
@@ -8855,7 +8876,20 @@ function MetricsPage() {
     if (activeTab === "logs") {
       void loadLogs();
     }
+    if (activeTab === "alarms") {
+      void loadAlarms();
+    }
   }, [activeTab, logCategory]);
+
+  useEffect(() => {
+    if (!isAlarmEditorOpen) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      void loadAlarmSimulation(alarmDraft);
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [isAlarmEditorOpen, alarmDraft.logGroup, alarmDraft.periodMinutes, alarmDraft.thresholdCount]);
 
   useEffect(() => {
     if (!isLogPurgeConfirmOpen) {
@@ -8948,9 +8982,121 @@ function MetricsPage() {
     }
   }
 
-  function selectTab(tab: "metrics" | "logs") {
+  async function loadAlarms() {
+    setIsLoadingAlarms(true);
+    setAlarmError(null);
+    try {
+      const response = await fetch("/api/alarms", { credentials: "include" });
+      const data = await response.json();
+      if (!response.ok) {
+        setAlarmError(data.error ?? "Could not load alarms.");
+        return;
+      }
+      setAlarms(data.alarms ?? []);
+      setSelectedAlarmIds((current) => current.filter((id) => data.alarms?.some((alarm: LogAlarm) => alarm.id === id)));
+    } catch {
+      setAlarmError("Could not load alarms.");
+    } finally {
+      setIsLoadingAlarms(false);
+    }
+  }
+
+  async function loadAlarmSimulation(draft: LogAlarmDraft) {
+    try {
+      const params = new URLSearchParams({
+        logGroup: draft.logGroup,
+        periodMinutes: String(draft.periodMinutes),
+        thresholdCount: String(draft.thresholdCount),
+      });
+      const response = await fetch(`/api/alarms/simulation?${params.toString()}`, { credentials: "include" });
+      const data = await response.json();
+      if (response.ok) {
+        setAlarmSimulation(data.simulation ?? []);
+      }
+    } catch {
+      setAlarmSimulation([]);
+    }
+  }
+
+  function startCreateAlarm() {
+    const draft = createEmptyAlarmDraft();
+    setEditingAlarm(null);
+    setAlarmDraft(draft);
+    setAlarmSimulation([]);
+    setAlarmError(null);
+    setIsAlarmEditorOpen(true);
+    void loadAlarmSimulation(draft);
+  }
+
+  function startEditAlarm(alarm: LogAlarm) {
+    const draft = alarmToDraft(alarm);
+    setEditingAlarm(alarm);
+    setAlarmDraft(draft);
+    setAlarmSimulation(alarm.simulation ?? []);
+    setAlarmError(null);
+    setIsAlarmEditorOpen(true);
+  }
+
+  async function saveAlarm() {
+    setIsSavingAlarm(true);
+    setAlarmError(null);
+    try {
+      const response = await fetch(editingAlarm ? `/api/alarms/${editingAlarm.id}` : "/api/alarms", {
+        method: editingAlarm ? "PUT" : "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(alarmDraft),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setAlarmError(data.error ?? "Could not save alarm.");
+        return;
+      }
+      setIsAlarmEditorOpen(false);
+      setEditingAlarm(null);
+      await loadAlarms();
+    } catch {
+      setAlarmError("Could not save alarm.");
+    } finally {
+      setIsSavingAlarm(false);
+    }
+  }
+
+  async function deleteSelectedAlarms() {
+    const ids = editingAlarm ? [editingAlarm.id] : selectedAlarmIds;
+    if (!ids.length) {
+      return;
+    }
+    setAlarmError(null);
+    try {
+      const response = await fetch("/api/alarms", {
+        method: "DELETE",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setAlarmError(data.error ?? "Could not delete alarms.");
+        return;
+      }
+      setIsAlarmDeleteConfirmOpen(false);
+      setIsAlarmEditorOpen(false);
+      setEditingAlarm(null);
+      setSelectedAlarmIds([]);
+      await loadAlarms();
+    } catch {
+      setAlarmError("Could not delete alarms.");
+    }
+  }
+
+  function toggleSelectedAlarm(id: string) {
+    setSelectedAlarmIds((current) => (current.includes(id) ? current.filter((selectedId) => selectedId !== id) : [...current, id]));
+  }
+
+  function selectTab(tab: MetricsTab) {
     setActiveTab(tab);
-    const nextPath = tab === "logs" ? "/metrics/logs" : "/metrics";
+    const nextPath = tab === "logs" ? "/metrics/logs" : tab === "alarms" ? "/metrics/alarms" : "/metrics";
     if (stripRuntimeBasePath(window.location.pathname) !== nextPath) {
       window.history.pushState({}, "", getRuntimeUrl(nextPath));
     }
@@ -8961,11 +9107,13 @@ function MetricsPage() {
       <Card>
         <CardHeader className="gap-4 sm:flex-row sm:items-center sm:justify-between sm:space-y-0">
           <div>
-            <CardTitle>{activeTab === "metrics" ? "Metrics" : "Logs"}</CardTitle>
+            <CardTitle>{activeTab === "metrics" ? "Metrics" : activeTab === "logs" ? "Logs" : "Alarms"}</CardTitle>
             <CardDescription>
               {activeTab === "metrics"
-                ? "Track rule volume, review status, labeled emails, and draft creation."
-                : "Review simplified system activity across email, AI, endpoints, webhooks, and MCP server usage."}
+                ? "Track rule volume, review status, labeled emails, and AI usage."
+                : activeTab === "logs"
+                  ? "Review simplified system activity across email, AI, endpoints, webhooks, and MCP server usage."
+                  : "Create alerts when certain classes of errors happen repeatedly."}
             </CardDescription>
           </div>
           {activeTab === "logs" ? (
@@ -9000,22 +9148,7 @@ function MetricsPage() {
           ) : null}
         </CardHeader>
         <CardContent>
-          <div className="inline-flex rounded-md border border-zinc-200 bg-white p-1">
-            <button
-              className={cn("rounded px-3 py-1.5 text-sm font-medium", activeTab === "metrics" ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-zinc-50")}
-              onClick={() => selectTab("metrics")}
-              type="button"
-            >
-              Metrics
-            </button>
-            <button
-              className={cn("rounded px-3 py-1.5 text-sm font-medium", activeTab === "logs" ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-zinc-50")}
-              onClick={() => selectTab("logs")}
-              type="button"
-            >
-              Logs
-            </button>
-          </div>
+          <MetricsTabPill activeTab={activeTab} onSelect={selectTab} />
         </CardContent>
       </Card>
 
@@ -9031,10 +9164,10 @@ function MetricsPage() {
               nonPending={metrics?.ruleStatus.nonPending ?? 0}
             />
             <TimelineChartCard data={metrics?.emailsLabeled ?? []} isLoading={isLoading} title="Emails Labeled" />
-            <TimelineChartCard data={metrics?.draftsCreated ?? []} isLoading={isLoading} title="Drafts Created" />
+            {metrics?.aiEnabled ? <AiUsageChartCard data={metrics?.aiUsage ?? []} isLoading={isLoading} /> : null}
           </div>
         </>
-      ) : (
+      ) : activeTab === "logs" ? (
         <Card>
           <CardContent className="space-y-3 pt-6">
             {logsNotice ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{logsNotice}</p> : null}
@@ -9070,6 +9203,34 @@ function MetricsPage() {
             )}
           </CardContent>
         </Card>
+      ) : isAlarmEditorOpen ? (
+        <AlarmEditorView
+          alarm={editingAlarm}
+          draft={alarmDraft}
+          error={alarmError}
+          isSaving={isSavingAlarm}
+          onBack={() => {
+            setIsAlarmEditorOpen(false);
+            setEditingAlarm(null);
+          }}
+          onChange={setAlarmDraft}
+          onDelete={() => setIsAlarmDeleteConfirmOpen(true)}
+          onSave={() => void saveAlarm()}
+          simulation={alarmSimulation}
+        />
+      ) : (
+        <>
+          {alarmError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{alarmError}</p> : null}
+          <AlarmListView
+            alarms={alarms}
+            isLoading={isLoadingAlarms}
+            onCreate={startCreateAlarm}
+            onDelete={() => setIsAlarmDeleteConfirmOpen(true)}
+            onOpen={startEditAlarm}
+            onToggle={toggleSelectedAlarm}
+            selectedIds={selectedAlarmIds}
+          />
+        </>
       )}
       {isLogPurgeConfirmOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
@@ -9083,6 +9244,24 @@ function MetricsPage() {
                 <Button className="bg-red-600 text-white hover:bg-red-700" disabled={isPurgingLogs} onClick={() => void purgeLogs()} type="button">
                   {isPurgingLogs ? <Loader /> : <Trash2 className="h-4 w-4" />}
                   {isPurgingLogs ? "Deleting..." : "Delete all"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {isAlarmDeleteConfirmOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+          <button aria-label="Close delete alarm confirmation" className="absolute inset-0 cursor-default" onClick={() => setIsAlarmDeleteConfirmOpen(false)} type="button" />
+          <div className="relative w-full max-w-md rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+            <div className="rounded-xl bg-white/40 p-5 shadow-inner ring-1 ring-white/60">
+              <h3 className="text-lg font-semibold text-zinc-950">Delete alarm?</h3>
+              <p className="mt-2 text-sm leading-6 text-zinc-600">This permanently deletes the selected alarm configuration. Existing logs are not deleted.</p>
+              <div className="mt-5 flex justify-end gap-2">
+                <Button onClick={() => setIsAlarmDeleteConfirmOpen(false)} type="button" variant="outline">Cancel</Button>
+                <Button className="bg-red-600 text-white hover:bg-red-700" onClick={() => void deleteSelectedAlarms()} type="button">
+                  <Trash2 className="h-4 w-4" />
+                  Delete
                 </Button>
               </div>
             </div>
@@ -14883,8 +15062,35 @@ function stripRuntimeBasePath(pathname: string) {
   return withoutBase.replace(/\/+$/, "") || "/";
 }
 
-function metricsTabFromPath(pathname: string): "metrics" | "logs" {
-  return stripRuntimeBasePath(pathname) === "/metrics/logs" ? "logs" : "metrics";
+function metricsTabFromPath(pathname: string): MetricsTab {
+  const path = stripRuntimeBasePath(pathname);
+  if (path === "/metrics/logs") {
+    return "logs";
+  }
+  if (path === "/metrics/alarms") {
+    return "alarms";
+  }
+  return "metrics";
+}
+
+function createEmptyAlarmDraft(): LogAlarmDraft {
+  return {
+    name: "",
+    description: "",
+    logGroup: "ai",
+    thresholdCount: 1,
+    periodMinutes: 60,
+  };
+}
+
+function alarmToDraft(alarm: LogAlarm): LogAlarmDraft {
+  return {
+    name: alarm.name,
+    description: alarm.description,
+    logGroup: alarm.logGroup,
+    thresholdCount: alarm.thresholdCount,
+    periodMinutes: alarm.periodMinutes,
+  };
 }
 
 function promptTabFromPath(pathname: string): "email-label" | "draft-reply" {

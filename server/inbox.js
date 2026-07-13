@@ -32,6 +32,7 @@ import {
   updateImapComposeDraft,
 } from "./imap-provider.js";
 import { modifyGmailMessageLabels } from "./integrations.js";
+import { UNEMAILABLE_SYSTEM_LABEL_KEY } from "./labels.js";
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import crypto from "node:crypto";
@@ -40,6 +41,14 @@ import nodemailer from "nodemailer";
 const INBOX_PAGE_SIZE = 10;
 
 export function registerInboxRoutes(app) {
+  app.get("/api/inbox/labels", requireSession, async (req, res) => {
+    try {
+      res.json({ labels: await getInboxLabels(req.user.id) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   app.get("/api/inbox/messages", requireSession, async (req, res) => {
     try {
       const input = parseInboxListQuery(req.query);
@@ -1084,7 +1093,11 @@ async function getInboxLabels(userId, { includeSystem = false } = {}) {
     `
       select l.id,
              l.name,
-             l.description,
+             case
+               when l.system_key = $3 then 'Emails were seen by Emailable but could not be tagged. Use the logs to find out why.'
+               else l.description
+             end as description,
+             l.system_key as "systemKey",
              coalesce(
                jsonb_agg(
                  jsonb_build_object(
@@ -1098,11 +1111,11 @@ async function getInboxLabels(userId, { includeSystem = false } = {}) {
       from labels l
       left join label_account_syncs las on las.label_id = l.id
       where l.user_id = $1
-        and ($2::boolean or l.system_key is null)
+        and ($2::boolean or l.system_key is null or l.system_key = $3)
       group by l.id
       order by lower(l.name)
     `,
-    [userId, includeSystem],
+    [userId, includeSystem, UNEMAILABLE_SYSTEM_LABEL_KEY],
   );
 
   return result.rows;

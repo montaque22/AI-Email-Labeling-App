@@ -127,6 +127,22 @@ export async function ensureIntegrationTables() {
   await dbPool.query(
     "create index if not exists integration_metric_events_type_created_idx on integration_metric_events(user_id, event_type, created_at)",
   );
+
+  await dbPool.query(`
+    create table if not exists log_alarms (
+      id uuid primary key,
+      user_id text not null references "user"(id) on delete cascade,
+      name text not null,
+      description text not null default '',
+      log_group text not null,
+      alarm_type text not null default 'aggregate',
+      threshold_count int not null default 1,
+      period_minutes int not null default 60,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `);
+  await dbPool.query("create index if not exists log_alarms_user_id_idx on log_alarms(user_id, created_at desc)");
 }
 
 export function registerIntegrationRoutes(app) {
@@ -255,11 +271,13 @@ export function registerIntegrationRoutes(app) {
 
   app.get("/api/metrics", requireSession, async (req, res) => {
     try {
-      const [rulesCreated, ruleStatus, emailsLabeled, draftsCreated] = await Promise.all([
+      const [rulesCreated, ruleStatus, emailsLabeled, draftsCreated, aiUsage, aiEnabled] = await Promise.all([
         getRulesCreatedTimeline(req.user.id),
         getRuleStatusCounts(req.user.id),
         getMetricEventTimeline(req.user.id, "email_labeled"),
         getMetricEventTimeline(req.user.id, "draft_created"),
+        getAiUsageTimeline(req.user.id),
+        getAiEnabledForMetrics(req.user.id),
       ]);
 
       res.json({
@@ -267,7 +285,86 @@ export function registerIntegrationRoutes(app) {
         ruleStatus,
         emailsLabeled,
         draftsCreated,
+        aiUsage,
+        aiEnabled,
       });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/alarms", requireSession, async (req, res) => {
+    try {
+      res.json({ alarms: await listLogAlarms(req.user.id) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/alarms/:id", requireSession, async (req, res) => {
+    try {
+      const alarm = await getLogAlarm(req.user.id, req.params.id);
+      if (!alarm) {
+        res.status(404).json({ error: "Alarm not found." });
+        return;
+      }
+      res.json({ alarm });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.post("/api/alarms", requireSession, async (req, res) => {
+    try {
+      const input = parseLogAlarmInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+      res.status(201).json({ alarm: await createLogAlarm(req.user.id, input.alarm) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.put("/api/alarms/:id", requireSession, async (req, res) => {
+    try {
+      const input = parseLogAlarmInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+      const alarm = await updateLogAlarm(req.user.id, req.params.id, input.alarm);
+      if (!alarm) {
+        res.status(404).json({ error: "Alarm not found." });
+        return;
+      }
+      res.json({ alarm });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.delete("/api/alarms", requireSession, async (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).filter(Boolean) : [];
+      if (!ids.length) {
+        res.status(400).json({ error: "Select at least one alarm to delete." });
+        return;
+      }
+      const result = await dbPool.query("delete from log_alarms where user_id = $1 and id = any($2::uuid[])", [req.user.id, ids]);
+      res.json({ deleted: result.rowCount ?? 0 });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/alarms/simulation", requireSession, async (req, res) => {
+    try {
+      const logGroup = normalizeAlarmLogGroup(req.query.logGroup);
+      const periodMinutes = clampInteger(req.query.periodMinutes, 1, 7 * 24 * 60, 60);
+      const thresholdCount = clampInteger(req.query.thresholdCount, 1, 1000, 1);
+      res.json({ simulation: await getAlarmSimulation(req.user.id, { logGroup, periodMinutes, thresholdCount }) });
     } catch (error) {
       handleError(res, error);
     }
@@ -880,8 +977,53 @@ export async function tryApplyUnemailableLabel(userId, { emailId, subject = "", 
     });
   } catch (error) {
     console.warn(`Could not apply ${UNEMAILABLE_SYSTEM_LABEL_NAME} label:`, reason || error.message);
+    await upsertUnemailableIndexEntry(userId, { emailId, subject, target, source, reason: reason || error.message });
     return null;
   }
+}
+
+async function upsertUnemailableIndexEntry(userId, { emailId, subject = "", target = null, source = "integration", reason = "" }) {
+  if (!emailId) {
+    return null;
+  }
+
+  let resolvedTarget = target;
+  if (!resolvedTarget?.account) {
+    try {
+      resolvedTarget = await findConnectedMessageById(userId, emailId, subject);
+    } catch {
+      resolvedTarget = null;
+    }
+  }
+
+  if (!resolvedTarget?.account) {
+    return null;
+  }
+
+  const account = resolvedTarget.account;
+  const email = resolvedTarget.email ?? {};
+  return upsertEmailIndexEntry(userId, {
+    emailAccountId: account.id,
+    accountEmail: account.email,
+    provider: account.provider,
+    emailId,
+    threadId: email.threadId || email.id || emailId,
+    mailbox: email.mailbox || "",
+    direction: "inbox",
+    fromEmail: email.fromEmail || email.from || "",
+    fromName: email.fromName || email.fromEmail || email.from || "",
+    toEmails: Array.isArray(email.to) ? email.to : Array.isArray(email.toEmails) ? email.toEmails : [account.email].filter(Boolean),
+    subject: email.subject || subject || "",
+    snippet: email.snippet || "",
+    labels: [UNEMAILABLE_SYSTEM_LABEL_NAME],
+    receivedAt: email.receivedAt || email.date || new Date().toISOString(),
+    isRead: email.isRead === true,
+    hasAttachments: Boolean(email.hasAttachments),
+    metadata: {
+      source: `${source}:unemailable:index-fallback`,
+      unemailableReason: reason,
+    },
+  });
 }
 
 async function tryApplyUnemailableFromPayload(userId, payload, reason, source) {
@@ -2437,6 +2579,230 @@ async function getMetricEventTimeline(userId, eventType) {
   );
 
   return result.rows;
+}
+
+async function getAiEnabledForMetrics(userId) {
+  const result = await dbPool.query(
+    `
+      select coalesce(us.ai_enabled, false) as "aiEnabled",
+             exists (
+               select 1
+               from ai_platforms ap
+               where ap.user_id = $1
+                 and ap.status = 'connected'
+             ) as "hasConnectedPlatform"
+      from user_settings us
+      where us.user_id = $1
+    `,
+    [userId],
+  );
+  const row = result.rows[0];
+  return Boolean(row?.aiEnabled && row?.hasConnectedPlatform);
+}
+
+async function getConfiguredAiModels(userId) {
+  const result = await dbPool.query(
+    `
+      select coalesce(nullif(model, ''), provider) as model
+      from ai_platforms
+      where user_id = $1
+        and status = 'connected'
+      order by sort_order asc, created_at asc
+    `,
+    [userId],
+  );
+  return [...new Set(result.rows.map((row) => row.model).filter(Boolean))];
+}
+
+async function getAiUsageTimeline(userId) {
+  const models = await getConfiguredAiModels(userId);
+  if (!models.length) {
+    return [];
+  }
+
+  const result = await dbPool.query(
+    `
+      with days as (
+        select generate_series(date_trunc('day', now()) - interval '13 days', date_trunc('day', now()), interval '1 day') as day
+      ),
+      models as (
+        select unnest($2::text[]) as model
+      ),
+      events as (
+        select date_trunc('day', created_at) as day,
+               coalesce(
+                 nullif(payload->>'model', ''),
+                 nullif(payload->'request'->>'model', ''),
+                 nullif(payload->'response'->>'model', ''),
+                 nullif(payload->'platform'->>'model', ''),
+                 nullif(payload->>'provider', ''),
+                 'Unknown'
+               ) as model,
+               count(*)::int as value
+        from system_logs
+        where user_id = $1
+          and category = 'ai'
+          and created_at >= date_trunc('day', now()) - interval '13 days'
+        group by date_trunc('day', created_at), model
+      )
+      select to_char(days.day, 'YYYY-MM-DD') as date,
+             models.model,
+             coalesce(events.value, 0)::int as value
+      from days
+      cross join models
+      left join events on events.day = days.day and events.model = models.model
+      order by days.day, models.model
+    `,
+    [userId, models],
+  );
+
+  return models.map((model) => ({
+    model,
+    points: result.rows.filter((row) => row.model === model).map((row) => ({ date: row.date, value: row.value })),
+  }));
+}
+
+async function listLogAlarms(userId) {
+  const result = await dbPool.query(
+    `
+      select id, name, description, log_group as "logGroup", alarm_type as "alarmType",
+             threshold_count as "thresholdCount", period_minutes as "periodMinutes",
+             created_at as "createdAt", updated_at as "updatedAt"
+      from log_alarms
+      where user_id = $1
+      order by created_at desc
+    `,
+    [userId],
+  );
+
+  return Promise.all(result.rows.map((row) => hydrateLogAlarm(userId, row)));
+}
+
+async function getLogAlarm(userId, id) {
+  const result = await dbPool.query(
+    `
+      select id, name, description, log_group as "logGroup", alarm_type as "alarmType",
+             threshold_count as "thresholdCount", period_minutes as "periodMinutes",
+             created_at as "createdAt", updated_at as "updatedAt"
+      from log_alarms
+      where user_id = $1 and id = $2
+    `,
+    [userId, id],
+  );
+  return result.rows[0] ? hydrateLogAlarm(userId, result.rows[0]) : null;
+}
+
+async function createLogAlarm(userId, alarm) {
+  const result = await dbPool.query(
+    `
+      insert into log_alarms (id, user_id, name, description, log_group, alarm_type, threshold_count, period_minutes)
+      values ($1, $2, $3, $4, $5, 'aggregate', $6, $7)
+      returning id
+    `,
+    [crypto.randomUUID(), userId, alarm.name, alarm.description, alarm.logGroup, alarm.thresholdCount, alarm.periodMinutes],
+  );
+  return getLogAlarm(userId, result.rows[0].id);
+}
+
+async function updateLogAlarm(userId, id, alarm) {
+  const result = await dbPool.query(
+    `
+      update log_alarms
+      set name = $3,
+          description = $4,
+          log_group = $5,
+          alarm_type = 'aggregate',
+          threshold_count = $6,
+          period_minutes = $7,
+          updated_at = now()
+      where user_id = $1 and id = $2
+      returning id
+    `,
+    [userId, id, alarm.name, alarm.description, alarm.logGroup, alarm.thresholdCount, alarm.periodMinutes],
+  );
+  return result.rows[0] ? getLogAlarm(userId, result.rows[0].id) : null;
+}
+
+async function hydrateLogAlarm(userId, alarm) {
+  const [status, simulation] = await Promise.all([
+    getLogAlarmStatus(userId, alarm),
+    getAlarmSimulation(userId, alarm),
+  ]);
+  return { ...alarm, status, simulation };
+}
+
+async function getLogAlarmStatus(userId, alarm) {
+  const result = await dbPool.query(
+    `
+      select count(*)::int as total,
+             count(*) filter (where status = 'error' or payload ? 'error' or payload->'response' ? 'error')::int as errors
+      from system_logs
+      where user_id = $1
+        and category = $2
+        and created_at >= now() - ($3::text || ' minutes')::interval
+    `,
+    [userId, alarm.logGroup, alarm.periodMinutes],
+  );
+  const row = result.rows[0] ?? {};
+  if (Number(row.total ?? 0) === 0) {
+    return "unknown";
+  }
+  return Number(row.errors ?? 0) >= Number(alarm.thresholdCount ?? 1) ? "error" : "ok";
+}
+
+async function getAlarmSimulation(userId, { logGroup, periodMinutes, thresholdCount }) {
+  const result = await dbPool.query(
+    `
+      with buckets as (
+        select generate_series(
+          date_trunc('minute', now() - ($3::text || ' minutes')::interval),
+          date_trunc('minute', now()),
+          greatest(($3::int / 12), 1) * interval '1 minute'
+        ) as bucket
+      )
+      select to_char(buckets.bucket, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as timestamp,
+             count(system_logs.id) filter (where system_logs.status = 'error' or system_logs.payload ? 'error' or system_logs.payload->'response' ? 'error')::int as errors,
+             $4::int as threshold
+      from buckets
+      left join system_logs
+        on system_logs.user_id = $1
+       and system_logs.category = $2
+       and system_logs.created_at >= buckets.bucket
+       and system_logs.created_at < buckets.bucket + greatest(($3::int / 12), 1) * interval '1 minute'
+      group by buckets.bucket
+      order by buckets.bucket
+    `,
+    [userId, normalizeAlarmLogGroup(logGroup), periodMinutes, thresholdCount],
+  );
+  return result.rows;
+}
+
+function parseLogAlarmInput(body) {
+  const name = typeof body?.name === "string" ? body.name.trim() : "";
+  const description = typeof body?.description === "string" ? body.description.trim() : "";
+  const logGroup = normalizeAlarmLogGroup(body?.logGroup);
+  const thresholdCount = clampInteger(body?.thresholdCount, 1, 1000, 1);
+  const periodMinutes = clampInteger(body?.periodMinutes, 1, 7 * 24 * 60, 60);
+  if (!name) {
+    return { ok: false, error: "Alarm name is required." };
+  }
+  return { ok: true, alarm: { name, description, logGroup, thresholdCount, periodMinutes } };
+}
+
+function normalizeAlarmLogGroup(value) {
+  const normalized = String(value || "ai").toLowerCase();
+  if (["ai", "email", "endpoints", "webhook", "mcp-server"].includes(normalized)) {
+    return normalized;
+  }
+  return "ai";
+}
+
+function clampInteger(value, min, max, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(Math.max(parsed, min), max);
 }
 
 export async function recordMetricEvent(userId, eventType, { emailId = null, accountEmail = null, metadata = {} } = {}) {
