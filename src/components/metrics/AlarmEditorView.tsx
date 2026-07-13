@@ -1,8 +1,8 @@
-import { useState } from "react";
-import { Save, Trash2 } from "lucide-react";
+import { ChevronLeft, Save, Trash2 } from "lucide-react";
 import { Brush, Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { AlarmResizableSplit } from "./AlarmResizableSplit";
 import type { AlarmGranularity, AlarmSimulationPoint, LogAlarm, LogAlarmDraft } from "./types";
 
 const logGroups = [
@@ -38,57 +38,21 @@ export function AlarmEditorView({
   onGranularityChange: (granularity: AlarmGranularity) => void;
   onSave: () => void;
 }) {
-  const [leftWidth, setLeftWidth] = useState(74);
-
-  function startResize(clientX: number) {
-    const container = document.querySelector<HTMLElement>("[data-alarm-resizer]");
-    const bounds = container?.getBoundingClientRect();
-    if (!bounds) {
-      return;
-    }
-
-    const handlePointerMove = (event: PointerEvent) => {
-      const next = ((event.clientX - bounds.left) / bounds.width) * 100;
-      setLeftWidth(Math.min(Math.max(next, 25), 75));
-    };
-    const stopResize = () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", stopResize);
-    };
-
-    setLeftWidth(Math.min(Math.max(((clientX - bounds.left) / bounds.width) * 100, 25), 75));
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", stopResize, { once: true });
-  }
-
   return (
     <div className="space-y-4">
-      <button className="text-sm font-medium text-zinc-600 hover:text-zinc-950" onClick={onBack} type="button">
+      <button className="inline-flex items-center gap-1 text-sm font-medium text-zinc-600 hover:text-zinc-950" onClick={onBack} type="button">
+        <ChevronLeft className="h-4 w-4" />
         Back to alarms
       </button>
-      <div className="flex flex-col gap-5 md:hidden">
-        <AlarmFormCard alarm={alarm} draft={draft} error={error} isSaving={isSaving} onChange={onChange} onDelete={onDelete} onSave={onSave} />
-        <AlarmSimulationChart data={simulation} granularity={granularity} onGranularityChange={onGranularityChange} />
-      </div>
-      <div className="hidden items-stretch gap-4 md:flex" data-alarm-resizer>
-        <div className="min-w-0" style={{ width: `${leftWidth}%` }}>
+      <AlarmResizableSplit
+        defaultLeftWidth={72}
+        left={
           <AlarmFormCard alarm={alarm} draft={draft} error={error} isSaving={isSaving} onChange={onChange} onDelete={onDelete} onSave={onSave} />
-        </div>
-        <button
-          aria-label="Resize alarm sections"
-          className="group flex w-4 shrink-0 cursor-col-resize items-stretch justify-center rounded-full"
-          onPointerDown={(event) => {
-            event.currentTarget.setPointerCapture(event.pointerId);
-            startResize(event.clientX);
-          }}
-          type="button"
-        >
-          <span className="my-2 w-1 rounded-full bg-white/70 shadow-sm transition-colors group-hover:bg-zinc-300" />
-        </button>
-        <div className="min-w-0 flex-1">
+        }
+        right={
           <AlarmSimulationChart data={simulation} granularity={granularity} onGranularityChange={onGranularityChange} />
-        </div>
-      </div>
+        }
+      />
     </div>
   );
 }
@@ -198,26 +162,25 @@ function AlarmFormCard({
   );
 }
 
-function AlarmSimulationChart({
+export function AlarmSimulationChart({
   data,
   granularity,
   onGranularityChange,
+  title = "Error Threshold",
+  description = "Last 14 days of errors compared against the alarm threshold.",
 }: {
   data: AlarmSimulationPoint[];
   granularity: AlarmGranularity;
   onGranularityChange: (granularity: AlarmGranularity) => void;
+  title?: string;
+  description?: string;
 }) {
-  const chartData = data.map((point) => ({
-    ...point,
-    label: formatAlarmTick(point.timestamp, granularity),
-  }));
-
   return (
     <Card className="h-full">
       <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
         <div>
-          <CardTitle>Error Threshold</CardTitle>
-          <CardDescription>Last 14 days of errors compared against the alarm threshold.</CardDescription>
+          <CardTitle>{title}</CardTitle>
+          <CardDescription>{description}</CardDescription>
         </div>
         <select
           className="h-10 rounded-full border border-white/70 bg-white/50 px-3 text-sm outline-none transition-colors focus:border-zinc-300"
@@ -232,13 +195,24 @@ function AlarmSimulationChart({
       <CardContent>
         <div className="h-72">
           <ResponsiveContainer height="100%" width="100%">
-            <LineChart data={chartData} margin={{ bottom: 18, left: 8, right: 12, top: 8 }}>
-              <XAxis axisLine={false} dataKey="label" interval="preserveStartEnd" minTickGap={24} tick={{ fill: "#71717a", fontSize: 12 }} tickLine={false} />
+            <LineChart data={data} margin={{ bottom: 18, left: 8, right: 12, top: 8 }}>
+              <XAxis
+                axisLine={false}
+                dataKey="timestamp"
+                interval="preserveStartEnd"
+                minTickGap={72}
+                tick={{ fill: "#71717a", fontSize: 12 }}
+                tickFormatter={(value) => formatAlarmTick(String(value), granularity)}
+                tickLine={false}
+              />
               <YAxis allowDecimals={false} axisLine={false} tick={{ fill: "#71717a", fontSize: 12 }} tickLine={false} width={44} />
-              <RechartsTooltip />
-              <Line dataKey="errors" dot={{ r: 2 }} stroke="#dc2626" strokeWidth={2.5} type="monotone" />
-              <Line dataKey="threshold" dot={false} stroke="#71717a" strokeDasharray="5 5" strokeWidth={2} type="monotone" />
-              <Brush dataKey="label" height={22} travellerWidth={8} />
+              <RechartsTooltip
+                formatter={(value, name) => [Number(value), name === "errors" ? "Errors" : "Threshold"]}
+                labelFormatter={(value) => formatAlarmTooltipLabel(String(value))}
+              />
+              <Line dataKey="errors" dot={{ r: 2 }} stroke="#dc2626" strokeWidth={2.5} type="linear" />
+              <Line dataKey="threshold" dot={false} stroke="#71717a" strokeDasharray="5 5" strokeWidth={2} type="linear" />
+              <Brush dataKey="timestamp" height={22} tickFormatter={(value) => formatAlarmTick(String(value), granularity)} travellerWidth={8} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -255,5 +229,14 @@ function formatAlarmTick(timestamp: string, granularity: AlarmGranularity) {
   if (granularity === "hour") {
     return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric" }).format(date);
   }
-  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function formatAlarmTooltipLabel(timestamp: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
 }

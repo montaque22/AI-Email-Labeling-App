@@ -1,4 +1,4 @@
-import { Plus, Trash2 } from "lucide-react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -11,14 +11,18 @@ export function AlarmListView({
   isLoading,
   onCreate,
   onDelete,
+  onEditSelected,
   onOpen,
   onToggle,
+  selectedGraphAlarmId,
 }: {
   alarms: LogAlarm[];
   selectedIds: string[];
+  selectedGraphAlarmId: string | null;
   isLoading: boolean;
   onCreate: () => void;
   onDelete: () => void;
+  onEditSelected: () => void;
   onOpen: (alarm: LogAlarm) => void;
   onToggle: (id: string) => void;
 }) {
@@ -32,10 +36,14 @@ export function AlarmListView({
           </CardDescription>
         </div>
         <div className="flex gap-2">
+          {selectedGraphAlarmId ? (
+            <Button aria-label="Edit selected alarm" onClick={onEditSelected} size="icon" title="Edit selected alarm" type="button" variant="outline">
+              <Pencil className="h-4 w-4" />
+            </Button>
+          ) : null}
           {selectedIds.length > 0 ? (
-            <Button onClick={onDelete} type="button" variant="outline">
+            <Button aria-label="Delete selected alarms" onClick={onDelete} size="icon" title="Delete selected alarms" type="button" variant="outline">
               <Trash2 className="h-4 w-4 text-red-600" />
-              Delete
             </Button>
           ) : null}
           <Button onClick={onCreate} type="button">
@@ -52,7 +60,13 @@ export function AlarmListView({
         ) : (
           <div className="overflow-hidden rounded-md border border-zinc-200 bg-white/40">
             {alarms.map((alarm) => (
-              <div className="grid grid-cols-[48px_1fr_auto] items-center gap-3 border-b border-zinc-200 px-4 py-3 last:border-b-0" key={alarm.id}>
+              <div
+                className={cn(
+                  "grid grid-cols-[48px_1fr_auto] items-center gap-3 border-b border-zinc-200 px-4 py-3 transition-colors last:border-b-0",
+                  selectedGraphAlarmId === alarm.id ? "border-l-2 border-l-sky-400 bg-sky-50/40 ring-1 ring-inset ring-sky-100" : "hover:bg-white/50",
+                )}
+                key={alarm.id}
+              >
                 <input
                   aria-label={`Select ${alarm.name}`}
                   checked={selectedIds.includes(alarm.id)}

@@ -2752,7 +2752,7 @@ async function getLogAlarmStatus(userId, alarm) {
 }
 
 async function getAlarmSimulation(userId, { logGroup, thresholdCount, granularity = "day" }) {
-  const interval = granularity === "minute" ? "1 minute" : granularity === "hour" ? "1 hour" : "1 day";
+  const interval = granularity === "minute" ? "30 minutes" : granularity === "hour" ? "3 hours" : "1 day";
   const bucketExpression = granularity === "minute" ? "minute" : granularity === "hour" ? "hour" : "day";
   const result = await dbPool.query(
     `
@@ -2763,7 +2763,7 @@ async function getAlarmSimulation(userId, { logGroup, thresholdCount, granularit
           $4::interval
         ) as bucket
       )
-      select to_char(buckets.bucket, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as timestamp,
+      select to_char(buckets.bucket at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as timestamp,
              count(system_logs.id) filter (where system_logs.status = 'error' or system_logs.payload ? 'error' or system_logs.payload->'response' ? 'error')::int as errors,
              $5::int as threshold
       from buckets

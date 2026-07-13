@@ -56,7 +56,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./com
 import { LiquidGlassCard } from "./components/ui/liquid-glass";
 import { AiPromptsManager } from "./components/prompts/AiPromptsManager";
 import { AiUsageChartCard } from "./components/metrics/AiUsageChartCard";
-import { AlarmEditorView } from "./components/metrics/AlarmEditorView";
+import { AlarmEditorView, AlarmSimulationChart } from "./components/metrics/AlarmEditorView";
+import { AlarmResizableSplit } from "./components/metrics/AlarmResizableSplit";
 import { AlarmListView } from "./components/metrics/AlarmListView";
 import { MetricsTabPill } from "./components/metrics/MetricsTabPill";
 import type { AiUsageSeries, AlarmGranularity, AlarmSimulationPoint, LogAlarm, LogAlarmDraft, MetricsTab } from "./components/metrics/types";
@@ -8821,10 +8822,12 @@ function MetricsPage() {
   const [logCategory, setLogCategory] = useState("all");
   const [alarms, setAlarms] = useState<LogAlarm[]>([]);
   const [selectedAlarmIds, setSelectedAlarmIds] = useState<string[]>([]);
+  const [selectedAlarm, setSelectedAlarm] = useState<LogAlarm | null>(null);
   const [editingAlarm, setEditingAlarm] = useState<LogAlarm | null>(null);
   const [alarmDraft, setAlarmDraft] = useState<LogAlarmDraft>(createEmptyAlarmDraft());
   const [alarmGranularity, setAlarmGranularity] = useState<AlarmGranularity>("day");
   const [alarmSimulation, setAlarmSimulation] = useState<AlarmSimulationPoint[]>([]);
+  const [selectedAlarmSimulation, setSelectedAlarmSimulation] = useState<AlarmSimulationPoint[]>([]);
   const [alarmError, setAlarmError] = useState<string | null>(null);
   const [isLoadingAlarms, setIsLoadingAlarms] = useState(false);
   const [isSavingAlarm, setIsSavingAlarm] = useState(false);
@@ -8891,6 +8894,13 @@ function MetricsPage() {
     }, 250);
     return () => window.clearTimeout(timeout);
   }, [isAlarmEditorOpen, alarmDraft.logGroup, alarmDraft.periodMinutes, alarmDraft.thresholdCount, alarmGranularity]);
+
+  useEffect(() => {
+    if (isAlarmEditorOpen || !selectedAlarm) {
+      return;
+    }
+    void loadAlarmSimulation(alarmToDraft(selectedAlarm), setSelectedAlarmSimulation);
+  }, [isAlarmEditorOpen, selectedAlarm?.id, alarmGranularity]);
 
   useEffect(() => {
     if (!isLogPurgeConfirmOpen) {
@@ -8993,8 +9003,16 @@ function MetricsPage() {
         setAlarmError(data.error ?? "Could not load alarms.");
         return;
       }
-      setAlarms(data.alarms ?? []);
-      setSelectedAlarmIds((current) => current.filter((id) => data.alarms?.some((alarm: LogAlarm) => alarm.id === id)));
+      const nextAlarms = data.alarms ?? [];
+      setAlarms(nextAlarms);
+      setSelectedAlarmIds((current) => current.filter((id) => nextAlarms.some((alarm: LogAlarm) => alarm.id === id)));
+      setSelectedAlarm((current) => {
+        if (!current) {
+          return current;
+        }
+        const refreshed = nextAlarms.find((alarm: LogAlarm) => alarm.id === current.id);
+        return refreshed ?? null;
+      });
     } catch {
       setAlarmError("Could not load alarms.");
     } finally {
@@ -9002,7 +9020,7 @@ function MetricsPage() {
     }
   }
 
-  async function loadAlarmSimulation(draft: LogAlarmDraft) {
+  async function loadAlarmSimulation(draft: LogAlarmDraft, setSimulation: (simulation: AlarmSimulationPoint[]) => void = setAlarmSimulation) {
     try {
       const params = new URLSearchParams({
         logGroup: draft.logGroup,
@@ -9013,10 +9031,10 @@ function MetricsPage() {
       const response = await fetch(`/api/alarms/simulation?${params.toString()}`, { credentials: "include" });
       const data = await response.json();
       if (response.ok) {
-        setAlarmSimulation(data.simulation ?? []);
+        setSimulation(data.simulation ?? []);
       }
     } catch {
-      setAlarmSimulation([]);
+      setSimulation([]);
     }
   }
 
@@ -9037,6 +9055,14 @@ function MetricsPage() {
     setAlarmSimulation(alarm.simulation ?? []);
     setAlarmError(null);
     setIsAlarmEditorOpen(true);
+    void loadAlarmSimulation(draft);
+  }
+
+  function selectAlarmForGraph(alarm: LogAlarm) {
+    setSelectedAlarm(alarm);
+    setSelectedAlarmSimulation(alarm.simulation ?? []);
+    setAlarmError(null);
+    void loadAlarmSimulation(alarmToDraft(alarm), setSelectedAlarmSimulation);
   }
 
   async function saveAlarm() {
@@ -9085,6 +9111,8 @@ function MetricsPage() {
       setIsAlarmDeleteConfirmOpen(false);
       setIsAlarmEditorOpen(false);
       setEditingAlarm(null);
+      setSelectedAlarm((current) => (current && ids.includes(current.id) ? null : current));
+      setSelectedAlarmSimulation((current) => (selectedAlarm && ids.includes(selectedAlarm.id) ? [] : current));
       setSelectedAlarmIds([]);
       await loadAlarms();
     } catch {
@@ -9225,14 +9253,42 @@ function MetricsPage() {
       ) : (
         <>
           {alarmError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{alarmError}</p> : null}
-          <AlarmListView
-            alarms={alarms}
-            isLoading={isLoadingAlarms}
-            onCreate={startCreateAlarm}
-            onDelete={() => setIsAlarmDeleteConfirmOpen(true)}
-            onOpen={startEditAlarm}
-            onToggle={toggleSelectedAlarm}
-            selectedIds={selectedAlarmIds}
+          <AlarmResizableSplit
+            defaultLeftWidth={56}
+            left={
+              <AlarmListView
+                alarms={alarms}
+                isLoading={isLoadingAlarms}
+                onCreate={startCreateAlarm}
+                onDelete={() => setIsAlarmDeleteConfirmOpen(true)}
+                onEditSelected={() => {
+                  if (selectedAlarm) {
+                    startEditAlarm(selectedAlarm);
+                  }
+                }}
+                onOpen={selectAlarmForGraph}
+                onToggle={toggleSelectedAlarm}
+                selectedGraphAlarmId={selectedAlarm?.id ?? null}
+                selectedIds={selectedAlarmIds}
+              />
+            }
+            right={
+              selectedAlarm ? (
+                <AlarmSimulationChart
+                  data={selectedAlarmSimulation}
+                  description="Last 14 days of errors compared against this alarm threshold."
+                  granularity={alarmGranularity}
+                  onGranularityChange={setAlarmGranularity}
+                  title={selectedAlarm.name}
+                />
+              ) : (
+                <Card className="h-full">
+                  <CardContent className="flex min-h-80 items-center justify-center pt-6">
+                    <p className="rounded-md border border-dashed border-zinc-200 px-4 py-8 text-center text-sm text-zinc-500">Choose an alarm to preview its threshold timeline.</p>
+                  </CardContent>
+                </Card>
+              )
+            }
           />
         </>
       )}
