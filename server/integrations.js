@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { getRenderedAiPromptBundle } from "./ai-prompts.js";
+import { getRenderedCoreContent } from "./ai-prompts.js";
 import { ensureUnemailableSystemLabel, UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
 import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
@@ -539,7 +539,7 @@ export function registerIntegrationRoutes(app) {
 
   app.get("/api/integrations/core-content", requireApiKey, async (req, res) => {
     try {
-      const result = await getRenderedAiPromptBundle(req.integrationUser.id);
+      const result = await getRenderedCoreContent(req.integrationUser.id);
       await logEndpointCall(req.integrationUser.id, "GET /api/integrations/core-content", {}, "success", result);
       res.json(result);
     } catch (error) {

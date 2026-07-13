@@ -29,21 +29,23 @@ export function PromptToolPicker({
   }
 
   return (
-    <div className="space-y-4">
-      <div className="inline-flex rounded-lg border border-zinc-200 bg-white/50 p-1">
-        {(["auto", "required"] as const).map((choice) => (
-          <button
-            className={cn(
-              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-              toolChoice === choice ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:bg-white/60",
-            )}
-            key={choice}
-            onClick={() => onToolChoiceChange(choice)}
-            type="button"
-          >
-            {choice === "auto" ? "Auto" : "Required"}
-          </button>
-        ))}
+    <div className="space-y-3">
+      <div className="sticky top-0 z-10 bg-white/70 pb-3 backdrop-blur">
+        <div className="inline-flex rounded-full border border-white/60 bg-white/10 p-1 shadow-sm backdrop-blur">
+          {(["auto", "required"] as const).map((choice) => (
+            <button
+              className={cn(
+                "rounded-full px-4 py-2 text-sm font-medium transition-colors",
+                toolChoice === choice ? "bg-white/50 text-zinc-950 shadow-sm" : "text-zinc-500 hover:bg-white/30",
+              )}
+              key={choice}
+              onClick={() => onToolChoiceChange(choice)}
+              type="button"
+            >
+              {choice === "auto" ? "Auto" : "Required"}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="space-y-2">

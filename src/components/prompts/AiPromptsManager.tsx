@@ -34,6 +34,14 @@ export function AiPromptsManager() {
     }
   }, [view]);
 
+  useEffect(() => {
+    if (!message) {
+      return undefined;
+    }
+    const timeoutId = window.setTimeout(() => setMessage(null), 3000);
+    return () => window.clearTimeout(timeoutId);
+  }, [message]);
+
   const selectedPromptCount = useMemo(() => selectedIds.length, [selectedIds]);
 
   async function loadPrompts() {
@@ -133,7 +141,11 @@ export function AiPromptsManager() {
   return (
     <div className="space-y-4">
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-      {message ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</p> : null}
+      {message ? (
+        <div className="fixed bottom-6 right-6 z-50 rounded-xl border border-emerald-200 bg-white/90 px-4 py-3 text-sm font-medium text-emerald-700 shadow-xl backdrop-blur">
+          {message}
+        </div>
+      ) : null}
 
       {view.mode === "list" ? (
         <PromptListView

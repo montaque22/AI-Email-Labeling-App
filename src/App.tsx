@@ -9903,7 +9903,7 @@ function AiPromptsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
       <Card>
         <CardHeader>
           <CardTitle>Artificial Intelligence</CardTitle>
-          <CardDescription>Configure Emailable's AI providers and prompt templates.</CardDescription>
+          <CardDescription>Configure Emailable's AI providers, tools, and custom automations.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="divide-y divide-zinc-200 rounded-md border border-zinc-200">
@@ -13161,25 +13161,27 @@ function EndpointsPage() {
         <CardContent className="space-y-3">
           <EndpointDoc
             method="GET"
-	            path="/api/integrations/core-content"
-	            title="Get Core Content"
-	            notes={["Returns confidence threshold, labels, and all AI Prompt submenu prompts with supported template strings replaced by current app values."]}
-	            response={{
-	              confidenceThreshold: 0.9,
-	              labels: [
-	                { name: "Invoice", description: "Use when confidence is at least 0.9." },
-	                { name: "Client Ops", description: "Operational client messages." },
-	              ],
-	              "email-label": {
-	                markdown:
-	                  "You are an email labeling assistant.\n\nUse the confidence threshold of 0.90 to decide whether an email can be labeled automatically.\n\nAvailable labels:\n\n| Name | Description |\n| --- | --- |\n| Invoice | Use when confidence is at least 0.9. |",
-	              },
-	              "draft-reply": {
-	                markdown:
-	                  "You are an email reply assistant.\n\nThe voice should be warm but not overly casual. Use simple sentences and make the message clear and tactful.",
-	              },
-	            }}
-	          />
+            path="/api/integrations/core-content"
+            title="Get Core Content"
+            notes={["Returns confidence threshold, synced labels, and custom prompt automations with supported template strings rendered."]}
+            response={{
+              confidenceThreshold: 0.9,
+              labels: [
+                { name: "Invoice", description: "Use when confidence is at least 0.9." },
+                { name: "Client Ops", description: "Operational client messages." },
+              ],
+              customPrompts: [
+                {
+                  id: "prompt-id",
+                  name: "Calendar follow up",
+                  description: "Create follow-up events from labeled emails.",
+                  markdown: "When this email needs follow-up, create an appropriate calendar event.",
+                  toolChoice: "auto",
+                  selectedTools: [{ toolClientId: "system", toolName: "find_email" }],
+                },
+              ],
+            }}
+          />
           <EndpointDoc
             method="POST"
             path="/api/integrations/email-rules/query"
@@ -13285,7 +13287,7 @@ function EndpointsPage() {
             <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-sm font-semibold text-zinc-950">Emailable AI endpoints</p>
-                <p className="text-sm text-zinc-500">These endpoints use your saved AI platforms and prompt templates.</p>
+                <p className="text-sm text-zinc-500">These endpoints use your saved AI platforms and Emailable's internal AI workflows.</p>
               </div>
               <AiEnableSwitch
                 canEnable={Boolean(aiConfig?.canEnableAi)}
@@ -13304,7 +13306,7 @@ function EndpointsPage() {
                 notes={[
                   "Requires Activate to be on.",
                   "accountEmail is optional. When present, Emailable uses it to find the email faster.",
-                  "Uses the Draft Reply prompt as the system prompt and creates a provider draft reply from the AI response.",
+                  "Uses Emailable's internal reply-writing guidance and creates a provider draft reply from the AI response.",
                 ]}
                 payload={{
                   emailId: "188c1f2d7e1a1234",
@@ -13329,7 +13331,7 @@ function EndpointsPage() {
                 title="AI Label"
                 notes={[
                   "Requires Activate to be on.",
-                  "Uses the Email Label prompt as the system prompt.",
+                  "Uses Emailable's internal label triage prompt.",
                   "The AI returns label candidates and Emailable applies the highest-confidence label or creates a pending rule for review.",
                 ]}
                 payload={{

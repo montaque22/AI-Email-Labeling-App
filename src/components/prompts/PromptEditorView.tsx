@@ -1,8 +1,7 @@
-import { Save, Trash2, Wrench, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { ChevronLeft, Save, Trash2, Wrench, X } from "lucide-react";
+import { useState } from "react";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
-import { MarkdownToolbar } from "./MarkdownToolbar";
 import { PromptToolPicker } from "./PromptToolPicker";
 import type { CustomAiPrompt, PromptSelectedTool, PromptTool, PromptToolChoice } from "./types";
 
@@ -45,45 +44,10 @@ export function PromptEditorView({
   onDraftChange,
   onSave,
 }: PromptEditorViewProps) {
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [isToolSheetOpen, setIsToolSheetOpen] = useState(false);
 
   function updateDraft(updates: Partial<PromptEditorDraft>) {
     onDraftChange({ ...draft, ...updates });
-  }
-
-  function insertAtCursor(value: string) {
-    const input = textareaRef.current;
-    if (!input) {
-      updateDraft({ markdown: `${draft.markdown}${value}` });
-      return;
-    }
-    const selectionStart = input.selectionStart ?? draft.markdown.length;
-    const selectionEnd = input.selectionEnd ?? selectionStart;
-    const nextMarkdown = draft.markdown.slice(0, selectionStart) + value + draft.markdown.slice(selectionEnd);
-    updateDraft({ markdown: nextMarkdown });
-    window.requestAnimationFrame(() => {
-      input.focus();
-      const nextCursor = selectionStart + value.length;
-      input.setSelectionRange(nextCursor, nextCursor);
-    });
-  }
-
-  function wrapSelection(prefix: string, suffix = prefix) {
-    const input = textareaRef.current;
-    const selectionStart = input?.selectionStart ?? draft.markdown.length;
-    const selectionEnd = input?.selectionEnd ?? selectionStart;
-    const selectedText = draft.markdown.slice(selectionStart, selectionEnd) || "text";
-    const nextMarkdown = draft.markdown.slice(0, selectionStart)
-      + prefix
-      + selectedText
-      + suffix
-      + draft.markdown.slice(selectionEnd);
-    updateDraft({ markdown: nextMarkdown });
-    window.requestAnimationFrame(() => {
-      input?.focus();
-      input?.setSelectionRange(selectionStart + prefix.length, selectionStart + prefix.length + selectedText.length);
-    });
   }
 
   return (
@@ -91,7 +55,8 @@ export function PromptEditorView({
       <Card>
         <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
           <div className="min-w-0">
-            <button className="mb-3 cursor-pointer text-sm text-zinc-500 hover:text-zinc-950" onClick={onBack} type="button">
+            <button className="mb-3 inline-flex cursor-pointer items-center gap-1 text-sm font-medium text-zinc-500 hover:text-zinc-950" onClick={onBack} type="button">
+              <ChevronLeft className="h-4 w-4" />
               Back to prompts
             </button>
             <CardTitle>{draft.id ? "Edit Prompt" : "Create Prompt"}</CardTitle>
@@ -116,7 +81,7 @@ export function PromptEditorView({
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-zinc-700">Name</span>
               <input
-                className="h-10 w-full rounded-md border border-zinc-200 bg-white/60 px-3 text-sm outline-none focus:border-zinc-400"
+                className="h-11 w-full rounded-full border border-white/70 bg-white/50 px-4 text-sm shadow-sm outline-none backdrop-blur focus:border-zinc-400"
                 onChange={(event) => updateDraft({ name: event.target.value })}
                 placeholder="Prompt name"
                 value={draft.name}
@@ -125,7 +90,7 @@ export function PromptEditorView({
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-zinc-700">Description</span>
               <input
-                className="h-10 w-full rounded-md border border-zinc-200 bg-white/60 px-3 text-sm outline-none focus:border-zinc-400"
+                className="h-11 w-full rounded-full border border-white/70 bg-white/50 px-4 text-sm shadow-sm outline-none backdrop-blur focus:border-zinc-400"
                 onChange={(event) => updateDraft({ description: event.target.value })}
                 placeholder="What this prompt does"
                 value={draft.description}
@@ -133,15 +98,12 @@ export function PromptEditorView({
             </label>
           </div>
 
-          <MarkdownToolbar disabled={isSaving} onInsert={insertAtCursor} onWrap={wrapSelection} />
-
           <div className="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
             <label className="block min-w-0">
               <span className="mb-1 block text-sm font-medium text-zinc-700">Markdown system message</span>
               <textarea
                 className="h-[560px] w-full resize-none overflow-auto rounded-md border border-zinc-200 bg-white/60 px-3 py-3 font-mono text-sm outline-none focus:border-zinc-400"
                 onChange={(event) => updateDraft({ markdown: event.target.value })}
-                ref={textareaRef}
                 value={draft.markdown}
               />
             </label>

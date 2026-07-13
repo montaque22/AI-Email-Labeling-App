@@ -483,6 +483,26 @@ export async function getRenderedAiPromptBundle(userId) {
   return bundle;
 }
 
+export async function getRenderedCoreContent(userId) {
+  const [labelInstructions, prompts] = await Promise.all([
+    getRenderedLabelInstructions(userId),
+    listCustomAiPrompts(userId),
+  ]);
+
+  return {
+    confidenceThreshold: labelInstructions.confidenceThreshold,
+    labels: labelInstructions.labels,
+    customPrompts: await Promise.all(prompts.map(async (prompt) => ({
+      id: prompt.id,
+      name: prompt.name,
+      description: prompt.description,
+      markdown: await renderPrompt(userId, prompt.markdown),
+      toolChoice: prompt.toolChoice,
+      selectedTools: prompt.selectedTools,
+    }))),
+  };
+}
+
 async function renderPrompt(userId, markdown) {
   const [threshold, labels] = await Promise.all([getConfidenceThreshold(userId), getSyncedLabels(userId)]);
   const renderedLabels = labels.map((label) => ({
