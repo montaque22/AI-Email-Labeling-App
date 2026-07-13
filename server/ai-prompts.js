@@ -45,9 +45,108 @@ export async function ensureAiPromptsTable() {
     )
   `);
   await dbPool.query("create index if not exists ai_prompts_user_id_idx on ai_prompts(user_id)");
+
+  await dbPool.query(`
+    create table if not exists custom_ai_prompts (
+      id uuid primary key,
+      user_id text not null references "user"(id) on delete cascade,
+      name text not null,
+      description text not null default '',
+      markdown text not null default '',
+      tool_choice text not null default 'auto',
+      selected_tools jsonb not null default '[]'::jsonb,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      constraint custom_ai_prompts_tool_choice_check check (tool_choice in ('auto', 'required'))
+    )
+  `);
+  await dbPool.query("create index if not exists custom_ai_prompts_user_id_idx on custom_ai_prompts(user_id)");
 }
 
 export function registerAiPromptRoutes(app) {
+  app.get("/api/ai-prompts/custom", requireSession, async (req, res) => {
+    try {
+      res.json({ prompts: await listCustomAiPrompts(req.user.id) });
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
+
+  app.post("/api/ai-prompts/custom", requireSession, async (req, res) => {
+    const input = parseCustomPromptInput(req.body);
+    if (!input.ok) {
+      res.status(400).json({ error: input.error });
+      return;
+    }
+
+    try {
+      const prompt = await createCustomAiPrompt(req.user.id, input.prompt);
+      res.status(201).json({ prompt });
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
+
+  app.get("/api/ai-prompts/custom/:promptId", requireSession, async (req, res) => {
+    try {
+      const prompt = await getCustomAiPrompt(req.user.id, req.params.promptId);
+      if (!prompt) {
+        res.status(404).json({ error: "AI prompt not found" });
+        return;
+      }
+      res.json({ prompt });
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
+
+  app.put("/api/ai-prompts/custom/:promptId", requireSession, async (req, res) => {
+    const input = parseCustomPromptInput(req.body);
+    if (!input.ok) {
+      res.status(400).json({ error: input.error });
+      return;
+    }
+
+    try {
+      const prompt = await updateCustomAiPrompt(req.user.id, req.params.promptId, input.prompt);
+      if (!prompt) {
+        res.status(404).json({ error: "AI prompt not found" });
+        return;
+      }
+      res.json({ prompt });
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
+
+  app.delete("/api/ai-prompts/custom", requireSession, async (req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((id) => typeof id === "string") : [];
+    if (ids.length === 0) {
+      res.status(400).json({ error: "Select at least one prompt to delete" });
+      return;
+    }
+
+    try {
+      const deleted = await deleteCustomAiPrompts(req.user.id, ids);
+      res.json({ deleted });
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
+
+  app.delete("/api/ai-prompts/custom/:promptId", requireSession, async (req, res) => {
+    try {
+      const deleted = await deleteCustomAiPrompts(req.user.id, [req.params.promptId]);
+      if (deleted === 0) {
+        res.status(404).json({ error: "AI prompt not found" });
+        return;
+      }
+      res.json({ deleted });
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
+
   app.get("/api/ai-prompts/:promptKey", requireSession, async (req, res) => {
     const definition = PROMPT_DEFINITIONS[req.params.promptKey];
 
@@ -176,6 +275,57 @@ function parsePromptInput(body) {
   return { ok: true, markdown };
 }
 
+function parseCustomPromptInput(body) {
+  const name = typeof body?.name === "string" ? body.name.trim() : "";
+  const description = typeof body?.description === "string" ? body.description.trim() : "";
+  const markdown = typeof body?.markdown === "string" ? body.markdown : "";
+  const toolChoice = body?.toolChoice === "required" ? "required" : "auto";
+  const selectedToolsInput = Array.isArray(body?.selectedTools) ? body.selectedTools : [];
+
+  if (!name) {
+    return { ok: false, error: "Prompt name is required" };
+  }
+  if (name.length > 100) {
+    return { ok: false, error: "Prompt name must be 100 characters or less" };
+  }
+  if (description.length > 500) {
+    return { ok: false, error: "Prompt description must be 500 characters or less" };
+  }
+
+  const markdownInput = parsePromptInput({ markdown });
+  if (!markdownInput.ok) {
+    return markdownInput;
+  }
+
+  const selectedTools = [];
+  const seen = new Set();
+  for (const entry of selectedToolsInput) {
+    const toolClientId = typeof entry?.toolClientId === "string" ? entry.toolClientId.trim() : "";
+    const toolName = typeof entry?.toolName === "string" ? entry.toolName.trim() : "";
+    const key = `${toolClientId}:${toolName}`;
+    if (!toolClientId || !toolName || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    selectedTools.push({ toolClientId, toolName });
+  }
+
+  if (selectedTools.length > 50) {
+    return { ok: false, error: "Select 50 tools or fewer" };
+  }
+
+  return {
+    ok: true,
+    prompt: {
+      name,
+      description,
+      markdown,
+      toolChoice,
+      selectedTools,
+    },
+  };
+}
+
 async function getAiPrompt(userId, promptKey) {
   const result = await dbPool.query(
     `
@@ -204,6 +354,111 @@ async function saveAiPrompt(userId, promptKey, markdown) {
   );
 
   return result.rows[0];
+}
+
+export async function listCustomAiPrompts(userId) {
+  const result = await dbPool.query(
+    `
+      select id, name, description, markdown, tool_choice as "toolChoice",
+             selected_tools as "selectedTools", created_at as "createdAt", updated_at as "updatedAt"
+      from custom_ai_prompts
+      where user_id = $1
+      order by updated_at desc, created_at desc
+    `,
+    [userId],
+  );
+
+  return result.rows.map(normalizeCustomPromptRow);
+}
+
+async function getCustomAiPrompt(userId, promptId) {
+  const result = await dbPool.query(
+    `
+      select id, name, description, markdown, tool_choice as "toolChoice",
+             selected_tools as "selectedTools", created_at as "createdAt", updated_at as "updatedAt"
+      from custom_ai_prompts
+      where user_id = $1 and id = $2
+      limit 1
+    `,
+    [userId, promptId],
+  );
+
+  return result.rows[0] ? normalizeCustomPromptRow(result.rows[0]) : null;
+}
+
+async function createCustomAiPrompt(userId, prompt) {
+  const result = await dbPool.query(
+    `
+      insert into custom_ai_prompts (id, user_id, name, description, markdown, tool_choice, selected_tools)
+      values ($1, $2, $3, $4, $5, $6, $7::jsonb)
+      returning id, name, description, markdown, tool_choice as "toolChoice",
+                selected_tools as "selectedTools", created_at as "createdAt", updated_at as "updatedAt"
+    `,
+    [
+      randomUUID(),
+      userId,
+      prompt.name,
+      prompt.description,
+      prompt.markdown,
+      prompt.toolChoice,
+      JSON.stringify(prompt.selectedTools),
+    ],
+  );
+
+  return normalizeCustomPromptRow(result.rows[0]);
+}
+
+async function updateCustomAiPrompt(userId, promptId, prompt) {
+  const result = await dbPool.query(
+    `
+      update custom_ai_prompts
+      set name = $3,
+          description = $4,
+          markdown = $5,
+          tool_choice = $6,
+          selected_tools = $7::jsonb,
+          updated_at = now()
+      where user_id = $1 and id = $2
+      returning id, name, description, markdown, tool_choice as "toolChoice",
+                selected_tools as "selectedTools", created_at as "createdAt", updated_at as "updatedAt"
+    `,
+    [
+      userId,
+      promptId,
+      prompt.name,
+      prompt.description,
+      prompt.markdown,
+      prompt.toolChoice,
+      JSON.stringify(prompt.selectedTools),
+    ],
+  );
+
+  return result.rows[0] ? normalizeCustomPromptRow(result.rows[0]) : null;
+}
+
+async function deleteCustomAiPrompts(userId, promptIds) {
+  const result = await dbPool.query(
+    `
+      delete from custom_ai_prompts
+      where user_id = $1 and id = any($2::uuid[])
+    `,
+    [userId, promptIds],
+  );
+
+  return result.rowCount ?? 0;
+}
+
+function normalizeCustomPromptRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? "",
+    markdown: row.markdown ?? "",
+    toolChoice: row.toolChoice === "required" ? "required" : "auto",
+    selectedTools: Array.isArray(row.selectedTools) ? row.selectedTools : [],
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
 }
 
 export async function getRenderedAiPromptBundle(userId) {
@@ -236,6 +491,24 @@ async function renderPrompt(userId, markdown) {
   }));
 
   return renderPromptMarkdown(markdown, threshold, renderedLabels);
+}
+
+export async function renderAiPromptMarkdownForUser(userId, markdown) {
+  return renderPrompt(userId, markdown);
+}
+
+export async function getRenderedLabelInstructions(userId) {
+  const [threshold, labels] = await Promise.all([getConfidenceThreshold(userId), getSyncedLabels(userId)]);
+  const renderedLabels = labels.map((label) => ({
+    name: label.name,
+    description: renderTemplateDescription(label.description, threshold),
+  }));
+
+  return {
+    confidenceThreshold: threshold,
+    labelTable: labelsToMarkdownTable(renderedLabels),
+    labels: renderedLabels,
+  };
 }
 
 function renderPromptMarkdown(markdown, threshold, labels) {

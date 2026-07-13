@@ -21,7 +21,7 @@ Open **Metrics** from the main menu. The first tab summarizes activity with char
 
 Shows how many rules were created over time.
 
-Use it to understand how often Emailable is uncertain. A sustained increase can mean new types of email are arriving, labels overlap, the confidence threshold is conservative, or the Email Label prompt needs clarification.
+Use it to understand how often Emailable is uncertain. A sustained increase can mean new types of email are arriving, labels overlap, the confidence threshold is conservative, or existing rules need review.
 
 ### Pending versus Non-Pending Rules
 
@@ -124,4 +124,3 @@ This keeps the database from growing indefinitely. Export important diagnostic i
 - A successful endpoint or MCP call can still trigger a separate webhook delivery failure. Check both relevant categories.
 - Clearing logs does not clear metrics, email rules, labels, connected accounts, or provider mail.
 - Missing activity may mean the operation did not reach Emailable, the relevant feature was disabled, or the log is older than seven days.
-

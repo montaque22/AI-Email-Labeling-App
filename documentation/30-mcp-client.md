@@ -38,7 +38,7 @@ Examples include:
 - Creating a task when an email requires follow-up.
 - Triggering a Home Assistant action when an email matches an important condition.
 
-Selected tools are added to supported AI requests made by Emailable, including AI labeling and AI-assisted email drafting. The AI model can decide to call an available tool when the request and prompt indicate that the tool is useful.
+Selected tools are added to supported AI requests made by Emailable, including AI-assisted email drafting and custom prompt automations that run after labeling. The AI model can decide to call an available tool when the request and prompt indicate that the tool is useful.
 
 Making a tool available does not guarantee that the AI will call it. Clear prompt instructions, good tool descriptions, and a model with reliable tool-use support improve the result.
 
@@ -46,7 +46,7 @@ Making a tool available does not guarantee that the AI will call it. Clear promp
 
 You could connect Emailable to a Home Assistant MCP server and select a tool that controls a light.
 
-In the Email Label prompt, you could add an instruction similar to:
+In a custom prompt under **Artificial Intelligence > Prompts**, you could add an instruction similar to:
 
 ```text
 When an email clearly reports unauthorized account access, use the approved
@@ -54,7 +54,7 @@ Home Assistant light tool to turn the office warning light red. Then continue
 classifying the email using the available Emailable labels.
 ```
 
-When Emailable processes a matching email, the AI can call the selected Home Assistant tool and still return its label classification.
+When Emailable processes and labels a matching email, the custom prompt can call the selected Home Assistant tool using the email and label data as context.
 
 This can enable useful automations, but AI tool decisions are probabilistic. For safety-critical or guaranteed actions, use deterministic Home Assistant automations, Emailable webhooks, or REST endpoints instead of relying only on the AI to choose a tool.
 
@@ -119,11 +119,11 @@ When the MCP Client is active, Emailable:
 3. Adds the supported tool definitions to the request sent to the active BYOAI platform.
 4. Allows the AI platform to decide whether a tool is needed.
 5. Sends tool inputs to the appropriate MCP server when the model calls a tool.
-6. Returns tool results to the model so it can complete the label decision or draft.
+6. Returns tool results to the model so it can complete the draft, helper response, AI action, or custom prompt automation.
 
 Tools are provided through each AI platform's native tool or MCP mechanism. Emailable does not paste tool descriptions into the system prompt as a substitute for actual tool calling.
 
-Important caveat: connected MCP servers and selected tools are not used until the MCP Client section is activated. If MCP Client is off, Emailable keeps the saved server settings, but it does not attach those tools to AI Label, AI Reply, AI Draft, or polling requests.
+Important caveat: connected MCP servers and selected tools are not used until the MCP Client section is activated. If MCP Client is off, Emailable keeps the saved server settings, but it does not attach those tools to AI Reply, AI Draft, AI Helper, AI Actions, or custom prompt automations.
 
 ## AI Draft tool picker
 
@@ -144,11 +144,11 @@ If no picker appears, check these items in order:
 3. The **System MCP Tools** row or another MCP server has at least one selected tool.
 4. The current AI provider supports tools for the request.
 
-## AI labeling example
+## Custom prompt automation example
 
 Suppose an external MCP server provides `lookup_customer_risk`.
 
-You could select that tool and add this guidance to the Email Label prompt:
+You could select that tool for a custom prompt and add this guidance:
 
 ```text
 When an account-security email includes a customer email address, use
@@ -157,7 +157,7 @@ Use the returned risk status as supporting evidence, but still return the
 required Emailable label response.
 ```
 
-The AI can use the tool result to improve its confidence while still returning the structured label candidates Emailable expects.
+The custom prompt can use the tool result after Emailable labels the email. The core labeling step still uses Emailable's internal label prompt and validation rules.
 
 ## Drafting example
 
@@ -254,7 +254,7 @@ The MCP server may not expose tools, may require different authentication, or ma
 
 ### The AI does not call a selected tool
 
-Confirm MCP Client is activated, the server is connected, and the tool remains selected. Add a clear instruction to the relevant Email Label or Draft Reply prompt explaining when the tool should be used.
+Confirm MCP Client is activated, the server is connected, and the tool remains selected. Add a clear instruction to AI Draft, AI Helper, or the relevant custom prompt explaining when the tool should be used.
 
 Models still decide whether a tool is useful. If an action must always happen, use a webhook or deterministic automation instead.
 

@@ -176,7 +176,7 @@ The compose view includes:
 
 When replying to an email, Emailable keeps the original email available so you can reference the message while drafting. Replies are sent through the connected account when the provider supports sending.
 
-If BYOAI is active, the compose and reply experience can include an AI Draft flow. It uses your Reply Draft prompt and the current email context, when replying, to suggest a response. You can apply a suggestion to the message body before sending.
+If BYOAI is active, the compose and reply experience can include an AI Draft flow. It uses Emailable's internal reply-writing guidance and the current email context, when replying, to suggest a response. You can apply a suggestion to the message body before sending.
 
 See [Bring Your Own AI](documentation/bring-your-own-ai) for AI setup.
 

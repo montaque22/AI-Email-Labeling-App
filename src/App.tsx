@@ -54,6 +54,7 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { LiquidGlassCard } from "./components/ui/liquid-glass";
+import { AiPromptsManager } from "./components/prompts/AiPromptsManager";
 import { authClient } from "./lib/auth-client";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
@@ -9927,7 +9928,7 @@ function AiPromptsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
               <div>
                 <p className="text-sm font-medium text-zinc-950">Prompts</p>
                 <p className="mt-1 text-sm text-zinc-500">
-                  Build the Email Label and Draft Reply prompts used by AI endpoints.
+                  Create custom AI system messages that can run after emails are labeled.
                 </p>
               </div>
               <ChevronRight className="h-4 w-4 text-zinc-400" />
@@ -9939,61 +9940,8 @@ function AiPromptsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
   );
 }
 
-function AiPromptLibraryPage({ privacyMode }: { privacyMode: boolean }) {
-  const [activePromptTab, setActivePromptTab] = useState<"email-label" | "draft-reply">(() => promptTabFromPath(window.location.pathname));
-
-  useEffect(() => {
-    function handlePopState() {
-      setActivePromptTab(promptTabFromPath(window.location.pathname));
-    }
-
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
-
-  function selectPromptTab(tab: "email-label" | "draft-reply") {
-    setActivePromptTab(tab);
-    const nextPath = tab === "draft-reply" ? "/ai/prompts/draft-reply" : "/ai/prompts/email-label";
-    if (stripRuntimeBasePath(window.location.pathname) !== nextPath) {
-      window.history.pushState({}, "", getRuntimeUrl(nextPath));
-    }
-  }
-
-  return (
-    <div className="space-y-6">
-      <Card>
-        <CardContent className="pt-6">
-          <div className="inline-flex rounded-lg border border-zinc-200 bg-white/70 p-1">
-            <button
-              className={cn(
-                "rounded-md px-4 py-2 text-sm font-medium transition-colors",
-                activePromptTab === "email-label" ? "bg-zinc-950 text-white shadow-sm" : "text-zinc-600 hover:bg-white",
-              )}
-              onClick={() => selectPromptTab("email-label")}
-              type="button"
-            >
-              Email Label
-            </button>
-            <button
-              className={cn(
-                "rounded-md px-4 py-2 text-sm font-medium transition-colors",
-                activePromptTab === "draft-reply" ? "bg-zinc-950 text-white shadow-sm" : "text-zinc-600 hover:bg-white",
-              )}
-              onClick={() => selectPromptTab("draft-reply")}
-              type="button"
-            >
-              Reply Draft
-            </button>
-          </div>
-        </CardContent>
-      </Card>
-      {activePromptTab === "email-label" ? (
-        <AiPromptEditorPage promptKey="email-label" />
-      ) : (
-        <AiPromptEditorPage promptKey="draft-reply" privacyMode={privacyMode} />
-      )}
-    </div>
-  );
+function AiPromptLibraryPage({ privacyMode: _privacyMode }: { privacyMode: boolean }) {
+  return <AiPromptsManager />;
 }
 
 function ByoAiPage() {

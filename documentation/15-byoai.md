@@ -23,7 +23,7 @@ Activating BYOAI enables:
 - The AI Reply endpoint.
 - AI Draft while composing or replying to email.
 - MCP Client tools that extend Emailable's AI capabilities.
-- Direct use of your Email Label and Draft Reply prompt templates.
+- Custom prompt automations that can run after Emailable labels an email.
 - Provider fallback when a configured AI platform fails.
 
 This allows Emailable to operate as the AI orchestrator while still using your provider account, API key, model choice, prompts, labels, rules, and confidence threshold.
@@ -34,7 +34,7 @@ At a high level, Emailable:
 
 1. Finds the email across the user's connected accounts.
 2. Fetches the message content from the provider when it is needed.
-3. Renders the appropriate saved prompt and replaces supported template values.
+3. Renders the appropriate internal prompt or saved custom prompt and replaces supported template values.
 4. Adds relevant rules and selected MCP tools when the workflow supports them.
 5. Sends the request to the default connected AI platform.
 6. Validates the AI response against Emailable's expected format.
@@ -92,25 +92,53 @@ Activation is separate from saving a provider. A connected provider can remain s
 
 Turning BYOAI off also disables polling and makes MCP Client tools inactive.
 
-## Prompts and template values
+## Core labeling prompt
 
-Emailable has two prompt templates under **Artificial Intelligence > Prompts**:
+The AI Label workflow uses an internal system prompt that is maintained by Emailable. This prompt tells the AI to:
 
-- **Email Label** defines how the AI should analyze and categorize email.
-- **Draft Reply** defines how the AI should write replies in the user's preferred tone and style.
+- Analyze the email safely.
+- Use the current confidence threshold.
+- Use only labels that exist in Emailable.
+- Look at historical rules for guidance.
+- Treat pending rules as weak evidence only.
+- Prefer safety over automation when uncertain.
 
-The Email Label prompt supports:
+This core prompt is no longer edited from the Prompts page. Keeping it internal makes the labeling workflow more predictable and helps prevent prompt changes from breaking validation.
+
+The internal label prompt still renders these current values:
 
 - `{confidenceThreshold}` for the current confidence threshold.
 - `{labelTable}` for the current synchronized label names and descriptions.
 
-Template strings remain stored in the prompt and are replaced with current values when Emailable renders it. This means label or threshold changes do not require manually rewriting the prompt.
+## Custom prompt automations
 
-Draft Reply can also include saved sent-email examples so the AI has practical examples of the user's writing style.
+Under **Artificial Intelligence > Prompts**, you can create your own system messages. These prompts run after Emailable has already processed and labeled an incoming email.
+
+Use custom prompts when you want Emailable to do something with the email after classification, such as:
+
+- Create a calendar event from a scheduling email.
+- Add a task when an email has an action item.
+- Notify another system when an email receives a particular label.
+- Ask an MCP tool to enrich or route the email using the newly assigned label.
+
+Each custom prompt stores:
+
+- A name and description.
+- Markdown system instructions.
+- Selected MCP tools the prompt is allowed to call.
+- A tool choice mode:
+  - **Auto** lets the AI decide whether a selected tool is needed.
+  - **Required** forces the AI to call one of the selected tools.
+
+Tools that are not selected are not attached to that prompt's AI request. This is important for cost, speed, and safety.
+
+Custom prompts receive the email body, subject, sender, recipient, account, provider, and the labels Emailable assigned. They can also use `{confidenceThreshold}` and `{labelTable}` if those template values are helpful.
+
+Because these prompts can call MCP tools, avoid creating too many broad prompts. Each one can consume AI tokens and may trigger external actions.
 
 ## AI labeling
 
-The AI Label workflow accepts an email ID and optional account email. Emailable finds the email, renders the Email Label prompt, loads the available labels, and searches existing rules for relevant guidance.
+The AI Label workflow accepts an email ID and optional account email. Emailable finds the email, renders the internal label prompt, loads the available labels, and searches existing rules for relevant guidance.
 
 The AI returns up to three candidates containing:
 
@@ -126,6 +154,8 @@ Emailable then applies its own deterministic rules:
 - If processing fails and no valid label can be applied, Emailable attempts to apply the hidden `Unemailable` system label so the message can be retried.
 
 AI providers are asked for structured label output, but Emailable still validates label names, confidence values, reason lengths, and required fields before taking action.
+
+After labeling is complete, Emailable runs any saved custom prompts for that user. Prompt automations run in small batches so one account cannot create unlimited parallel AI calls.
 
 ## Polling
 
@@ -173,7 +203,7 @@ The endpoint finds the email, calls the active AI platform, and applies a label 
 }
 ```
 
-The endpoint finds the original email, uses the Draft Reply prompt, generates reply content, and creates a draft in the account that owns the message. It does not immediately send the email.
+The endpoint finds the original email, uses Emailable's internal reply-writing guidance, generates reply content, and creates a draft in the account that owns the message. It does not immediately send the email.
 
 These endpoints require an Emailable integration API key. Provider API keys are never supplied by the endpoint caller.
 

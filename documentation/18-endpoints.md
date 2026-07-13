@@ -112,7 +112,7 @@ This endpoint creates a draft for review. It does not immediately send the messa
 
 ### AI Reply
 
-Finds an email, uses the active Draft Reply prompt and AI platform, and creates a draft reply. `emailId` is required; `accountEmail` is optional but makes the search faster.
+Finds an email, uses the active AI platform and Emailable's internal reply-writing guidance, and creates a draft reply. `emailId` is required; `accountEmail` is optional but makes the search faster.
 
 This endpoint is only usable while BYOAI is active. Its status tag on the page shows whether it is enabled.
 
@@ -162,4 +162,3 @@ Avoid placing secrets inside ordinary payload fields because endpoint payloads m
 - Provider permissions, rate limits, and expired account credentials can still cause an authenticated endpoint request to fail.
 - AI endpoints can consume provider quota and are disabled when BYOAI is inactive.
 - Use HTTPS whenever an API key crosses a network you do not fully control.
-
