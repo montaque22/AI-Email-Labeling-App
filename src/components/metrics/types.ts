@@ -18,6 +18,8 @@ export type AlarmSimulationPoint = {
   threshold: number;
 };
 
+export type AlarmGranularity = "day" | "hour" | "minute";
+
 export type LogAlarm = {
   id: string;
   name: string;

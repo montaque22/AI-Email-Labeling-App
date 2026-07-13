@@ -364,7 +364,8 @@ export function registerIntegrationRoutes(app) {
       const logGroup = normalizeAlarmLogGroup(req.query.logGroup);
       const periodMinutes = clampInteger(req.query.periodMinutes, 1, 7 * 24 * 60, 60);
       const thresholdCount = clampInteger(req.query.thresholdCount, 1, 1000, 1);
-      res.json({ simulation: await getAlarmSimulation(req.user.id, { logGroup, periodMinutes, thresholdCount }) });
+      const granularity = normalizeAlarmGranularity(req.query.granularity);
+      res.json({ simulation: await getAlarmSimulation(req.user.id, { logGroup, periodMinutes, thresholdCount, granularity }) });
     } catch (error) {
       handleError(res, error);
     }
@@ -2750,29 +2751,31 @@ async function getLogAlarmStatus(userId, alarm) {
   return Number(row.errors ?? 0) >= Number(alarm.thresholdCount ?? 1) ? "error" : "ok";
 }
 
-async function getAlarmSimulation(userId, { logGroup, periodMinutes, thresholdCount }) {
+async function getAlarmSimulation(userId, { logGroup, thresholdCount, granularity = "day" }) {
+  const interval = granularity === "minute" ? "1 minute" : granularity === "hour" ? "1 hour" : "1 day";
+  const bucketExpression = granularity === "minute" ? "minute" : granularity === "hour" ? "hour" : "day";
   const result = await dbPool.query(
     `
       with buckets as (
         select generate_series(
-          date_trunc('minute', now() - ($3::text || ' minutes')::interval),
-          date_trunc('minute', now()),
-          greatest(($3::int / 12), 1) * interval '1 minute'
+          date_trunc($3, now() - interval '14 days'),
+          date_trunc($3, now()),
+          $4::interval
         ) as bucket
       )
       select to_char(buckets.bucket, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as timestamp,
              count(system_logs.id) filter (where system_logs.status = 'error' or system_logs.payload ? 'error' or system_logs.payload->'response' ? 'error')::int as errors,
-             $4::int as threshold
+             $5::int as threshold
       from buckets
       left join system_logs
         on system_logs.user_id = $1
        and system_logs.category = $2
        and system_logs.created_at >= buckets.bucket
-       and system_logs.created_at < buckets.bucket + greatest(($3::int / 12), 1) * interval '1 minute'
+       and system_logs.created_at < buckets.bucket + $4::interval
       group by buckets.bucket
       order by buckets.bucket
     `,
-    [userId, normalizeAlarmLogGroup(logGroup), periodMinutes, thresholdCount],
+    [userId, normalizeAlarmLogGroup(logGroup), bucketExpression, interval, thresholdCount],
   );
   return result.rows;
 }
@@ -2795,6 +2798,14 @@ function normalizeAlarmLogGroup(value) {
     return normalized;
   }
   return "ai";
+}
+
+function normalizeAlarmGranularity(value) {
+  const normalized = String(value || "day").toLowerCase();
+  if (["day", "hour", "minute"].includes(normalized)) {
+    return normalized;
+  }
+  return "day";
 }
 
 function clampInteger(value, min, max, fallback) {

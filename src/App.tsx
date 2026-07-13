@@ -59,7 +59,7 @@ import { AiUsageChartCard } from "./components/metrics/AiUsageChartCard";
 import { AlarmEditorView } from "./components/metrics/AlarmEditorView";
 import { AlarmListView } from "./components/metrics/AlarmListView";
 import { MetricsTabPill } from "./components/metrics/MetricsTabPill";
-import type { AiUsageSeries, AlarmSimulationPoint, LogAlarm, LogAlarmDraft, MetricsTab } from "./components/metrics/types";
+import type { AiUsageSeries, AlarmGranularity, AlarmSimulationPoint, LogAlarm, LogAlarmDraft, MetricsTab } from "./components/metrics/types";
 import { authClient } from "./lib/auth-client";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
@@ -8823,6 +8823,7 @@ function MetricsPage() {
   const [selectedAlarmIds, setSelectedAlarmIds] = useState<string[]>([]);
   const [editingAlarm, setEditingAlarm] = useState<LogAlarm | null>(null);
   const [alarmDraft, setAlarmDraft] = useState<LogAlarmDraft>(createEmptyAlarmDraft());
+  const [alarmGranularity, setAlarmGranularity] = useState<AlarmGranularity>("day");
   const [alarmSimulation, setAlarmSimulation] = useState<AlarmSimulationPoint[]>([]);
   const [alarmError, setAlarmError] = useState<string | null>(null);
   const [isLoadingAlarms, setIsLoadingAlarms] = useState(false);
@@ -8889,7 +8890,7 @@ function MetricsPage() {
       void loadAlarmSimulation(alarmDraft);
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [isAlarmEditorOpen, alarmDraft.logGroup, alarmDraft.periodMinutes, alarmDraft.thresholdCount]);
+  }, [isAlarmEditorOpen, alarmDraft.logGroup, alarmDraft.periodMinutes, alarmDraft.thresholdCount, alarmGranularity]);
 
   useEffect(() => {
     if (!isLogPurgeConfirmOpen) {
@@ -9007,6 +9008,7 @@ function MetricsPage() {
         logGroup: draft.logGroup,
         periodMinutes: String(draft.periodMinutes),
         thresholdCount: String(draft.thresholdCount),
+        granularity: alarmGranularity,
       });
       const response = await fetch(`/api/alarms/simulation?${params.toString()}`, { credentials: "include" });
       const data = await response.json();
@@ -9209,11 +9211,13 @@ function MetricsPage() {
           draft={alarmDraft}
           error={alarmError}
           isSaving={isSavingAlarm}
+          granularity={alarmGranularity}
           onBack={() => {
             setIsAlarmEditorOpen(false);
             setEditingAlarm(null);
           }}
           onChange={setAlarmDraft}
+          onGranularityChange={setAlarmGranularity}
           onDelete={() => setIsAlarmDeleteConfirmOpen(true)}
           onSave={() => void saveAlarm()}
           simulation={alarmSimulation}
