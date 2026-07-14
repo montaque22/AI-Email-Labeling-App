@@ -75,7 +75,7 @@ export function AlarmListView({
                 />
                 <button className="min-w-0 text-left" onClick={() => onOpen(alarm)} type="button">
                   <p className="truncate text-sm font-semibold text-zinc-950">{alarm.name}</p>
-                  <p className="mt-1 line-clamp-2 text-sm text-zinc-500">{alarm.description || `${alarm.thresholdCount} errors in ${alarm.periodMinutes} minutes`}</p>
+                  <p className="mt-1 line-clamp-2 text-sm text-zinc-500">{alarm.description || describeAlarmFallback(alarm)}</p>
                 </button>
                 <Badge className={cn("capitalize", statusClass(alarm.status))}>{alarm.status}</Badge>
               </div>
@@ -85,6 +85,12 @@ export function AlarmListView({
       </CardContent>
     </Card>
   );
+}
+
+function describeAlarmFallback(alarm: LogAlarm) {
+  const errors = alarm.thresholdCount === 1 ? "error" : "errors";
+  const filter = alarm.filterMode === "contains" && alarm.filterText ? ` containing "${alarm.filterText}"` : "";
+  return `${alarm.thresholdOperator === "below" ? "Below" : "Above"} ${alarm.thresholdCount} ${errors}${filter} within ${alarm.periodMinutes} minutes`;
 }
 
 function statusClass(status: LogAlarm["status"]) {

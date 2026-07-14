@@ -142,6 +142,9 @@ export async function ensureIntegrationTables() {
       updated_at timestamptz not null default now()
     )
   `);
+  await dbPool.query("alter table log_alarms add column if not exists threshold_operator text not null default 'above'");
+  await dbPool.query("alter table log_alarms add column if not exists filter_mode text not null default 'none'");
+  await dbPool.query("alter table log_alarms add column if not exists filter_text text not null default ''");
   await dbPool.query("create index if not exists log_alarms_user_id_idx on log_alarms(user_id, created_at desc)");
 }
 
@@ -363,9 +366,12 @@ export function registerIntegrationRoutes(app) {
     try {
       const logGroup = normalizeAlarmLogGroup(req.query.logGroup);
       const periodMinutes = clampInteger(req.query.periodMinutes, 1, 7 * 24 * 60, 60);
+      const thresholdOperator = normalizeAlarmThresholdOperator(req.query.thresholdOperator);
       const thresholdCount = clampInteger(req.query.thresholdCount, 1, 1000, 1);
+      const filterMode = normalizeAlarmFilterMode(req.query.filterMode);
+      const filterText = filterMode === "contains" ? String(req.query.filterText || "").trim().slice(0, 500) : "";
       const granularity = normalizeAlarmGranularity(req.query.granularity);
-      res.json({ simulation: await getAlarmSimulation(req.user.id, { logGroup, periodMinutes, thresholdCount, granularity }) });
+      res.json({ simulation: await getAlarmSimulation(req.user.id, { logGroup, periodMinutes, thresholdOperator, thresholdCount, filterMode, filterText, granularity }) });
     } catch (error) {
       handleError(res, error);
     }
@@ -2667,7 +2673,8 @@ async function listLogAlarms(userId) {
   const result = await dbPool.query(
     `
       select id, name, description, log_group as "logGroup", alarm_type as "alarmType",
-             threshold_count as "thresholdCount", period_minutes as "periodMinutes",
+             threshold_operator as "thresholdOperator", threshold_count as "thresholdCount",
+             filter_mode as "filterMode", filter_text as "filterText", period_minutes as "periodMinutes",
              created_at as "createdAt", updated_at as "updatedAt"
       from log_alarms
       where user_id = $1
@@ -2683,7 +2690,8 @@ async function getLogAlarm(userId, id) {
   const result = await dbPool.query(
     `
       select id, name, description, log_group as "logGroup", alarm_type as "alarmType",
-             threshold_count as "thresholdCount", period_minutes as "periodMinutes",
+             threshold_operator as "thresholdOperator", threshold_count as "thresholdCount",
+             filter_mode as "filterMode", filter_text as "filterText", period_minutes as "periodMinutes",
              created_at as "createdAt", updated_at as "updatedAt"
       from log_alarms
       where user_id = $1 and id = $2
@@ -2696,11 +2704,22 @@ async function getLogAlarm(userId, id) {
 async function createLogAlarm(userId, alarm) {
   const result = await dbPool.query(
     `
-      insert into log_alarms (id, user_id, name, description, log_group, alarm_type, threshold_count, period_minutes)
-      values ($1, $2, $3, $4, $5, 'aggregate', $6, $7)
+      insert into log_alarms (id, user_id, name, description, log_group, alarm_type, threshold_operator, threshold_count, filter_mode, filter_text, period_minutes)
+      values ($1, $2, $3, $4, $5, 'aggregate', $6, $7, $8, $9, $10)
       returning id
     `,
-    [crypto.randomUUID(), userId, alarm.name, alarm.description, alarm.logGroup, alarm.thresholdCount, alarm.periodMinutes],
+    [
+      crypto.randomUUID(),
+      userId,
+      alarm.name,
+      alarm.description,
+      alarm.logGroup,
+      alarm.thresholdOperator,
+      alarm.thresholdCount,
+      alarm.filterMode,
+      alarm.filterText,
+      alarm.periodMinutes,
+    ],
   );
   return getLogAlarm(userId, result.rows[0].id);
 }
@@ -2713,13 +2732,16 @@ async function updateLogAlarm(userId, id, alarm) {
           description = $4,
           log_group = $5,
           alarm_type = 'aggregate',
-          threshold_count = $6,
-          period_minutes = $7,
+          threshold_operator = $6,
+          threshold_count = $7,
+          filter_mode = $8,
+          filter_text = $9,
+          period_minutes = $10,
           updated_at = now()
       where user_id = $1 and id = $2
       returning id
     `,
-    [userId, id, alarm.name, alarm.description, alarm.logGroup, alarm.thresholdCount, alarm.periodMinutes],
+    [userId, id, alarm.name, alarm.description, alarm.logGroup, alarm.thresholdOperator, alarm.thresholdCount, alarm.filterMode, alarm.filterText, alarm.periodMinutes],
   );
   return result.rows[0] ? getLogAlarm(userId, result.rows[0].id) : null;
 }
@@ -2741,17 +2763,23 @@ async function getLogAlarmStatus(userId, alarm) {
       where user_id = $1
         and category = $2
         and created_at >= now() - ($3::text || ' minutes')::interval
+        and (
+          $4 = 'none'
+          or lower(concat_ws(' ', event_name, status, message, payload::text)) like '%' || lower($5) || '%'
+        )
     `,
-    [userId, alarm.logGroup, alarm.periodMinutes],
+    [userId, alarm.logGroup, alarm.periodMinutes, alarm.filterMode ?? "none", alarm.filterText ?? ""],
   );
   const row = result.rows[0] ?? {};
   if (Number(row.total ?? 0) === 0) {
     return "unknown";
   }
-  return Number(row.errors ?? 0) >= Number(alarm.thresholdCount ?? 1) ? "error" : "ok";
+  const errors = Number(row.errors ?? 0);
+  const threshold = Number(alarm.thresholdCount ?? 1);
+  return alarm.thresholdOperator === "below" ? (errors < threshold ? "error" : "ok") : (errors > threshold ? "error" : "ok");
 }
 
-async function getAlarmSimulation(userId, { logGroup, thresholdCount, granularity = "day" }) {
+async function getAlarmSimulation(userId, { logGroup, thresholdCount, filterMode = "none", filterText = "", granularity = "day" }) {
   const interval = granularity === "minute" ? "30 minutes" : granularity === "hour" ? "3 hours" : "1 day";
   const bucketExpression = granularity === "minute" ? "minute" : granularity === "hour" ? "hour" : "day";
   const result = await dbPool.query(
@@ -2772,10 +2800,14 @@ async function getAlarmSimulation(userId, { logGroup, thresholdCount, granularit
        and system_logs.category = $2
        and system_logs.created_at >= buckets.bucket
        and system_logs.created_at < buckets.bucket + $4::interval
+       and (
+         $6 = 'none'
+         or lower(concat_ws(' ', system_logs.event_name, system_logs.status, system_logs.message, system_logs.payload::text)) like '%' || lower($7) || '%'
+       )
       group by buckets.bucket
       order by buckets.bucket
     `,
-    [userId, normalizeAlarmLogGroup(logGroup), bucketExpression, interval, thresholdCount],
+    [userId, normalizeAlarmLogGroup(logGroup), bucketExpression, interval, thresholdCount, filterMode, filterText],
   );
   return result.rows;
 }
@@ -2784,12 +2816,15 @@ function parseLogAlarmInput(body) {
   const name = typeof body?.name === "string" ? body.name.trim() : "";
   const description = typeof body?.description === "string" ? body.description.trim() : "";
   const logGroup = normalizeAlarmLogGroup(body?.logGroup);
+  const thresholdOperator = normalizeAlarmThresholdOperator(body?.thresholdOperator);
   const thresholdCount = clampInteger(body?.thresholdCount, 1, 1000, 1);
+  const filterMode = normalizeAlarmFilterMode(body?.filterMode);
+  const filterText = filterMode === "contains" ? String(body?.filterText || "").trim().slice(0, 500) : "";
   const periodMinutes = clampInteger(body?.periodMinutes, 1, 7 * 24 * 60, 60);
   if (!name) {
     return { ok: false, error: "Alarm name is required." };
   }
-  return { ok: true, alarm: { name, description, logGroup, thresholdCount, periodMinutes } };
+  return { ok: true, alarm: { name, description, logGroup, thresholdOperator, thresholdCount, filterMode, filterText, periodMinutes } };
 }
 
 function normalizeAlarmLogGroup(value) {
@@ -2806,6 +2841,16 @@ function normalizeAlarmGranularity(value) {
     return normalized;
   }
   return "day";
+}
+
+function normalizeAlarmThresholdOperator(value) {
+  const normalized = String(value || "above").toLowerCase();
+  return normalized === "below" ? "below" : "above";
+}
+
+function normalizeAlarmFilterMode(value) {
+  const normalized = String(value || "none").toLowerCase();
+  return normalized === "contains" ? "contains" : "none";
 }
 
 function clampInteger(value, min, max, fallback) {

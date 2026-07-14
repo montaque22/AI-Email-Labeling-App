@@ -26,7 +26,10 @@ export type LogAlarm = {
   description: string;
   logGroup: string;
   alarmType: "aggregate";
+  thresholdOperator: "above" | "below";
   thresholdCount: number;
+  filterMode: "none" | "contains";
+  filterText: string;
   periodMinutes: number;
   status: AlarmStatus;
   simulation: AlarmSimulationPoint[];
@@ -38,6 +41,9 @@ export type LogAlarmDraft = {
   name: string;
   description: string;
   logGroup: string;
+  thresholdOperator: "above" | "below";
   thresholdCount: number;
+  filterMode: "none" | "contains";
+  filterText: string;
   periodMinutes: number;
 };

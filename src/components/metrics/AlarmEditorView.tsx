@@ -129,32 +129,69 @@ function AlarmFormCard({
             </select>
           </label>
           <label className="block">
-            <span className="mb-1 block text-sm font-medium text-zinc-700">Alarm type</span>
-            <select className="h-11 w-full rounded-full border border-white/70 bg-white/40 px-4 text-sm text-zinc-500" disabled value="aggregate">
-              <option value="aggregate">Aggregate</option>
-            </select>
+            <span className="mb-1 block text-sm font-medium text-zinc-700">Calculation type</span>
+            <div className="grid h-11 w-full grid-cols-[minmax(92px,0.8fr)_minmax(76px,1fr)_minmax(82px,0.8fr)] overflow-hidden rounded-full border border-white/70 bg-white/50 text-sm shadow-sm backdrop-blur-xl focus-within:border-zinc-300">
+              <select
+                className="min-w-0 border-r border-white/70 bg-transparent px-4 outline-none"
+                onChange={(event) => onChange({ ...draft, thresholdOperator: event.target.value as LogAlarmDraft["thresholdOperator"] })}
+                value={draft.thresholdOperator}
+              >
+                <option value="above">Above</option>
+                <option value="below">Below</option>
+              </select>
+              <input
+                className="min-w-0 border-r border-white/70 bg-transparent px-4 outline-none"
+                min={1}
+                onChange={(event) => onChange({ ...draft, thresholdCount: Number(event.target.value) })}
+                type="number"
+                value={draft.thresholdCount}
+              />
+              <span className="flex items-center justify-center bg-white/25 px-3 text-zinc-500">
+                {Number(draft.thresholdCount) === 1 ? "error" : "errors"}
+              </span>
+            </div>
           </label>
         </div>
         <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(220px,1fr))]">
           <label className="block">
-            <span className="mb-1 block text-sm font-medium text-zinc-700">Errors</span>
-            <input
-              className="h-11 w-full rounded-full border border-white/70 bg-white/50 px-4 text-sm outline-none transition-colors focus:border-zinc-300"
-              min={1}
-              onChange={(event) => onChange({ ...draft, thresholdCount: Number(event.target.value) })}
-              type="number"
-              value={draft.thresholdCount}
-            />
+            <span className="mb-1 block text-sm font-medium text-zinc-700">Filter</span>
+            <div className="grid h-11 w-full grid-cols-[minmax(96px,0.7fr)_minmax(0,1fr)] overflow-hidden rounded-full border border-white/70 bg-white/50 text-sm shadow-sm backdrop-blur-xl focus-within:border-zinc-300">
+              <select
+                className="min-w-0 border-r border-white/70 bg-transparent px-4 outline-none"
+                onChange={(event) => {
+                  const filterMode = event.target.value as LogAlarmDraft["filterMode"];
+                  onChange({ ...draft, filterMode, filterText: filterMode === "none" ? "" : draft.filterText });
+                }}
+                value={draft.filterMode}
+              >
+                <option value="none">None</option>
+                <option value="contains">Contains</option>
+              </select>
+              <input
+                className="min-w-0 bg-transparent px-4 outline-none disabled:text-zinc-400"
+                disabled={draft.filterMode === "none"}
+                onChange={(event) => onChange({ ...draft, filterText: event.target.value })}
+                placeholder={draft.filterMode === "none" ? "" : "Text to match"}
+                type="text"
+                value={draft.filterMode === "none" ? "" : draft.filterText}
+              />
+            </div>
           </label>
           <label className="block">
-            <span className="mb-1 block text-sm font-medium text-zinc-700">Within minutes</span>
-            <input
-              className="h-11 w-full rounded-full border border-white/70 bg-white/50 px-4 text-sm outline-none transition-colors focus:border-zinc-300"
-              min={1}
-              onChange={(event) => onChange({ ...draft, periodMinutes: Number(event.target.value) })}
-              type="number"
-              value={draft.periodMinutes}
-            />
+            <span className="mb-1 block text-sm font-medium text-zinc-700">Time</span>
+            <div className="grid h-11 w-full grid-cols-[minmax(82px,0.7fr)_minmax(76px,1fr)_minmax(104px,0.8fr)] overflow-hidden rounded-full border border-white/70 bg-white/50 text-sm shadow-sm backdrop-blur-xl focus-within:border-zinc-300">
+              <span className="flex items-center justify-center border-r border-white/70 bg-white/25 px-3 text-zinc-500">within</span>
+              <input
+                className="min-w-0 border-r border-white/70 bg-transparent px-4 outline-none"
+                min={1}
+                onChange={(event) => onChange({ ...draft, periodMinutes: Number(event.target.value) })}
+                type="number"
+                value={draft.periodMinutes}
+              />
+              <select className="min-w-0 bg-white/25 px-3 text-zinc-500 outline-none" disabled value="minutes">
+                <option value="minutes">minutes</option>
+              </select>
+            </div>
           </label>
         </div>
       </CardContent>

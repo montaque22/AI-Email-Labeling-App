@@ -9065,7 +9065,16 @@ function MetricsPage() {
       void loadAlarmSimulation(alarmDraft);
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [isAlarmEditorOpen, alarmDraft.logGroup, alarmDraft.periodMinutes, alarmDraft.thresholdCount, alarmGranularity]);
+  }, [
+    isAlarmEditorOpen,
+    alarmDraft.logGroup,
+    alarmDraft.periodMinutes,
+    alarmDraft.thresholdCount,
+    alarmDraft.thresholdOperator,
+    alarmDraft.filterMode,
+    alarmDraft.filterText,
+    alarmGranularity,
+  ]);
 
   useEffect(() => {
     if (isAlarmEditorOpen || !selectedAlarm) {
@@ -9198,6 +9207,9 @@ function MetricsPage() {
         logGroup: draft.logGroup,
         periodMinutes: String(draft.periodMinutes),
         thresholdCount: String(draft.thresholdCount),
+        thresholdOperator: draft.thresholdOperator,
+        filterMode: draft.filterMode,
+        filterText: draft.filterText,
         granularity: alarmGranularity,
       });
       const response = await fetch(`/api/alarms/simulation?${params.toString()}`, { credentials: "include" });
@@ -15310,7 +15322,10 @@ function createEmptyAlarmDraft(): LogAlarmDraft {
     name: "",
     description: "",
     logGroup: "ai",
+    thresholdOperator: "above",
     thresholdCount: 1,
+    filterMode: "none",
+    filterText: "",
     periodMinutes: 60,
   };
 }
@@ -15320,7 +15335,10 @@ function alarmToDraft(alarm: LogAlarm): LogAlarmDraft {
     name: alarm.name,
     description: alarm.description,
     logGroup: alarm.logGroup,
+    thresholdOperator: alarm.thresholdOperator ?? "above",
     thresholdCount: alarm.thresholdCount,
+    filterMode: alarm.filterMode ?? "none",
+    filterText: alarm.filterText ?? "",
     periodMinutes: alarm.periodMinutes,
   };
 }

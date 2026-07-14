@@ -116,6 +116,12 @@ Emailable automatically removes logs older than seven days. Cleanup runs when th
 
 This keeps the database from growing indefinitely. Export important diagnostic information before it reaches the retention limit.
 
+## Alarms
+
+Use the **Alarms** tab when you want Emailable to watch logs for repeated errors and show a clear Ok, Unknown, or Error state.
+
+Alarms are useful for patterns like repeated AI quota failures, polling errors, webhook delivery failures, or MCP tool problems. See [Alarms](documentation/alarms) for setup examples and guidance.
+
 ## Important notes
 
 - Metrics are summaries and may not contain enough detail to explain a failure. Use Logs for diagnosis.
