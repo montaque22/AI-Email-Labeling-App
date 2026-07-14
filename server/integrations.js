@@ -274,13 +274,15 @@ export function registerIntegrationRoutes(app) {
 
   app.get("/api/metrics", requireSession, async (req, res) => {
     try {
-      const [rulesCreated, ruleStatus, emailsLabeled, draftsCreated, aiUsage, aiEnabled] = await Promise.all([
+      const [rulesCreated, ruleStatus, emailsLabeled, draftsCreated, aiUsage, aiEnabled, logErrors, logOutcome] = await Promise.all([
         getRulesCreatedTimeline(req.user.id),
         getRuleStatusCounts(req.user.id),
         getMetricEventTimeline(req.user.id, "email_labeled"),
         getMetricEventTimeline(req.user.id, "draft_created"),
         getAiUsageTimeline(req.user.id),
         getAiEnabledForMetrics(req.user.id),
+        getLogErrorsTimeline(req.user.id),
+        getLogOutcomeSummary(req.user.id),
       ]);
 
       res.json({
@@ -290,6 +292,8 @@ export function registerIntegrationRoutes(app) {
         draftsCreated,
         aiUsage,
         aiEnabled,
+        logErrors,
+        logOutcome,
       });
     } catch (error) {
       handleError(res, error);
@@ -2667,6 +2671,74 @@ async function getAiUsageTimeline(userId) {
     model,
     points: result.rows.filter((row) => row.model === model).map((row) => ({ date: row.date, value: row.value })),
   }));
+}
+
+const LOG_METRIC_GROUPS = [
+  { value: "ai", label: "AI" },
+  { value: "email", label: "Email" },
+  { value: "endpoints", label: "Endpoints" },
+  { value: "webhook", label: "Webhook Events" },
+  { value: "mcp-server", label: "MCP Server" },
+];
+
+async function getLogErrorsTimeline(userId) {
+  const groupValues = LOG_METRIC_GROUPS.map((group) => group.value);
+  const result = await dbPool.query(
+    `
+      with days as (
+        select generate_series(date_trunc('day', now()) - interval '13 days', date_trunc('day', now()), interval '1 day') as day
+      ),
+      groups as (
+        select unnest($2::text[]) as log_group
+      ),
+      errors as (
+        select date_trunc('day', created_at) as day,
+               category as log_group,
+               count(*)::int as value
+        from system_logs
+        where user_id = $1
+          and category = any($2::text[])
+          and created_at >= date_trunc('day', now()) - interval '13 days'
+          and (status = 'error' or payload ? 'error' or payload->'response' ? 'error')
+        group by date_trunc('day', created_at), category
+      )
+      select to_char(days.day, 'YYYY-MM-DD') as date,
+             groups.log_group as "logGroup",
+             coalesce(errors.value, 0)::int as value
+      from days
+      cross join groups
+      left join errors on errors.day = days.day and errors.log_group = groups.log_group
+      order by days.day, groups.log_group
+    `,
+    [userId, groupValues],
+  );
+
+  return LOG_METRIC_GROUPS.map((group) => ({
+    logGroup: group.value,
+    label: group.label,
+    points: result.rows
+      .filter((row) => row.logGroup === group.value)
+      .map((row) => ({ date: row.date, value: row.value })),
+  }));
+}
+
+async function getLogOutcomeSummary(userId) {
+  const result = await dbPool.query(
+    `
+      select count(*) filter (where status = 'success')::int as success,
+             count(*) filter (where status = 'error' or payload ? 'error' or payload->'response' ? 'error')::int as errors
+      from system_logs
+      where user_id = $1
+        and category = any($2::text[])
+        and created_at >= date_trunc('day', now()) - interval '13 days'
+    `,
+    [userId, LOG_METRIC_GROUPS.map((group) => group.value)],
+  );
+
+  return {
+    success: Number(result.rows[0]?.success ?? 0),
+    errors: Number(result.rows[0]?.errors ?? 0),
+  };
 }
 
 async function listLogAlarms(userId) {

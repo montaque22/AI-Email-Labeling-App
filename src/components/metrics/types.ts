@@ -8,6 +8,17 @@ export type AiUsageSeries = {
   points: TimelinePoint[];
 };
 
+export type LogErrorSeries = {
+  logGroup: string;
+  label: string;
+  points: TimelinePoint[];
+};
+
+export type LogOutcomeSummary = {
+  success: number;
+  errors: number;
+};
+
 export type MetricsTab = "metrics" | "logs" | "alarms";
 
 export type AlarmStatus = "ok" | "unknown" | "error";

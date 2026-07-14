@@ -59,8 +59,10 @@ import { AiUsageChartCard } from "./components/metrics/AiUsageChartCard";
 import { AlarmEditorView, AlarmSimulationChart } from "./components/metrics/AlarmEditorView";
 import { AlarmResizableSplit } from "./components/metrics/AlarmResizableSplit";
 import { AlarmListView } from "./components/metrics/AlarmListView";
+import { LogErrorsTimelineCard } from "./components/metrics/LogErrorsTimelineCard";
+import { LogOutcomePieCard } from "./components/metrics/LogOutcomePieCard";
 import { MetricsTabPill } from "./components/metrics/MetricsTabPill";
-import type { AiUsageSeries, AlarmGranularity, AlarmSimulationPoint, LogAlarm, LogAlarmDraft, MetricsTab } from "./components/metrics/types";
+import type { AiUsageSeries, AlarmGranularity, AlarmSimulationPoint, LogAlarm, LogAlarmDraft, LogErrorSeries, LogOutcomeSummary, MetricsTab } from "./components/metrics/types";
 import { authClient } from "./lib/auth-client";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
@@ -225,6 +227,8 @@ type MetricsData = {
   draftsCreated: TimelinePoint[];
   aiUsage: AiUsageSeries[];
   aiEnabled: boolean;
+  logErrors: LogErrorSeries[];
+  logOutcome: LogOutcomeSummary;
 };
 
 type SystemLog = {
@@ -9379,6 +9383,8 @@ function MetricsPage() {
             />
             <TimelineChartCard data={metrics?.emailsLabeled ?? []} isLoading={isLoading} title="Emails Labeled" />
             {metrics?.aiEnabled ? <AiUsageChartCard data={metrics?.aiUsage ?? []} isLoading={isLoading} /> : null}
+            <LogErrorsTimelineCard data={metrics?.logErrors ?? []} isLoading={isLoading} />
+            <LogOutcomePieCard data={metrics?.logOutcome} isLoading={isLoading} />
           </div>
         </>
       ) : activeTab === "logs" ? (
