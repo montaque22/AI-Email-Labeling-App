@@ -12,8 +12,15 @@ export type CustomAiPrompt = {
   markdown: string;
   toolChoice: PromptToolChoice;
   selectedTools: PromptSelectedTool[];
+  selectedLabelIds: string[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type PromptLabel = {
+  id: string;
+  name: string;
+  description: string;
 };
 
 export type PromptTool = {

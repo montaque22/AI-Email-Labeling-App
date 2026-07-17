@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "../ui/button";
 import { PromptEditorView, toPromptEditorDraft, type PromptEditorDraft } from "./PromptEditorView";
 import { PromptListView } from "./PromptListView";
-import type { ByoAiToolConfig, CustomAiPrompt, PromptTool } from "./types";
+import type { ByoAiToolConfig, CustomAiPrompt, PromptLabel, PromptTool } from "./types";
 
 type ViewState =
   | { mode: "list" }
@@ -16,6 +16,7 @@ export function AiPromptsManager() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [draft, setDraft] = useState<PromptEditorDraft>(() => toPromptEditorDraft(null));
   const [tools, setTools] = useState<PromptTool[]>([]);
+  const [labels, setLabels] = useState<PromptLabel[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<"selected" | "single" | null>(null);
@@ -23,16 +24,16 @@ export function AiPromptsManager() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void Promise.all([loadPrompts(), loadTools()]).finally(() => setIsLoading(false));
+    void Promise.all([loadPrompts(), loadTools(), loadLabels()]).finally(() => setIsLoading(false));
   }, []);
 
   useEffect(() => {
     if (view.mode === "edit") {
-      setDraft(toPromptEditorDraft(view.prompt));
+      setDraft(toPromptEditorDraft(view.prompt, labels));
       setMessage(null);
       setError(null);
     }
-  }, [view]);
+  }, [view, labels]);
 
   useEffect(() => {
     if (!message) {
@@ -43,8 +44,9 @@ export function AiPromptsManager() {
   }, [message]);
 
   const selectedPromptCount = useMemo(() => selectedIds.length, [selectedIds]);
-  const savedDraft = useMemo(() => (view.mode === "edit" ? toPromptEditorDraft(view.prompt) : toPromptEditorDraft(null)), [view]);
+  const savedDraft = useMemo(() => (view.mode === "edit" ? toPromptEditorDraft(view.prompt, labels) : toPromptEditorDraft(null, labels)), [labels, view]);
   const hasDraftChanges = view.mode === "edit" && !arePromptDraftsEqual(draft, savedDraft);
+  const canSaveDraft = hasDraftChanges && draft.selectedLabelIds.length > 0;
 
   async function loadPrompts() {
     try {
@@ -73,6 +75,23 @@ export function AiPromptsManager() {
     }
   }
 
+  async function loadLabels() {
+    try {
+      const response = await fetch("/api/labels", { credentials: "include" });
+      const data = await response.json();
+      if (!response.ok) {
+        return;
+      }
+      setLabels((data.labels ?? []).map((label: PromptLabel) => ({
+        id: label.id,
+        name: label.name,
+        description: label.description ?? "",
+      })));
+    } catch {
+      setLabels([]);
+    }
+  }
+
   function openCreate() {
     setView({ mode: "edit", prompt: null });
   }
@@ -82,7 +101,7 @@ export function AiPromptsManager() {
   }
 
   async function savePrompt() {
-    if (!hasDraftChanges) {
+    if (!canSaveDraft) {
       return;
     }
 
@@ -164,12 +183,13 @@ export function AiPromptsManager() {
           selectedIds={selectedIds}
         />
       ) : (
-        <PromptEditorView
-          draft={draft}
-          hasChanges={hasDraftChanges}
-          isSaving={isSaving}
-          onBack={() => setView({ mode: "list" })}
-          onDelete={() => setDeleteTarget("single")}
+          <PromptEditorView
+            draft={draft}
+            canSave={canSaveDraft}
+            isSaving={isSaving}
+            labels={labels}
+            onBack={() => setView({ mode: "list" })}
+            onDelete={() => setDeleteTarget("single")}
           onDraftChange={setDraft}
           onSave={savePrompt}
           tools={tools}
@@ -206,7 +226,8 @@ function arePromptDraftsEqual(left: PromptEditorDraft, right: PromptEditorDraft)
     && left.description === right.description
     && left.markdown === right.markdown
     && left.toolChoice === right.toolChoice
-    && normalizeSelectedTools(left.selectedTools) === normalizeSelectedTools(right.selectedTools);
+    && normalizeSelectedTools(left.selectedTools) === normalizeSelectedTools(right.selectedTools)
+    && normalizeSelectedLabelIds(left.selectedLabelIds) === normalizeSelectedLabelIds(right.selectedLabelIds);
 }
 
 function normalizeSelectedTools(tools: PromptEditorDraft["selectedTools"]) {
@@ -214,6 +235,10 @@ function normalizeSelectedTools(tools: PromptEditorDraft["selectedTools"]) {
     .map((tool) => `${tool.toolClientId}:${tool.toolName}`)
     .sort()
     .join("|");
+}
+
+function normalizeSelectedLabelIds(labelIds: PromptEditorDraft["selectedLabelIds"]) {
+  return [...labelIds].sort().join("|");
 }
 
 function extractActiveTools(config: ByoAiToolConfig): PromptTool[] {

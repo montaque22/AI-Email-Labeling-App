@@ -5681,7 +5681,7 @@ function InboxAiActionCards({
 
 function InboxToastMessage({ toast }: { toast: InboxToast }) {
   return (
-    <div className="fixed right-5 top-20 z-50">
+    <div className="pointer-events-none fixed right-5 top-20 z-30">
       <div
         className={cn(
           "rounded-md border px-4 py-3 text-sm shadow-lg backdrop-blur-xl",
@@ -9451,11 +9451,7 @@ function MetricsPage() {
                 isLoading={isLoadingAlarms}
                 onCreate={startCreateAlarm}
                 onDelete={() => setIsAlarmDeleteConfirmOpen(true)}
-                onEditSelected={() => {
-                  if (selectedAlarm) {
-                    startEditAlarm(selectedAlarm);
-                  }
-                }}
+                onEdit={startEditAlarm}
                 onOpen={selectAlarmForGraph}
                 onToggle={toggleSelectedAlarm}
                 selectedGraphAlarmId={selectedAlarm?.id ?? null}

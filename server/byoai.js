@@ -1195,8 +1195,14 @@ async function runCustomPromptAutomations(userId, emailContext) {
     return;
   }
 
+  const labelNameById = await getCustomPromptLabelNameMap(userId, prompts);
+  const eligiblePrompts = prompts.filter((prompt) => shouldRunCustomPromptForEmail(prompt, emailContext.labelsApplied, labelNameById));
+  if (eligiblePrompts.length === 0) {
+    return;
+  }
+
   const activeMcpClients = await buildActivatedAiMcpClients(userId);
-  await runWithConcurrency(prompts, CUSTOM_PROMPT_AUTOMATION_CONCURRENCY, async (prompt) => {
+  await runWithConcurrency(eligiblePrompts, CUSTOM_PROMPT_AUTOMATION_CONCURRENCY, async (prompt) => {
     try {
       const selectedClients = filterMcpClientsForPrompt(activeMcpClients, prompt.selectedTools);
       const renderedSystemPrompt = await renderAiPromptMarkdownForUser(userId, prompt.markdown);
@@ -1237,6 +1243,7 @@ async function runCustomPromptAutomations(userId, emailContext) {
           promptName: prompt.name,
           emailId: emailContext.emailId,
           labelsApplied: emailContext.labelsApplied,
+          selectedLabelIds: prompt.selectedLabelIds,
           selectedTools: prompt.selectedTools,
           toolChoice: prompt.toolChoice,
           response,
@@ -1257,6 +1264,62 @@ async function runCustomPromptAutomations(userId, emailContext) {
       });
     }
   });
+}
+
+async function getCustomPromptLabelNameMap(userId, prompts) {
+  const labelIds = [...new Set(prompts.flatMap((prompt) => Array.isArray(prompt.selectedLabelIds) ? prompt.selectedLabelIds : []))];
+  if (labelIds.length === 0 || !dbPool) {
+    return new Map();
+  }
+
+  const result = await dbPool.query(
+    `
+      select id, name
+      from labels
+      where user_id = $1 and id = any($2::uuid[])
+    `,
+    [userId, labelIds],
+  );
+  return new Map(result.rows.map((row) => [row.id, row.name]));
+}
+
+function shouldRunCustomPromptForEmail(prompt, labelsApplied, labelNameById) {
+  if (!Array.isArray(prompt.selectedLabelIds) || prompt.selectedLabelIds.length === 0) {
+    return true;
+  }
+
+  const appliedLabelNames = new Set(normalizePromptLabelNames(labelsApplied));
+  if (appliedLabelNames.size === 0) {
+    return false;
+  }
+
+  return prompt.selectedLabelIds.some((labelId) => {
+    const labelName = labelNameById.get(labelId);
+    return labelName ? appliedLabelNames.has(normalizePromptLabelName(labelName)) : false;
+  });
+}
+
+function normalizePromptLabelNames(labels) {
+  if (!Array.isArray(labels)) {
+    return [];
+  }
+
+  return labels
+    .map((label) => {
+      if (typeof label === "string") {
+        return label;
+      }
+      if (label && typeof label === "object") {
+        return label.labelName || label.name || "";
+      }
+      return "";
+    })
+    .map(normalizePromptLabelName)
+    .filter(Boolean);
+}
+
+function normalizePromptLabelName(labelName) {
+  return String(labelName ?? "").trim().toLowerCase();
 }
 
 async function runWithConcurrency(items, limit, worker) {

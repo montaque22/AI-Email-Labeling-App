@@ -55,11 +55,13 @@ export async function ensureAiPromptsTable() {
       markdown text not null default '',
       tool_choice text not null default 'auto',
       selected_tools jsonb not null default '[]'::jsonb,
+      selected_label_ids jsonb not null default '[]'::jsonb,
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now(),
       constraint custom_ai_prompts_tool_choice_check check (tool_choice in ('auto', 'required'))
     )
   `);
+  await dbPool.query("alter table custom_ai_prompts add column if not exists selected_label_ids jsonb not null default '[]'::jsonb");
   await dbPool.query("create index if not exists custom_ai_prompts_user_id_idx on custom_ai_prompts(user_id)");
 }
 
@@ -281,6 +283,7 @@ function parseCustomPromptInput(body) {
   const markdown = typeof body?.markdown === "string" ? body.markdown : "";
   const toolChoice = body?.toolChoice === "required" ? "required" : "auto";
   const selectedToolsInput = Array.isArray(body?.selectedTools) ? body.selectedTools : [];
+  const selectedLabelIdsInput = Array.isArray(body?.selectedLabelIds) ? body.selectedLabelIds : [];
 
   if (!name) {
     return { ok: false, error: "Prompt name is required" };
@@ -314,6 +317,27 @@ function parseCustomPromptInput(body) {
     return { ok: false, error: "Select 50 tools or fewer" };
   }
 
+  const selectedLabelIds = [];
+  const seenLabelIds = new Set();
+  for (const labelId of selectedLabelIdsInput) {
+    const normalizedLabelId = typeof labelId === "string" ? labelId.trim() : "";
+    if (!normalizedLabelId || seenLabelIds.has(normalizedLabelId)) {
+      continue;
+    }
+    if (!isUuid(normalizedLabelId)) {
+      return { ok: false, error: "Selected labels are invalid" };
+    }
+    seenLabelIds.add(normalizedLabelId);
+    selectedLabelIds.push(normalizedLabelId);
+  }
+
+  if (selectedLabelIds.length === 0) {
+    return { ok: false, error: "Select at least one label for this prompt" };
+  }
+  if (selectedLabelIds.length > 100) {
+    return { ok: false, error: "Select 100 labels or fewer" };
+  }
+
   return {
     ok: true,
     prompt: {
@@ -322,8 +346,13 @@ function parseCustomPromptInput(body) {
       markdown,
       toolChoice,
       selectedTools,
+      selectedLabelIds,
     },
   };
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 async function getAiPrompt(userId, promptKey) {
@@ -360,7 +389,8 @@ export async function listCustomAiPrompts(userId) {
   const result = await dbPool.query(
     `
       select id, name, description, markdown, tool_choice as "toolChoice",
-             selected_tools as "selectedTools", created_at as "createdAt", updated_at as "updatedAt"
+             selected_tools as "selectedTools", selected_label_ids as "selectedLabelIds",
+             created_at as "createdAt", updated_at as "updatedAt"
       from custom_ai_prompts
       where user_id = $1
       order by updated_at desc, created_at desc
@@ -375,7 +405,8 @@ async function getCustomAiPrompt(userId, promptId) {
   const result = await dbPool.query(
     `
       select id, name, description, markdown, tool_choice as "toolChoice",
-             selected_tools as "selectedTools", created_at as "createdAt", updated_at as "updatedAt"
+             selected_tools as "selectedTools", selected_label_ids as "selectedLabelIds",
+             created_at as "createdAt", updated_at as "updatedAt"
       from custom_ai_prompts
       where user_id = $1 and id = $2
       limit 1
@@ -389,10 +420,11 @@ async function getCustomAiPrompt(userId, promptId) {
 async function createCustomAiPrompt(userId, prompt) {
   const result = await dbPool.query(
     `
-      insert into custom_ai_prompts (id, user_id, name, description, markdown, tool_choice, selected_tools)
-      values ($1, $2, $3, $4, $5, $6, $7::jsonb)
+      insert into custom_ai_prompts (id, user_id, name, description, markdown, tool_choice, selected_tools, selected_label_ids)
+      values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
       returning id, name, description, markdown, tool_choice as "toolChoice",
-                selected_tools as "selectedTools", created_at as "createdAt", updated_at as "updatedAt"
+                selected_tools as "selectedTools", selected_label_ids as "selectedLabelIds",
+                created_at as "createdAt", updated_at as "updatedAt"
     `,
     [
       randomUUID(),
@@ -402,6 +434,7 @@ async function createCustomAiPrompt(userId, prompt) {
       prompt.markdown,
       prompt.toolChoice,
       JSON.stringify(prompt.selectedTools),
+      JSON.stringify(prompt.selectedLabelIds),
     ],
   );
 
@@ -417,10 +450,12 @@ async function updateCustomAiPrompt(userId, promptId, prompt) {
           markdown = $5,
           tool_choice = $6,
           selected_tools = $7::jsonb,
+          selected_label_ids = $8::jsonb,
           updated_at = now()
       where user_id = $1 and id = $2
       returning id, name, description, markdown, tool_choice as "toolChoice",
-                selected_tools as "selectedTools", created_at as "createdAt", updated_at as "updatedAt"
+                selected_tools as "selectedTools", selected_label_ids as "selectedLabelIds",
+                created_at as "createdAt", updated_at as "updatedAt"
     `,
     [
       userId,
@@ -430,6 +465,7 @@ async function updateCustomAiPrompt(userId, promptId, prompt) {
       prompt.markdown,
       prompt.toolChoice,
       JSON.stringify(prompt.selectedTools),
+      JSON.stringify(prompt.selectedLabelIds),
     ],
   );
 
@@ -456,6 +492,7 @@ function normalizeCustomPromptRow(row) {
     markdown: row.markdown ?? "",
     toolChoice: row.toolChoice === "required" ? "required" : "auto",
     selectedTools: Array.isArray(row.selectedTools) ? row.selectedTools : [],
+    selectedLabelIds: Array.isArray(row.selectedLabelIds) ? row.selectedLabelIds : [],
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -499,6 +536,7 @@ export async function getRenderedCoreContent(userId) {
       markdown: await renderPrompt(userId, prompt.markdown),
       toolChoice: prompt.toolChoice,
       selectedTools: prompt.selectedTools,
+      selectedLabelIds: prompt.selectedLabelIds,
     }))),
   };
 }

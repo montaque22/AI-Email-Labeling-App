@@ -11,7 +11,7 @@ export function AlarmListView({
   isLoading,
   onCreate,
   onDelete,
-  onEditSelected,
+  onEdit,
   onOpen,
   onToggle,
   selectedGraphAlarmId,
@@ -22,7 +22,7 @@ export function AlarmListView({
   isLoading: boolean;
   onCreate: () => void;
   onDelete: () => void;
-  onEditSelected: () => void;
+  onEdit: (alarm: LogAlarm) => void;
   onOpen: (alarm: LogAlarm) => void;
   onToggle: (id: string) => void;
 }) {
@@ -36,11 +36,6 @@ export function AlarmListView({
           </CardDescription>
         </div>
         <div className="flex gap-2">
-          {selectedGraphAlarmId ? (
-            <Button aria-label="Edit selected alarm" onClick={onEditSelected} size="icon" title="Edit selected alarm" type="button" variant="outline">
-              <Pencil className="h-4 w-4" />
-            </Button>
-          ) : null}
           {selectedIds.length > 0 ? (
             <Button aria-label="Delete selected alarms" onClick={onDelete} size="icon" title="Delete selected alarms" type="button" variant="outline">
               <Trash2 className="h-4 w-4 text-red-600" />
@@ -62,7 +57,7 @@ export function AlarmListView({
             {alarms.map((alarm) => (
               <div
                 className={cn(
-                  "grid grid-cols-[48px_1fr_auto] items-center gap-3 border-b border-zinc-200 px-4 py-3 transition-colors last:border-b-0",
+                  "grid grid-cols-[48px_1fr_auto_auto] items-center gap-3 border-b border-zinc-200 px-4 py-3 transition-colors last:border-b-0",
                   selectedGraphAlarmId === alarm.id ? "border-l-2 border-l-sky-400 bg-sky-50/40 ring-1 ring-inset ring-sky-100" : "hover:bg-white/50",
                 )}
                 key={alarm.id}
@@ -78,6 +73,15 @@ export function AlarmListView({
                   <p className="mt-1 line-clamp-2 text-sm text-zinc-500">{alarm.description || describeAlarmFallback(alarm)}</p>
                 </button>
                 <Badge className={cn("capitalize", statusClass(alarm.status))}>{alarm.status}</Badge>
+                <button
+                  aria-label={`Edit ${alarm.name}`}
+                  className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-md bg-transparent text-zinc-500 transition-colors hover:bg-zinc-100/70 hover:text-zinc-950"
+                  onClick={() => onEdit(alarm)}
+                  title="Edit alarm"
+                  type="button"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
               </div>
             ))}
           </div>

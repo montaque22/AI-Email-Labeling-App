@@ -1,9 +1,10 @@
-import { ChevronLeft, Save, Trash2, Wrench, X } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, Save, Trash2, Wrench, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { cn } from "../../lib/utils";
 import { PromptToolPicker } from "./PromptToolPicker";
-import type { CustomAiPrompt, PromptSelectedTool, PromptTool, PromptToolChoice } from "./types";
+import type { CustomAiPrompt, PromptLabel, PromptSelectedTool, PromptTool, PromptToolChoice } from "./types";
 
 export type PromptEditorDraft = {
   id?: string;
@@ -12,12 +13,14 @@ export type PromptEditorDraft = {
   markdown: string;
   toolChoice: PromptToolChoice;
   selectedTools: PromptSelectedTool[];
+  selectedLabelIds: string[];
 };
 
 type PromptEditorViewProps = {
   draft: PromptEditorDraft;
   tools: PromptTool[];
-  hasChanges: boolean;
+  labels: PromptLabel[];
+  canSave: boolean;
   isSaving: boolean;
   onBack: () => void;
   onDelete: () => void;
@@ -25,7 +28,11 @@ type PromptEditorViewProps = {
   onSave: () => void;
 };
 
-export function toPromptEditorDraft(prompt?: CustomAiPrompt | null): PromptEditorDraft {
+export function toPromptEditorDraft(prompt?: CustomAiPrompt | null, labels: PromptLabel[] = []): PromptEditorDraft {
+  const currentLabelIds = new Set(labels.map((label) => label.id));
+  const promptSelectedLabelIds = (prompt?.selectedLabelIds ?? []).filter((labelId) => currentLabelIds.has(labelId));
+  const defaultLabelIds = labels.map((label) => label.id);
+
   return {
     id: prompt?.id,
     name: prompt?.name ?? "",
@@ -33,13 +40,15 @@ export function toPromptEditorDraft(prompt?: CustomAiPrompt | null): PromptEdito
     markdown: prompt?.markdown ?? "",
     toolChoice: prompt?.toolChoice ?? "auto",
     selectedTools: prompt?.selectedTools ?? [],
+    selectedLabelIds: promptSelectedLabelIds.length ? promptSelectedLabelIds : defaultLabelIds,
   };
 }
 
 export function PromptEditorView({
   draft,
   tools,
-  hasChanges,
+  labels,
+  canSave,
   isSaving,
   onBack,
   onDelete,
@@ -72,14 +81,14 @@ export function PromptEditorView({
                 <Trash2 className="h-4 w-4" />
               </Button>
             ) : null}
-            <Button className="cursor-pointer" disabled={isSaving || !hasChanges} onClick={onSave} type="button">
+            <Button className="cursor-pointer" disabled={isSaving || !canSave} onClick={onSave} type="button">
               <Save className="h-4 w-4" />
               {isSaving ? "Saving..." : "Save"}
             </Button>
           </div>
         </CardHeader>
         <CardContent className="space-y-5">
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-3">
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-zinc-700">Name</span>
               <input
@@ -98,7 +107,15 @@ export function PromptEditorView({
                 value={draft.description}
               />
             </label>
+            <PromptLabelDropdown
+              labels={labels}
+              onSelectedLabelIdsChange={(selectedLabelIds) => updateDraft({ selectedLabelIds })}
+              selectedLabelIds={draft.selectedLabelIds}
+            />
           </div>
+          {draft.selectedLabelIds.length === 0 ? (
+            <p className="text-sm text-red-600">Select at least one label before saving this prompt.</p>
+          ) : null}
 
           <div className="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
             <label className="block min-w-0">
@@ -154,6 +171,79 @@ export function PromptEditorView({
               tools={tools}
             />
           </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+type PromptLabelDropdownProps = {
+  labels: PromptLabel[];
+  selectedLabelIds: string[];
+  onSelectedLabelIdsChange: (selectedLabelIds: string[]) => void;
+};
+
+function PromptLabelDropdown({ labels, selectedLabelIds, onSelectedLabelIdsChange }: PromptLabelDropdownProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const selectedSet = new Set(selectedLabelIds);
+  const selectedLabelText = selectedLabelIds.length === labels.length
+    ? "All labels"
+    : `${selectedLabelIds.length} label${selectedLabelIds.length === 1 ? "" : "s"}`;
+
+  function toggleLabel(labelId: string) {
+    const next = selectedSet.has(labelId)
+      ? selectedLabelIds.filter((selectedLabelId) => selectedLabelId !== labelId)
+      : [...selectedLabelIds, labelId];
+    onSelectedLabelIdsChange(next);
+  }
+
+  return (
+    <div className="relative">
+      <span className="mb-1 block text-sm font-medium text-zinc-700">Labels</span>
+      <button
+        className={cn(
+          "flex h-11 w-full cursor-pointer items-center justify-between gap-3 rounded-full border px-4 text-left text-sm shadow-sm outline-none backdrop-blur",
+          selectedLabelIds.length === 0 ? "border-red-200 bg-red-50/70 text-red-700" : "border-white/70 bg-white/50 text-zinc-800",
+        )}
+        onClick={() => setIsOpen((current) => !current)}
+        type="button"
+      >
+        <span className="truncate">{labels.length ? selectedLabelText : "No labels available"}</span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-zinc-500" />
+      </button>
+      {isOpen ? (
+        <div className="absolute right-0 top-[calc(100%+0.5rem)] z-30 max-h-72 w-full overflow-auto rounded-xl border border-zinc-200 bg-white p-2 shadow-xl">
+          {labels.length ? (
+            labels.map((label) => {
+              const isSelected = selectedSet.has(label.id);
+              return (
+                <button
+                  className={cn(
+                    "flex w-full cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-zinc-100",
+                    isSelected ? "bg-emerald-50 text-emerald-900" : "text-zinc-700",
+                  )}
+                  key={label.id}
+                  onClick={() => toggleLabel(label.id)}
+                  type="button"
+                >
+                  <span
+                    className={cn(
+                      "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
+                      isSelected ? "border-emerald-500 bg-emerald-500 text-white" : "border-zinc-300 bg-white",
+                    )}
+                  >
+                    {isSelected ? <Check className="h-3.5 w-3.5" /> : null}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{label.name}</span>
+                    {label.description ? <span className="line-clamp-2 text-xs text-zinc-500">{label.description}</span> : null}
+                  </span>
+                </button>
+              );
+            })
+          ) : (
+            <p className="px-3 py-2 text-sm text-zinc-500">Create a label before saving prompts.</p>
+          )}
         </div>
       ) : null}
     </div>
