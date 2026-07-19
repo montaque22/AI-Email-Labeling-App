@@ -30,7 +30,6 @@ export function AiPromptsManager() {
   useEffect(() => {
     if (view.mode === "edit") {
       setDraft(toPromptEditorDraft(view.prompt, labels));
-      setMessage(null);
       setError(null);
     }
   }, [view, labels]);

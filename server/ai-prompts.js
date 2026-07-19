@@ -3,7 +3,7 @@ import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
 import { getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
 import { searchImapSentEmailContexts } from "./imap-provider.js";
-import { getConfidenceThreshold } from "./settings.js";
+import { getConfidenceThreshold, getUserTimezone } from "./settings.js";
 
 export const PROMPT_DEFINITIONS = {
   "email-label": {
@@ -499,7 +499,7 @@ function normalizeCustomPromptRow(row) {
 }
 
 export async function getRenderedAiPromptBundle(userId) {
-  const [threshold, labels] = await Promise.all([getConfidenceThreshold(userId), getSyncedLabels(userId)]);
+  const [threshold, timezone, labels] = await Promise.all([getConfidenceThreshold(userId), getUserTimezone(userId), getSyncedLabels(userId)]);
   const renderedLabels = labels.map((label) => ({
     name: label.name,
     description: renderTemplateDescription(label.description, threshold),
@@ -513,7 +513,7 @@ export async function getRenderedAiPromptBundle(userId) {
   for (const [promptKey, definition] of Object.entries(PROMPT_DEFINITIONS)) {
     const markdown = savedPrompts.get(promptKey)?.markdown ?? definition.defaultMarkdown;
     bundle[promptKey] = {
-      markdown: renderPromptMarkdown(markdown, threshold, renderedLabels),
+      markdown: renderPromptMarkdown(markdown, threshold, timezone, renderedLabels),
     };
   }
 
@@ -542,13 +542,13 @@ export async function getRenderedCoreContent(userId) {
 }
 
 async function renderPrompt(userId, markdown) {
-  const [threshold, labels] = await Promise.all([getConfidenceThreshold(userId), getSyncedLabels(userId)]);
+  const [threshold, timezone, labels] = await Promise.all([getConfidenceThreshold(userId), getUserTimezone(userId), getSyncedLabels(userId)]);
   const renderedLabels = labels.map((label) => ({
     name: label.name,
     description: renderTemplateDescription(label.description, threshold),
   }));
 
-  return renderPromptMarkdown(markdown, threshold, renderedLabels);
+  return renderPromptMarkdown(markdown, threshold, timezone, renderedLabels);
 }
 
 export async function renderAiPromptMarkdownForUser(userId, markdown) {
@@ -569,12 +569,31 @@ export async function getRenderedLabelInstructions(userId) {
   };
 }
 
-function renderPromptMarkdown(markdown, threshold, labels) {
+function renderPromptMarkdown(markdown, threshold, timezone, labels) {
   return markdown
     .split("{confidenceThreshold}")
     .join(Number(threshold).toFixed(2))
     .split("{labelTable}")
-    .join(labelsToMarkdownTable(labels));
+    .join(labelsToMarkdownTable(labels))
+    .split("{{now}}")
+    .join(formatPromptNow(timezone));
+}
+
+function formatPromptNow(timezone) {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZoneName: "short",
+  });
+
+  return `${formatter.format(now)} (${timezone})`;
 }
 
 function renderTemplateDescription(description, confidenceThreshold) {

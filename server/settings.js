@@ -2,6 +2,7 @@ import { dbPool } from "./db.js";
 import { requireSession } from "./session.js";
 
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.9;
+export const DEFAULT_USER_TIMEZONE = "America/Los_Angeles";
 
 export async function ensureSettingsTable() {
   if (!dbPool) {
@@ -21,6 +22,7 @@ export async function ensureSettingsTable() {
   `);
   await dbPool.query("alter table user_settings add column if not exists webhook_url text");
   await dbPool.query("alter table user_settings add column if not exists webhook_bearer_token text");
+  await dbPool.query("alter table user_settings add column if not exists timezone text not null default 'America/Los_Angeles'");
 }
 
 export function registerSettingsRoutes(app) {
@@ -73,6 +75,29 @@ export function registerSettingsRoutes(app) {
       handleDbError(res, error);
     }
   });
+
+  app.get("/api/settings/system", requireSession, async (req, res) => {
+    try {
+      res.json(await getSystemSettings(req.user.id));
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
+
+  app.put("/api/settings/system", requireSession, async (req, res) => {
+    const input = parseSystemSettings(req.body);
+
+    if (!input.ok) {
+      res.status(400).json({ error: input.error });
+      return;
+    }
+
+    try {
+      res.json(await updateSystemSettings(req.user.id, input.settings));
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  });
 }
 
 function parseThreshold(value) {
@@ -117,6 +142,19 @@ function parseWebhookSettings(body) {
   };
 }
 
+function parseSystemSettings(body) {
+  const timezone = typeof body?.timezone === "string" ? body.timezone.trim() : "";
+
+  if (!isValidTimeZone(timezone)) {
+    return { ok: false, error: "Choose a valid timezone" };
+  }
+
+  return {
+    ok: true,
+    settings: { timezone },
+  };
+}
+
 export async function getConfidenceThreshold(userId) {
   const result = await dbPool.query(
     `
@@ -134,6 +172,11 @@ export async function getConfidenceThreshold(userId) {
 
   const existing = await dbPool.query("select confidence_threshold from user_settings where user_id = $1", [userId]);
   return Number(existing.rows[0]?.confidence_threshold ?? DEFAULT_CONFIDENCE_THRESHOLD);
+}
+
+export async function getUserTimezone(userId) {
+  const settings = await getSystemSettings(userId);
+  return settings.timezone;
 }
 
 async function updateConfidenceThreshold(userId, threshold) {
@@ -204,6 +247,60 @@ function normalizeWebhookSettings(settings) {
     webhookUrl: settings.webhookUrl ?? "",
     bearerToken: settings.bearerToken ?? "",
   };
+}
+
+async function getSystemSettings(userId) {
+  const result = await dbPool.query(
+    `
+      insert into user_settings (user_id, confidence_threshold, timezone)
+      values ($1, $2, $3)
+      on conflict (user_id) do nothing
+      returning timezone
+    `,
+    [userId, DEFAULT_CONFIDENCE_THRESHOLD, DEFAULT_USER_TIMEZONE],
+  );
+
+  if (result.rows[0]) {
+    return normalizeSystemSettings(result.rows[0]);
+  }
+
+  const existing = await dbPool.query("select timezone from user_settings where user_id = $1", [userId]);
+  return normalizeSystemSettings(existing.rows[0] ?? {});
+}
+
+async function updateSystemSettings(userId, settings) {
+  const result = await dbPool.query(
+    `
+      insert into user_settings (user_id, confidence_threshold, timezone)
+      values ($1, $2, $3)
+      on conflict (user_id) do update
+      set timezone = excluded.timezone,
+          updated_at = now()
+      returning timezone
+    `,
+    [userId, DEFAULT_CONFIDENCE_THRESHOLD, settings.timezone],
+  );
+
+  return normalizeSystemSettings(result.rows[0]);
+}
+
+function normalizeSystemSettings(settings) {
+  return {
+    timezone: isValidTimeZone(settings.timezone) ? settings.timezone : DEFAULT_USER_TIMEZONE,
+  };
+}
+
+function isValidTimeZone(timezone) {
+  if (!timezone) {
+    return false;
+  }
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function handleDbError(res, error) {

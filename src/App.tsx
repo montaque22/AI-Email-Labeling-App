@@ -80,6 +80,7 @@ type Page =
   | "ai-email-label"
   | "ai-draft-reply"
   | "settings"
+  | "system"
   | "confidence-threshold"
   | "email-accounts"
   | "endpoints"
@@ -661,6 +662,7 @@ const aiPromptSubItems = [
 ];
 
 const settingsSubItems = [
+  { id: "system" as const, label: "System" },
   { id: "confidence-threshold" as const, label: "Confidence Threshold" },
   { id: "email-accounts" as const, label: "Email Accounts" },
   { id: "endpoints" as const, label: "Endpoints" },
@@ -1537,6 +1539,7 @@ function AuthenticatedLayout({
           {activePage === "ai-byoai" && <ByoAiPage />}
           {activePage === "ai-prompt-library" && <AiPromptLibraryPage privacyMode={privacyMode} />}
           {activePage === "settings" && <SettingsPage onNavigate={onNavigate} />}
+          {activePage === "system" && <SystemSettingsPage />}
           {activePage === "confidence-threshold" && <ConfidenceThresholdPage />}
           {activePage === "email-accounts" && <EmailAccountsPage isHomeAssistant={Boolean(user.homeAssistant)} privacyMode={privacyMode} />}
           {activePage === "endpoints" && <EndpointsPage />}
@@ -2302,6 +2305,16 @@ function InboxPage({
     }
   }
 
+  async function refreshInboxAfterMessageMutation() {
+    await Promise.all([
+      loadMessages({ reset: true }),
+      isLabelFilteredInboxMode(inboxMode) && selectedAccountIds.length > 0 && labels.length > 0
+        ? loadLabelCounts()
+        : Promise.resolve(),
+      refreshPwaUnreadBadge(),
+    ]);
+  }
+
   function canStartMobilePullRefresh(target: EventTarget | null) {
     if (window.matchMedia("(min-width: 768px)").matches) {
       return false;
@@ -2873,6 +2886,7 @@ function InboxPage({
 
       if (successfulUpdates.length > 0) {
         showInboxToast(nextLabelName ? `Updated ${successfulUpdates.length} message${successfulUpdates.length === 1 ? "" : "s"} to ${nextLabelName}.` : `Removed labels from ${successfulUpdates.length} message${successfulUpdates.length === 1 ? "" : "s"}.`);
+        await refreshInboxAfterMessageMutation();
       }
       if (data.failed?.length) {
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be updated.`);
@@ -3123,6 +3137,7 @@ function InboxPage({
       if (successfulDeletes.length > 0) {
         showInboxToast(`${successfulDeletes.length} message${successfulDeletes.length === 1 ? "" : "s"} deleted.`);
         setIsMobileEditMode(false);
+        await refreshInboxAfterMessageMutation();
       }
       if (data.failed?.length) {
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be deleted.`);
@@ -3185,6 +3200,7 @@ function InboxPage({
       if (successfulArchives.length > 0) {
         showInboxToast(`${successfulArchives.length} message${successfulArchives.length === 1 ? "" : "s"} archived.`);
         setIsMobileEditMode(false);
+        await refreshInboxAfterMessageMutation();
       }
       if (data.failed?.length) {
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be archived.`);
@@ -3893,7 +3909,11 @@ function InboxPage({
                 </select>
               </label>
             </CardHeader>
-            <CardContent className={cn("space-y-0 max-md:min-h-[calc(100svh-14rem)] max-md:px-0 max-md:pb-18 max-md:pt-0", isMobileEditMode && "pb-28 md:pb-6")}>
+            <CardContent className={cn(
+              "space-y-0 max-md:min-h-[calc(100svh-14rem)] max-md:px-0 max-md:pb-18 max-md:pt-0 md:pb-10",
+              isMobileEditMode && "pb-28",
+              isBulkActionBarRendered && "md:pb-36",
+            )}>
               <div className="hidden justify-start md:flex">
                 {filteredMessages.length > 0 ? (
                   <button
@@ -3954,7 +3974,7 @@ function InboxPage({
                 </>
               )}
               {nextPageToken ? (
-                <div aria-live="polite" className="min-h-px" ref={loadMoreSentinelRef}>
+                <div aria-live="polite" className="flex min-h-24 items-start pt-3" ref={loadMoreSentinelRef}>
                   {isLoadingMore ? <InboxMessageSkeletonRow /> : <span className="sr-only">More messages load as you scroll.</span>}
                 </div>
               ) : null}
@@ -12131,6 +12151,17 @@ function SettingsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
           <div className="divide-y divide-zinc-200 rounded-md border border-zinc-200">
             <button
               className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
+              onClick={() => onNavigate("system")}
+              type="button"
+            >
+              <div>
+                <p className="text-sm font-medium text-zinc-950">System</p>
+                <p className="mt-1 text-sm text-zinc-500">Choose app-wide system preferences like timezone.</p>
+              </div>
+              <ChevronRight className="h-4 w-4 text-zinc-400" />
+            </button>
+            <button
+              className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
               onClick={() => onNavigate("confidence-threshold")}
               type="button"
             >
@@ -12189,6 +12220,121 @@ function SettingsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
       </Card>
     </div>
   );
+}
+
+function SystemSettingsPage() {
+  const timezones = useMemo(() => getSupportedTimezones(), []);
+  const [timezone, setTimezone] = useState("America/Los_Angeles");
+  const [savedTimezone, setSavedTimezone] = useState("America/Los_Angeles");
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const hasChanges = timezone !== savedTimezone;
+
+  useEffect(() => {
+    async function loadSystemSettings() {
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const response = await fetch("/api/settings/system", { credentials: "include" });
+        const data = await response.json();
+
+        if (!response.ok) {
+          setError(data.error ?? "Could not load system settings.");
+          return;
+        }
+
+        const nextTimezone = typeof data.timezone === "string" && data.timezone ? data.timezone : "America/Los_Angeles";
+        setTimezone(nextTimezone);
+        setSavedTimezone(nextTimezone);
+      } catch {
+        setError("Could not load system settings.");
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    void loadSystemSettings();
+  }, []);
+
+  async function saveSystemSettings() {
+    setIsSaving(true);
+    setMessage(null);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/settings/system", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timezone }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not save system settings.");
+        return;
+      }
+
+      const nextTimezone = typeof data.timezone === "string" && data.timezone ? data.timezone : "America/Los_Angeles";
+      setTimezone(nextTimezone);
+      setSavedTimezone(nextTimezone);
+      setMessage("System settings saved successfully.");
+    } catch {
+      setError("Could not save system settings.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>System</CardTitle>
+          <CardDescription>
+            Set app-wide defaults used by automation features. The timezone controls how custom prompt template strings like {"{{now}}"} are rendered.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <label className="block max-w-md">
+            <span className="mb-1 block text-sm font-medium text-zinc-700">Timezone</span>
+            <select
+              className="h-11 w-full rounded-full border border-white/70 bg-white/50 px-4 text-sm shadow-sm outline-none backdrop-blur focus:border-zinc-400"
+              disabled={isLoading}
+              onChange={(event) => {
+                setTimezone(event.target.value);
+                setMessage(null);
+              }}
+              value={timezone}
+            >
+              {timezones.map((timezoneName) => (
+                <option key={timezoneName} value={timezoneName}>
+                  {timezoneName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="text-sm text-zinc-500">Default: America/Los_Angeles, the timezone used for Seattle.</p>
+
+          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+          {message ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</p> : null}
+
+          <Button disabled={isLoading || isSaving || !hasChanges} onClick={() => void saveSystemSettings()} type="button">
+            {isSaving ? "Saving..." : "Save"}
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function getSupportedTimezones() {
+  const supportedValuesOf = (Intl as typeof Intl & { supportedValuesOf?: (key: "timeZone") => string[] }).supportedValuesOf;
+  const timezones = supportedValuesOf ? supportedValuesOf("timeZone") : ["America/Los_Angeles"];
+  return timezones.includes("America/Los_Angeles") ? timezones : ["America/Los_Angeles", ...timezones];
 }
 
 function WebhookPage() {
@@ -15077,7 +15223,7 @@ function isAiPromptsPage(page: Page) {
 }
 
 function isSettingsPage(page: Page) {
-  return page === "settings" || page === "confidence-threshold" || page === "email-accounts" || page === "endpoints" || page === "webhook" || page === "mcp-server";
+  return page === "settings" || page === "system" || page === "confidence-threshold" || page === "email-accounts" || page === "endpoints" || page === "webhook" || page === "mcp-server";
 }
 
 const pagePaths: Record<Page, string> = {
@@ -15093,6 +15239,7 @@ const pagePaths: Record<Page, string> = {
   "ai-email-label": "/ai/prompts/email-label",
   "ai-draft-reply": "/ai/prompts/draft-reply",
   settings: "/settings",
+  system: "/settings/system",
   "confidence-threshold": "/settings/confidence-threshold",
   "email-accounts": "/settings/email-accounts",
   endpoints: "/settings/endpoints",
