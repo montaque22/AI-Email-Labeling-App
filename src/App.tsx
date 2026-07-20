@@ -930,37 +930,135 @@ function WifiOffIcon() {
 }
 
 function HomePage({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> }) {
+  const featureCards: Array<{
+    description: string;
+    icon: ComponentType<{ className?: string }>;
+    title: string;
+  }> = [
+    {
+      description:
+        "Create labels that mean something to your workflow. Emailable uses them to organize mail and give outside systems like Home Assistant and n8n clean context for automation.",
+      icon: Tag,
+      title: "Labels become automation context",
+    },
+    {
+      description:
+        "Use the unified Inbox to read, search, send, reply, draft, archive, and review emails across connected accounts without exposing provider-specific details.",
+      icon: Inbox,
+      title: "A focused inbox for action",
+    },
+    {
+      description:
+        "Keep your own automation stack in control, or bring your own AI provider and let Emailable classify mail, draft replies, and power richer workflows.",
+      icon: Sparkles,
+      title: "Use your AI or your automations",
+    },
+    {
+      description:
+        "Expose Emailable through its MCP server, or connect external MCP servers so custom prompts can trigger your own tools when new mail arrives.",
+      icon: SlidersHorizontal,
+      title: "MCP tools in both directions",
+    },
+    {
+      description:
+        "Monitor labeling volume, AI usage, errors, logs, and alarms so you can see what Emailable is doing and catch unhealthy automations early.",
+      icon: BarChart3,
+      title: "Metrics and logs built in",
+    },
+    {
+      description:
+        "Use API endpoints and webhooks to pull labels, prompts, rules, logs, and email events into other systems when you want deeper custom integrations.",
+      icon: ExternalLink,
+      title: "APIs and webhooks for builders",
+    },
+  ];
+  const workflowSteps = [
+    "Connect your email accounts.",
+    "Create labels that describe how mail should be handled.",
+    "Let AI, MCP tools, n8n, Home Assistant, or your own API calls classify messages.",
+    "Review uncertain rules, track health, and automate the next action.",
+  ];
+
   return (
-    <main className="min-h-screen bg-stone-50 text-zinc-950">
+    <main className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_8%_8%,rgba(219,234,254,0.9),transparent_34%),radial-gradient(circle_at_88%_18%,rgba(255,237,213,0.85),transparent_30%),linear-gradient(135deg,#eef5ff_0%,#f8fafc_48%,#fff7ed_100%)] text-zinc-950">
       <header className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-5">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-zinc-950 text-white">
-            <MailCheck className="h-5 w-5" />
-          </div>
-          <span className="text-sm font-semibold">AI Email Labeling Assistant</span>
+          <EmailableLogo className="h-9 w-9 shrink-0" />
+          <span className="bg-gradient-to-r from-cyan-500 via-blue-600 to-violet-600 bg-clip-text text-xl font-bold text-transparent">
+            Emailable
+          </span>
         </div>
-        <a className="text-sm font-medium text-zinc-700 hover:text-zinc-950" href="#auth">
-          Login
-        </a>
       </header>
 
-      <section className="mx-auto grid min-h-[calc(100vh-4rem)] w-full max-w-6xl grid-cols-1 items-center gap-10 px-5 py-12 lg:grid-cols-[1fr_420px]">
-        <div className="max-w-2xl">
-          <Badge className="mb-5 bg-white">Google OAuth + email login</Badge>
-          <h1 className="max-w-3xl text-4xl font-semibold leading-tight tracking-normal sm:text-5xl">
-            Label Gmail faster with rules you can review.
+      <section className="mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-10 px-5 pb-14 pt-10 lg:grid-cols-[minmax(0,1fr)_420px] lg:pb-20 lg:pt-16">
+        <div className="landing-reveal max-w-2xl">
+          <Badge className="mb-5 border-white/70 bg-white/50 text-zinc-700 shadow-sm backdrop-blur-[5px]">
+            Email labeling, inbox, AI, MCP, APIs
+          </Badge>
+          <h1 className="max-w-3xl text-4xl font-semibold leading-tight tracking-normal sm:text-6xl">
+            Turn email into structured context for automation.
           </h1>
-          <p className="mt-5 max-w-xl text-base leading-7 text-zinc-600">
-            Connect your account, review suggested labeling rules, and keep your inbox organized with an assistant built
-            for transparent decisions.
+          <p className="mt-5 max-w-2xl text-base leading-8 text-zinc-600 sm:text-lg">
+            Emailable helps you categorize mail with labels, review uncertain decisions, send replies, and expose clean
+            email context to systems like Home Assistant, n8n, MCP clients, webhooks, and your own APIs.
           </p>
-          <div className="mt-6 flex items-center gap-2 text-sm text-zinc-500">
-            <ShieldCheck className="h-4 w-4 text-emerald-600" />
-            Authentication is handled by the app API and stored in Postgres.
+          <div className="mt-7 grid gap-3 sm:grid-cols-3">
+            {["Label", "Review", "Automate"].map((step, index) => (
+              <div className="glass-panel rounded-2xl border px-4 py-3 text-sm font-medium text-zinc-700" key={step}>
+                <span className="mr-2 text-zinc-400">0{index + 1}</span>
+                {step}
+              </div>
+            ))}
           </div>
         </div>
 
-        <AuthPanel onAuthSuccess={onAuthSuccess} />
+        <div className="landing-reveal landing-reveal-delay-1">
+          <AuthPanel onAuthSuccess={onAuthSuccess} />
+        </div>
+      </section>
+
+      <section className="mx-auto w-full max-w-6xl px-5 pb-16">
+        <div className="landing-reveal landing-reveal-delay-2 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {featureCards.map((feature) => {
+            const Icon = feature.icon;
+            return (
+              <Card className="min-h-56 border border-white/70 bg-white/42 p-5 shadow-xl shadow-slate-900/5 backdrop-blur-[5px]" key={feature.title}>
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/70 bg-white/55 text-blue-600 shadow-sm">
+                  <Icon className="h-5 w-5" />
+                </div>
+                <h2 className="mt-5 text-lg font-semibold text-zinc-950">{feature.title}</h2>
+                <p className="mt-3 text-sm leading-6 text-zinc-600">{feature.description}</p>
+              </Card>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="mx-auto w-full max-w-6xl px-5 pb-20">
+        <Card className="landing-reveal landing-reveal-delay-3 overflow-hidden border border-white/70 bg-white/40 shadow-2xl shadow-slate-900/10 backdrop-blur-[5px]">
+          <div className="grid gap-0 lg:grid-cols-[0.9fr_1.1fr]">
+            <div className="border-b border-white/60 p-6 lg:border-b-0 lg:border-r">
+              <Badge className="border-emerald-100 bg-emerald-50/80 text-emerald-700">How it fits together</Badge>
+              <h2 className="mt-5 max-w-md text-3xl font-semibold leading-tight text-zinc-950">
+                Keep email human-readable while making it automation-ready.
+              </h2>
+              <p className="mt-4 text-sm leading-7 text-zinc-600">
+                Emailable can stay lightweight with your existing automation tools, or become the AI-powered hub that
+                reads, labels, drafts, triggers tools, and reports what happened.
+              </p>
+            </div>
+            <div className="space-y-3 p-6">
+              {workflowSteps.map((step, index) => (
+                <div className="flex gap-4 rounded-2xl border border-white/70 bg-white/45 p-4 shadow-sm backdrop-blur-[5px]" key={step}>
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-xs font-semibold text-white">
+                    {index + 1}
+                  </div>
+                  <p className="text-sm leading-6 text-zinc-700">{step}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
       </section>
     </main>
   );
@@ -1070,7 +1168,7 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
   }
 
   return (
-    <Card id="auth" className="scroll-mt-6">
+    <Card id="auth" className="scroll-mt-6 border border-white/70 bg-white/40 shadow-2xl shadow-slate-900/10 backdrop-blur-[5px]">
       <CardHeader>
         <CardTitle>{mode === "login" ? "Log in" : "Create account"}</CardTitle>
         <CardDescription>
@@ -1080,11 +1178,11 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="mb-4 grid grid-cols-2 gap-1 rounded-md bg-zinc-100 p-1">
+        <div className="mb-4 grid grid-cols-2 gap-1 rounded-full border border-white/70 bg-white/15 p-1 shadow-inner shadow-slate-900/5 backdrop-blur-[5px]">
           <button
             className={cn(
-              "h-9 rounded-md text-sm font-medium text-zinc-600 transition-colors",
-              mode === "login" && "bg-white text-zinc-950 shadow-sm",
+              "h-10 rounded-full text-sm font-medium text-zinc-600 transition-colors hover:text-zinc-950",
+              mode === "login" && "bg-white/70 text-zinc-950 shadow-sm",
             )}
             onClick={() => {
               setMode("login");
@@ -1096,8 +1194,8 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
           </button>
           <button
             className={cn(
-              "h-9 rounded-md text-sm font-medium text-zinc-600 transition-colors",
-              mode === "signup" && "bg-white text-zinc-950 shadow-sm",
+              "h-10 rounded-full text-sm font-medium text-zinc-600 transition-colors hover:text-zinc-950",
+              mode === "signup" && "bg-white/70 text-zinc-950 shadow-sm",
             )}
             onClick={() => {
               setMode("signup");
@@ -1109,7 +1207,7 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
           </button>
         </div>
 
-        <Button className="w-full" disabled={!authConfig.googleOAuthEnabled || isSubmitting} onClick={handleGoogleLogin} type="button">
+        <Button className="h-11 w-full rounded-full" disabled={!authConfig.googleOAuthEnabled || isSubmitting} onClick={handleGoogleLogin} type="button">
           {isSubmitting ? <Loader /> : null}
           Login with Google
           <ChevronRight className="h-4 w-4" />
@@ -1129,7 +1227,7 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-zinc-700">Name</span>
               <input
-                className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+                className="h-11 w-full glass-panel rounded-full border px-4 text-sm outline-none transition-colors focus:border-zinc-400"
                 onChange={(event) => setName(event.target.value)}
                 required
                 value={name}
@@ -1140,7 +1238,7 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
             <span className="mb-1 block text-sm font-medium text-zinc-700">Email</span>
             <input
               autoComplete="email"
-              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+              className="h-11 w-full glass-panel rounded-full border px-4 text-sm outline-none transition-colors focus:border-zinc-400"
               onChange={(event) => setEmail(event.target.value)}
               required
               type="email"
@@ -1151,7 +1249,7 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
             <span className="mb-1 block text-sm font-medium text-zinc-700">Password</span>
             <input
               autoComplete={mode === "login" ? "current-password" : "new-password"}
-              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
+              className="h-11 w-full glass-panel rounded-full border px-4 text-sm outline-none transition-colors focus:border-zinc-400"
               minLength={8}
               onChange={(event) => setPassword(event.target.value)}
               required
@@ -1160,7 +1258,7 @@ function AuthPanel({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> })
             />
           </label>
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-          <Button className="w-full" disabled={isSubmitting || !authConfig.emailAndPasswordEnabled} type="submit">
+          <Button className="h-11 w-full rounded-full" disabled={isSubmitting || !authConfig.emailAndPasswordEnabled} type="submit">
             {isSubmitting ? "Please wait..." : mode === "login" ? "Login with email" : "Create account"}
           </Button>
         </form>
@@ -7010,9 +7108,9 @@ function InboxRuleModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
-      <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
-        <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
-          <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
+      <div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+        <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
             <div className="min-w-0">
               <h3 className="truncate text-lg font-semibold text-zinc-950">
                 {isLoading ? "Rule" : isExistingRule ? "Edit Rule" : "Create Rule"}
@@ -7023,7 +7121,7 @@ function InboxRuleModal({
               <X className="h-4 w-4" />
             </Button>
           </div>
-          <div className="max-h-[calc(92vh-112px)] overflow-y-auto overflow-x-hidden p-5">
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-5">
           {isLoading ? <p className="text-sm text-zinc-500">Loading rule...</p> : null}
           {error ? <p className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           {!isLoading ? (
@@ -7064,21 +7162,21 @@ function InboxRuleModal({
                 </label>
               ) : null}
 
-              <div className="flex justify-end gap-2">
-                <Button disabled={isSaving} onClick={onClose} type="button" variant="outline">
-                  Cancel
-                </Button>
-                <Tooltip align="end" text={labelReason.trim() ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
-                  <span>
-                    <Button className={cn(canReview && reviewedButtonClass)} disabled={isSaving || !canReview} onClick={() => void saveRule()} type="button">
-                      <Save className="h-4 w-4" />
-                      Reviewed
-                    </Button>
-                  </span>
-                </Tooltip>
-              </div>
             </div>
           ) : null}
+          </div>
+          <div className="flex shrink-0 justify-end gap-2 border-t border-white/60 p-5">
+            <Button disabled={isSaving} onClick={onClose} type="button" variant="outline">
+              Cancel
+            </Button>
+            <Tooltip align="end" text={labelReason.trim() ? "Mark this rule reviewed and apply the selected label." : "A reason helps the AI make better future choices, but you can still review this rule."}>
+              <span>
+                <Button className={cn(canReview && reviewedButtonClass)} disabled={isSaving || !canReview} onClick={() => void saveRule()} type="button">
+                  <Save className="h-4 w-4" />
+                  Reviewed
+                </Button>
+              </span>
+            </Tooltip>
           </div>
         </div>
       </div>
@@ -11622,14 +11720,14 @@ function McpServerModal({
                 {mcpClient.tools.length === 0 ? (
                   <p className="text-sm text-zinc-500">No tools were returned by this MCP server.</p>
                 ) : (
-                  <div className="grid gap-2 md:grid-cols-2">
+                  <div className="grid min-w-0 gap-2 md:grid-cols-2">
                     {mcpClient.tools.map((tool) => (
-                      <label className="flex cursor-pointer items-start gap-3 rounded-md border border-zinc-200 p-3 text-sm hover:bg-zinc-50" key={tool.name}>
-                        <input checked={mcpClient.selectedTools.includes(tool.name)} disabled={isSaving} onChange={() => onToggleTool(tool.name)} type="checkbox" />
-                        <span>
-                          <span className="block font-medium text-zinc-950">{tool.name}</span>
+                      <label className="flex min-w-0 cursor-pointer items-start gap-3 overflow-hidden rounded-md border border-zinc-200 p-3 text-sm hover:bg-zinc-50" key={tool.name}>
+                        <input className="mt-1 shrink-0" checked={mcpClient.selectedTools.includes(tool.name)} disabled={isSaving} onChange={() => onToggleTool(tool.name)} type="checkbox" />
+                        <span className="min-w-0 flex-1 overflow-hidden">
+                          <span className="block min-w-0 break-words font-medium text-zinc-950">{tool.name}</span>
                           <span
-                            className="prose prose-xs mt-1 block max-w-none break-words text-zinc-500 [&_*]:break-words [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1"
+                            className="prose prose-xs mt-1 block max-w-none whitespace-normal break-words text-zinc-500 [overflow-wrap:anywhere] [&_*]:max-w-full [&_*]:whitespace-normal [&_*]:break-words [&_*]:[overflow-wrap:anywhere] [&_ol]:my-1 [&_p]:my-1 [&_ul]:my-1"
                             dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(formatMcpToolDescription(tool.description)) }}
                           />
                         </span>

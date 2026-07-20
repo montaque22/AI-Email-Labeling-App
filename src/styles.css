@@ -93,6 +93,40 @@ select,
   -webkit-backdrop-filter: blur(16px) saturate(145%);
 }
 
+.landing-reveal {
+  animation: landing-reveal-in 560ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.landing-reveal-delay-1 {
+  animation-delay: 90ms;
+}
+
+.landing-reveal-delay-2 {
+  animation-delay: 170ms;
+}
+
+.landing-reveal-delay-3 {
+  animation-delay: 250ms;
+}
+
+@keyframes landing-reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.99);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-reveal {
+    animation: none;
+  }
+}
+
 .inbox-sticky-surface {
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.88)),
