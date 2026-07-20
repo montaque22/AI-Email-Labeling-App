@@ -24,7 +24,7 @@ Email providers do not all organize mail the same way.
 | Account type | How Emailable applies a category |
 | --- | --- |
 | Gmail | Applies a Gmail label. |
-| Yahoo or another IMAP account | Moves the message into the corresponding IMAP folder. |
+| IMAP account | Moves the message into the corresponding IMAP folder. |
 
 Gmail technically allows several labels on one message, while folder-based providers normally place a message in one folder. Emailable uses one best-fit Emailable category per message so behavior remains consistent across providers.
 

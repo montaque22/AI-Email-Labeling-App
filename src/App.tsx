@@ -12708,7 +12708,9 @@ function EmailAccountsPage({ isHomeAssistant, privacyMode }: { isHomeAssistant: 
   const [pollCooldown, setPollCooldown] = useState(0);
   const [pollingError, setPollingError] = useState<string | null>(null);
   const [pollingNotice, setPollingNotice] = useState<string | null>(null);
-  const visibleProviders = providers.filter((provider) => provider.manual || provider.configured);
+  const visibleProviders = providers.filter(
+    (provider) => (provider.id === "gmail" || provider.id === "imap") && (provider.manual || provider.configured),
+  );
 
   useEffect(() => {
     void loadEmailAccounts();
@@ -13372,7 +13374,7 @@ function EmailAccountsPage({ isHomeAssistant, privacyMode }: { isHomeAssistant: 
                 <div>
                   <h3 className="text-lg font-semibold text-zinc-950">Connect IMAP Account</h3>
                   <p className="mt-1 text-sm text-zinc-500">
-                    Use this for providers without a dedicated OAuth option. Do not use it for Microsoft accounts.
+                    Use this for non-Google providers that support IMAP and app passwords.
                   </p>
                 </div>
                 <Button aria-label="Close IMAP setup" disabled={isConnectingImap} onClick={closeImapModal} size="icon" type="button" variant="ghost">

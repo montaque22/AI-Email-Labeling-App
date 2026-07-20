@@ -227,7 +227,7 @@ The key list shows each key's prefix and last-used time, but the full secret can
 - Activating **MCP Client** under **Artificial Intelligence > BYOAI** disables Emailable's external MCP Server and revokes its MCP keys. This prevents Emailable from simultaneously acting as the externally controlled server while it handles AI tool orchestration as a client.
 - The MCP endpoint uses Streamable HTTP. It is not the legacy HTTP+SSE transport, and there is no `/sse` endpoint.
 - Opening the MCP URL in a normal browser sends a GET request and can show `Method Not Allowed`. This does not mean the server is broken; an MCP client communicates through protocol requests.
-- Tool calls still depend on connected-provider authorization. A valid MCP key cannot repair an expired Gmail, Yahoo, or IMAP credential.
+- Tool calls still depend on connected-provider authorization. A valid MCP key cannot repair an expired Gmail or IMAP credential.
 - Provider message IDs may differ between accounts. Supply `accountEmail` or `to` when available to reduce searching and ambiguity.
 - MCP tools perform real actions. Label changes and draft creation are not simulations.
 

@@ -26,10 +26,6 @@ export BETTER_AUTH_SECRET="$(read_grouped_option optional.better_auth_secret bet
 export DATABASE_URL="$(read_grouped_option optional.database_url database_url)"
 export GOOGLE_CLIENT_ID="$(read_grouped_option basic.google_client_id google_client_id)"
 export GOOGLE_CLIENT_SECRET="$(read_grouped_option basic.google_client_secret google_client_secret)"
-export YAHOO_CLIENT_ID="$(read_grouped_option optional.yahoo_client_id yahoo_client_id)"
-export YAHOO_CLIENT_SECRET="$(read_grouped_option optional.yahoo_client_secret yahoo_client_secret)"
-export MICROSOFT_CLIENT_ID="$(read_grouped_option optional.microsoft_client_id microsoft_client_id)"
-export MICROSOFT_CLIENT_SECRET="$(read_grouped_option optional.microsoft_client_secret microsoft_client_secret)"
 export NODE_ENV="$(read_grouped_option optional.node_env node_env)"
 export NODE_ENV="${NODE_ENV:-production}"
 # Home Assistant Ingress targets this fixed container port. Users can choose a

@@ -35,6 +35,8 @@ Emailable acts as the source of truth for those workflows. It can:
 
 The result is a workflow that can be automated while remaining visible, editable, and accountable.
 
-## Next step
+## Next steps
 
-Continue to [Installation](documentation/installation) to run Emailable with npm, Docker, Coolify, or Home Assistant.
+If you already have Emailable running and want the easiest path to unlock the main features, continue to [Easy Setup](documentation/easy-setup).
+
+If you want to control the deployment, database, Docker, Coolify, or Home Assistant setup yourself, continue to [DIY Installation](documentation/installation).

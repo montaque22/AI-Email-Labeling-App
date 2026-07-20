@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.86
+
+- Added Easy Setup documentation for users who want Emailable to handle labeling and AI workflows.
+- Renamed Installation documentation to DIY Installation.
+- Removed Yahoo and Microsoft OAuth configuration from the add-on setup.
+- Limited new email account connections to Gmail OAuth and IMAP.
+
 ## 0.1.85
 
 - Expanded Inbox documentation with AI Helper, AI Draft, AI Actions, and Commitments sections.

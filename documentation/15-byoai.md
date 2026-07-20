@@ -333,4 +333,4 @@ Confirm MCP Client is active and the tool is selected. Add clear instructions to
 
 - Read [MCP Client](documentation/mcp-client) to add external tools to Emailable's AI requests.
 - Read [MCP Server](documentation/mcp-server) when another application needs to call Emailable tools.
-- Read [Installation](documentation/installation) for environment, Docker, Coolify, and Home Assistant setup.
+- Read [DIY Installation](documentation/installation) for environment, Docker, Coolify, and Home Assistant setup.

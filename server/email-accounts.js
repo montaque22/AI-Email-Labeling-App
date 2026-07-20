@@ -62,6 +62,7 @@ export const EMAIL_ACCOUNT_PROVIDERS = {
 const TOKEN_SECRET = process.env.EMAIL_ACCOUNT_TOKEN_SECRET || process.env.BETTER_AUTH_SECRET || "local-email-token-secret";
 const TEMPLATE_CALLBACK_PATH = "/api/email-accounts/callback";
 const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
+const CONNECTABLE_EMAIL_ACCOUNT_PROVIDER_IDS = new Set(["gmail", "imap"]);
 
 export async function ensureEmailAccountsTable() {
   if (!dbPool) {
@@ -104,6 +105,7 @@ export function registerEmailAccountRoutes(app) {
   app.get("/api/email-accounts/providers", requireSession, (_req, res) => {
     res.json({
       providers: Object.entries(EMAIL_ACCOUNT_PROVIDERS)
+        .filter(([id]) => CONNECTABLE_EMAIL_ACCOUNT_PROVIDER_IDS.has(id))
         .filter(([, provider]) => provider.manual || isProviderConfigured(provider))
         .map(([id, provider]) => ({
           id,
@@ -127,7 +129,7 @@ export function registerEmailAccountRoutes(app) {
     const providerId = req.params.provider;
     const provider = EMAIL_ACCOUNT_PROVIDERS[providerId];
 
-    if (!provider || provider.manual) {
+    if (!provider || provider.manual || !CONNECTABLE_EMAIL_ACCOUNT_PROVIDER_IDS.has(providerId)) {
       res.status(404).json({ error: "Email provider not found" });
       return;
     }

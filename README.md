@@ -24,6 +24,7 @@ For updates, breaking changes, and helpful documentation around this project, jo
 ## Documentation
 
 - [Documentation home](documentation/00-home.md)
-- [Installation guide](documentation/10-installation.md)
+- [DIY installation guide](documentation/10-installation.md)
+- [Easy setup guide](documentation/10a-easy-setup.md)
 
 After starting Emailable, authenticated users can also open Documentation from the bottom of the application sidebar.
