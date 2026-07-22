@@ -437,6 +437,55 @@ function fetchNoStore(input: RequestInfo | URL, init: RequestInit = {}) {
   });
 }
 
+type AppBadgeNavigator = {
+  clearAppBadge?: () => Promise<void>;
+  setAppBadge?: (contents?: number) => Promise<void>;
+};
+
+function getAppBadgeNavigator(): AppBadgeNavigator | null {
+  if (typeof navigator === "undefined") {
+    return null;
+  }
+
+  const badgeNavigator = navigator as unknown as AppBadgeNavigator;
+  return typeof badgeNavigator.setAppBadge === "function" || typeof badgeNavigator.clearAppBadge === "function"
+    ? badgeNavigator
+    : null;
+}
+
+async function clearPwaUnreadBadge() {
+  const badgeNavigator = getAppBadgeNavigator();
+  if (!badgeNavigator?.clearAppBadge) {
+    return;
+  }
+
+  try {
+    await badgeNavigator.clearAppBadge();
+  } catch {
+    // Badge support varies by browser and should never block app usage.
+  }
+}
+
+async function refreshPwaUnreadBadge() {
+  const badgeNavigator = getAppBadgeNavigator();
+  if (!badgeNavigator) {
+    return;
+  }
+
+  try {
+    const response = await fetchNoStore("/api/inbox/unread-count");
+    const data = await response.json().catch(() => ({}));
+    const count = response.ok ? Number(data.count ?? 0) : 0;
+    if (count > 0 && badgeNavigator.setAppBadge) {
+      await badgeNavigator.setAppBadge(count);
+    } else if (badgeNavigator.clearAppBadge) {
+      await badgeNavigator.clearAppBadge();
+    }
+  } catch {
+    // Badge support is best-effort and should never affect inbox use.
+  }
+}
+
 type InboxRuleStatus = {
   emailId: string;
   isPending: boolean;
@@ -712,6 +761,68 @@ export function App() {
   useEffect(() => {
     rememberActivePage(activePage);
   }, [activePage]);
+
+  useEffect(() => {
+    if (!user) {
+      void clearPwaUnreadBadge();
+      return;
+    }
+
+    let lastObservedPollingJobId = "";
+    const refreshBadge = () => {
+      void refreshPwaUnreadBadge();
+    };
+    const refreshBadgeWhenVisible = () => {
+      if (document.visibilityState === "visible") {
+        refreshBadge();
+      }
+    };
+    const checkPollingCompletion = async () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
+      try {
+        const response = await fetchNoStore("/api/inbox/processing-status");
+        const data = await response.json().catch(() => ({}));
+        const job = data.job as InboxProcessingJob | null;
+        if (!response.ok || job?.type !== "polling" || job.status === "running" || job.id === lastObservedPollingJobId) {
+          return;
+        }
+
+        lastObservedPollingJobId = job.id;
+        await refreshPwaUnreadBadge();
+        window.dispatchEvent(new Event("emailable:polling-complete"));
+      } catch {
+        // Polling completion checks are best-effort.
+      }
+    };
+    const handleFocus = () => {
+      refreshBadge();
+      void checkPollingCompletion();
+    };
+
+    refreshBadge();
+    void checkPollingCompletion();
+
+    const intervalId = window.setInterval(refreshBadgeWhenVisible, 60 * 1000);
+    const pollingStatusIntervalId = window.setInterval(() => {
+      void checkPollingCompletion();
+    }, 15 * 1000);
+    document.addEventListener("visibilitychange", refreshBadgeWhenVisible);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("online", refreshBadge);
+    window.addEventListener("emailable:refresh-unread-badge", refreshBadge);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.clearInterval(pollingStatusIntervalId);
+      document.removeEventListener("visibilitychange", refreshBadgeWhenVisible);
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("online", refreshBadge);
+      window.removeEventListener("emailable:refresh-unread-badge", refreshBadge);
+    };
+  }, [user?.email]);
 
   useEffect(() => {
     function handlePopState() {
@@ -2123,6 +2234,14 @@ function InboxPage({
   }, []);
 
   useEffect(() => {
+    const refreshAfterPolling = () => {
+      void refreshInboxData();
+    };
+    window.addEventListener("emailable:polling-complete", refreshAfterPolling);
+    return () => window.removeEventListener("emailable:polling-complete", refreshAfterPolling);
+  }, [inboxMode, selectedLabelId, selectedAccountIds.join(","), labels.length]);
+
+  useEffect(() => {
     const sentinel = loadMoreSentinelRef.current;
     if (
       !sentinel ||
@@ -2304,29 +2423,6 @@ function InboxPage({
       setLabelCounts({});
     } finally {
       setIsCountsLoading(false);
-    }
-  }
-
-  async function refreshPwaUnreadBadge() {
-    const badgeNavigator = navigator as Navigator & {
-      clearAppBadge?: () => Promise<void>;
-      setAppBadge?: (contents?: number) => Promise<void>;
-    };
-    if (!badgeNavigator.setAppBadge && !badgeNavigator.clearAppBadge) {
-      return;
-    }
-
-    try {
-      const response = await fetchNoStore("/api/inbox/unread-count");
-      const data = await response.json();
-      const count = response.ok ? Number(data.count ?? 0) : 0;
-      if (count > 0 && badgeNavigator.setAppBadge) {
-        await badgeNavigator.setAppBadge(count);
-      } else if (badgeNavigator.clearAppBadge) {
-        await badgeNavigator.clearAppBadge();
-      }
-    } catch {
-      // Badge support is best-effort and should never affect inbox use.
     }
   }
 
@@ -12880,6 +12976,7 @@ function EmailAccountsPage({ isHomeAssistant, privacyMode }: { isHomeAssistant: 
         return;
       }
       setPollingNotice(`Polling finished: ${data.processed} processed, ${data.failed} failed.`);
+      void refreshPwaUnreadBadge();
       await loadPollingSettings();
     } catch {
       setPollingError("Could not run polling.");

@@ -7,7 +7,51 @@ import { emitWebhookEvent } from "./webhooks.js";
 
 const POLLING_WORKER_INTERVAL_MS = 60_000;
 const activePollingUsers = new Set();
+const activePollingJobs = new Map();
 let pollingTimer = null;
+
+export function getPollingProcessingJob(userId) {
+  return activePollingJobs.get(userId) ?? null;
+}
+
+function createPollingProcessingJob(trigger) {
+  const now = new Date().toISOString();
+  return {
+    id: `polling-${cryptoRandomId()}`,
+    type: "polling",
+    trigger,
+    status: "running",
+    total: 0,
+    processed: 0,
+    failed: 0,
+    startedAt: now,
+    updatedAt: now,
+    message: trigger === "manual" ? "Manual polling is checking for new email..." : "Polling is checking for new email...",
+  };
+}
+
+function updatePollingProcessingJob(userId, updates) {
+  const current = activePollingJobs.get(userId);
+  if (!current) {
+    return null;
+  }
+  const next = {
+    ...current,
+    ...updates,
+    updatedAt: new Date().toISOString(),
+  };
+  activePollingJobs.set(userId, next);
+  return next;
+}
+
+function clearPollingProcessingJobLater(userId) {
+  const timer = setTimeout(() => activePollingJobs.delete(userId), 30_000);
+  timer.unref?.();
+}
+
+function cryptoRandomId() {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
 
 export async function ensurePollingSettings() {
   if (!dbPool) {
@@ -223,70 +267,102 @@ async function pollDueUsers() {
 }
 
 async function pollUser(settings, trigger) {
+  activePollingJobs.set(settings.userId, createPollingProcessingJob(trigger));
+
   if (!await isAiActiveForUser(settings.userId)) {
     await dbPool.query("update user_settings set polling_enabled = false where user_id = $1", [settings.userId]);
+    updatePollingProcessingJob(settings.userId, {
+      status: "complete",
+      message: "Polling stopped because AI is not active.",
+    });
+    clearPollingProcessingJobLater(settings.userId);
     return { fetched: 0, processed: 0, failed: 0, trigger };
   }
 
-  const lookbackHours = settings.lookbackUnit === "days" ? settings.lookbackValue * 24 : settings.lookbackValue;
-  const candidates = await searchPollingCandidates(settings.userId, lookbackHours);
-  const seen = new Set();
-  const uniqueCandidates = [];
-  for (const candidate of candidates) {
-    const key = `${candidate.account.id}:${candidate.email.emailId}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      uniqueCandidates.push(candidate);
+  try {
+    const lookbackHours = settings.lookbackUnit === "days" ? settings.lookbackValue * 24 : settings.lookbackValue;
+    const candidates = await searchPollingCandidates(settings.userId, lookbackHours);
+    const seen = new Set();
+    const uniqueCandidates = [];
+    for (const candidate of candidates) {
+      const key = `${candidate.account.id}:${candidate.email.emailId}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueCandidates.push(candidate);
+      }
     }
-  }
 
-  if (uniqueCandidates.length > 0) {
-    await emitWebhookEvent(settings.userId, "email.received", {
-      emails: uniqueCandidates.map(({ account, email }) => ({
-        accountEmail: account.email,
-        to: email.to || account.email,
-        from: email.fromEmail || "",
-        subject: email.subject || "",
-        emailId: email.emailId,
-        body: simplifyPollingBody(email.bodyText || email.snippet || ""),
-      })),
+    updatePollingProcessingJob(settings.userId, {
+      total: uniqueCandidates.length,
+      message: uniqueCandidates.length
+        ? `Polling found ${uniqueCandidates.length} new email${uniqueCandidates.length === 1 ? "" : "s"} to process...`
+        : "Polling found no new email.",
     });
-  }
 
-  let processed = 0;
-  const failures = [];
-  for (const candidate of uniqueCandidates) {
-    try {
-      await generateAiLabel(settings.userId, {
-        emailId: candidate.email.emailId,
-        accountEmail: candidate.account.email,
-      });
-      processed += 1;
-    } catch (error) {
-      console.warn(`Polling could not process ${candidate.account.email}/${candidate.email.emailId}:`, error.message);
-      failures.push({
-        accountEmail: candidate.account.email,
-        emailId: candidate.email.emailId,
-        error: error.message,
+    if (uniqueCandidates.length > 0) {
+      await emitWebhookEvent(settings.userId, "email.received", {
+        emails: uniqueCandidates.map(({ account, email }) => ({
+          accountEmail: account.email,
+          to: email.to || account.email,
+          from: email.fromEmail || "",
+          subject: email.subject || "",
+          emailId: email.emailId,
+          body: simplifyPollingBody(email.bodyText || email.snippet || ""),
+        })),
       });
     }
-  }
 
-  const result = {
-    trigger,
-    fetched: uniqueCandidates.length,
-    processed,
-    failed: failures.length,
-    failures,
-  };
-  await logSystemEvent(settings.userId, {
-    category: "email",
-    eventName: "email.polling_completed",
-    status: failures.length > 0 ? (processed > 0 ? "warning" : "error") : "success",
-    message: `Polling fetched ${result.fetched}, processed ${result.processed}, and failed ${result.failed} emails.`,
-    payload: result,
-  });
-  return result;
+    let processed = 0;
+    const failures = [];
+    for (const candidate of uniqueCandidates) {
+      try {
+        await generateAiLabel(settings.userId, {
+          emailId: candidate.email.emailId,
+          accountEmail: candidate.account.email,
+        });
+        processed += 1;
+        updatePollingProcessingJob(settings.userId, { processed });
+      } catch (error) {
+        console.warn(`Polling could not process ${candidate.account.email}/${candidate.email.emailId}:`, error.message);
+        failures.push({
+          accountEmail: candidate.account.email,
+          emailId: candidate.email.emailId,
+          error: error.message,
+        });
+        updatePollingProcessingJob(settings.userId, { failed: failures.length });
+      }
+    }
+
+    const result = {
+      trigger,
+      fetched: uniqueCandidates.length,
+      processed,
+      failed: failures.length,
+      failures,
+    };
+    await logSystemEvent(settings.userId, {
+      category: "email",
+      eventName: "email.polling_completed",
+      status: failures.length > 0 ? (processed > 0 ? "warning" : "error") : "success",
+      message: `Polling fetched ${result.fetched}, processed ${result.processed}, and failed ${result.failed} emails.`,
+      payload: result,
+    });
+    updatePollingProcessingJob(settings.userId, {
+      status: failures.length > 0 && processed === 0 ? "error" : "complete",
+      processed,
+      failed: failures.length,
+      message: `Polling complete. ${processed} processed, ${failures.length} failed.`,
+    });
+    clearPollingProcessingJobLater(settings.userId);
+    return result;
+  } catch (error) {
+    updatePollingProcessingJob(settings.userId, {
+      status: "error",
+      message: `Polling failed: ${error.message}`,
+    });
+    clearPollingProcessingJobLater(settings.userId);
+    throw error;
+  }
 }
 
 function simplifyPollingBody(value) {

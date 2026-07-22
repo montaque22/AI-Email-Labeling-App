@@ -37,6 +37,7 @@ import { UNEMAILABLE_SYSTEM_LABEL_KEY, UNEMAILABLE_SYSTEM_LABEL_NAME } from "./l
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import { generateAiLabel, isAiActiveForUser } from "./byoai.js";
+import { getPollingProcessingJob } from "./polling.js";
 import crypto from "node:crypto";
 import nodemailer from "nodemailer";
 
@@ -148,6 +149,7 @@ export function registerInboxRoutes(app) {
   app.get("/api/inbox/unread-count", requireSession, async (req, res) => {
     try {
       const count = await countUnreadEmailIndexEntries(req.user.id);
+      res.setHeader("Cache-Control", "no-store");
       res.json({ count });
     } catch (error) {
       handleProviderError(res, error);
@@ -156,7 +158,7 @@ export function registerInboxRoutes(app) {
 
   app.get("/api/inbox/processing-status", requireSession, async (req, res) => {
     try {
-      res.json({ job: activeInboxProcessingJobs.get(req.user.id) ?? null });
+      res.json({ job: activeInboxProcessingJobs.get(req.user.id) ?? getPollingProcessingJob(req.user.id) ?? null });
     } catch (error) {
       handleProviderError(res, error);
     }
