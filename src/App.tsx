@@ -14,6 +14,7 @@ import {
 import {
   BarChart3,
   BookOpen,
+  Bot,
   Archive,
   ArrowDown,
   ArrowUp,
@@ -520,6 +521,17 @@ type InboxMessage = {
   rule?: InboxRuleStatus | null;
   aiActionSuggestions?: InboxAiActionSuggestion[];
   aiActionSuggestionsCachedAt?: string | null;
+  automationResultCount?: number;
+};
+
+type InboxAutomationResult = {
+  id: string;
+  promptId?: string | null;
+  promptName: string;
+  response: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type InboxMessageDetail = {
@@ -543,6 +555,8 @@ type InboxMessageDetail = {
   threadMessages?: InboxThreadMessage[];
   replyCount?: number;
   rule?: InboxRuleStatus | null;
+  automationResults?: InboxAutomationResult[];
+  automationResultCount?: number;
 };
 
 type InboxThreadMessage = {
@@ -5444,6 +5458,7 @@ function InboxMessageRow({
             </Badge>
           ) : null}
           {message.labels[0] ? <Badge className="shrink-0 bg-blue-50 text-blue-700">{message.labels[0]}</Badge> : null}
+          <InboxAutomationIndicator count={message.automationResultCount ?? 0} />
           <span className="min-w-0 truncate text-sm font-medium text-zinc-950">{message.subject || "(no subject)"}</span>
           <span className="min-w-0 truncate text-xs text-zinc-400">{message.snippet || "No preview available."}</span>
         </button>
@@ -5516,7 +5531,7 @@ function InboxMessageRow({
               <p className="min-w-0 flex-1 truncate text-base text-zinc-500">{message.snippet || "No preview available."}</p>
               <p className="shrink-0 text-sm font-semibold text-zinc-500">{formatInboxListDate(message.date)}</p>
             </div>
-            {message.commitment || message.labels.length > 0 ? (
+            {message.commitment || message.labels.length > 0 || (message.automationResultCount ?? 0) > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {message.commitment ? (
                   <Badge className={cn("w-fit", commitmentTone.labelClassName)}>
@@ -5529,12 +5544,27 @@ function InboxMessageRow({
                     {label}
                   </Badge>
                 ))}
+                <InboxAutomationIndicator count={message.automationResultCount ?? 0} />
               </div>
             ) : null}
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function InboxAutomationIndicator({ count }: { count: number }) {
+  if (count <= 0) {
+    return null;
+  }
+
+  return (
+    <Tooltip text={`${count} attached automation ${count === 1 ? "result" : "results"}`}>
+      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-blue-100 bg-blue-50 text-blue-700 shadow-sm">
+        <Bot className="h-3.5 w-3.5" />
+      </span>
+    </Tooltip>
   );
 }
 
@@ -5762,6 +5792,7 @@ function InboxMessagePushView({
             onSelect={aiAction.onStartSuggestion}
             selectedSuggestion={aiAction.selectedSuggestion}
           />
+          <InboxAttachedAutomations results={detail?.automationResults ?? []} />
           {commitment ? (
             <InboxCommitmentPanel
               commitment={commitment}
@@ -5890,6 +5921,40 @@ function InboxAiActionCards({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function InboxAttachedAutomations({ results }: { results: InboxAutomationResult[] }) {
+  const visibleResults = results.filter((result) => result.response.trim());
+  if (visibleResults.length === 0) {
+    return null;
+  }
+
+  return (
+    <details className="mb-4 rounded-xl border border-white/70 bg-white/40 p-3 shadow-sm backdrop-blur-xl">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-zinc-950 [&::-webkit-details-marker]:hidden">
+        <span className="inline-flex items-center gap-2">
+          <Bot className="h-4 w-4 text-zinc-600" />
+          Attached Automations
+          <Badge className="bg-zinc-100 text-zinc-600">{visibleResults.length}</Badge>
+        </span>
+        <ChevronRight className="h-4 w-4 text-zinc-400 transition group-open:rotate-90" />
+      </summary>
+      <div className="mt-3 space-y-2">
+        {visibleResults.map((result) => (
+          <article className="rounded-lg border border-white/70 bg-white/55 p-3 shadow-sm" key={result.id}>
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-sm font-semibold text-zinc-950">{result.promptName || "Automation"}</p>
+              <p className="shrink-0 text-xs text-zinc-400">{formatInboxListDate(result.updatedAt || result.createdAt)}</p>
+            </div>
+            <div
+              className="prose prose-sm mt-2 max-w-none break-words text-zinc-700 prose-p:my-1 prose-ul:my-1 prose-ol:my-1"
+              dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(result.response) }}
+            />
+          </article>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -6137,6 +6202,7 @@ function InboxMessageModal({
             onSelect={aiAction.onStartSuggestion}
             selectedSuggestion={aiAction.selectedSuggestion}
           />
+          <InboxAttachedAutomations results={detail?.automationResults ?? []} />
           {commitment ? (
             <InboxCommitmentPanel
               commitment={commitment}

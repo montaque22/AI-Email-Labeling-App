@@ -52,6 +52,32 @@ export async function ensureEmailIndexTable() {
   await dbPool.query("create index if not exists email_index_user_direction_idx on email_index (user_id, direction)");
   await dbPool.query("create index if not exists email_index_user_labels_idx on email_index using gin (labels)");
   await dbPool.query("create index if not exists email_index_user_commitment_idx on email_index (user_id, commitment_due_at) where commitment_set_at is not null");
+  await ensureEmailAutomationResultsTable();
+}
+
+async function ensureEmailAutomationResultsTable() {
+  await dbPool.query(`
+    create table if not exists email_automation_results (
+      id uuid primary key,
+      user_id text not null references "user"(id) on delete cascade,
+      email_index_id uuid not null references email_index(id) on delete cascade,
+      email_account_id uuid not null references email_accounts(id) on delete cascade,
+      account_email text not null default '',
+      email_id text not null,
+      prompt_id uuid,
+      prompt_name text not null default '',
+      response text not null default '',
+      status text not null default 'success',
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `);
+  await dbPool.query(`
+    create unique index if not exists email_automation_results_prompt_unique
+      on email_automation_results (user_id, email_index_id, prompt_id)
+      where prompt_id is not null
+  `);
+  await dbPool.query("create index if not exists email_automation_results_email_idx on email_automation_results (user_id, email_index_id, updated_at desc)");
 }
 
 export async function upsertEmailIndexEntry(userId, input) {
@@ -352,7 +378,13 @@ export async function listEmailIndexEntries(userId, query) {
   const offsetIndex = values.length;
   const result = await dbPool.query(
     `
-      select *
+      select email_index.*,
+        coalesce((
+          select count(*)::int
+          from email_automation_results
+          where email_automation_results.user_id = email_index.user_id
+            and email_automation_results.email_index_id = email_index.id
+        ), 0) as automation_result_count
       from email_index
       where ${conditions.join(" and ")}
       order by ${orderBy}
@@ -388,6 +420,85 @@ export async function listEmailIndexEntriesByLabel(userId, labelName, { limit = 
   );
 
   return result.rows.map(mapEmailIndexRow);
+}
+
+export async function upsertEmailAutomationResult(userId, input) {
+  if (!dbPool || !input?.emailId || !input?.promptName) {
+    return null;
+  }
+
+  const indexResult = await dbPool.query(
+    `
+      select id, email_account_id, account_email, email_id
+      from email_index
+      where user_id = $1
+        and email_id = $2
+        and ($3::text = '' or lower(account_email) = lower($3::text))
+        and ($4::uuid is null or email_account_id = $4::uuid)
+      order by updated_at desc
+      limit 1
+    `,
+    [userId, input.emailId, input.accountEmail || "", input.emailAccountId || null],
+  );
+  const indexedEmail = indexResult.rows[0];
+  if (!indexedEmail) {
+    return null;
+  }
+
+  const result = await dbPool.query(
+    `
+      insert into email_automation_results (
+        id, user_id, email_index_id, email_account_id, account_email, email_id,
+        prompt_id, prompt_name, response, status
+      )
+      values ($1, $2, $3, $4, $5, $6, $7::uuid, $8, $9, $10)
+      on conflict (user_id, email_index_id, prompt_id)
+      where prompt_id is not null
+      do update set
+        prompt_name = excluded.prompt_name,
+        response = excluded.response,
+        status = excluded.status,
+        updated_at = now()
+      returning *
+    `,
+    [
+      crypto.randomUUID(),
+      userId,
+      indexedEmail.id,
+      indexedEmail.email_account_id,
+      indexedEmail.account_email,
+      indexedEmail.email_id,
+      input.promptId || null,
+      input.promptName,
+      input.response || "",
+      input.status || "success",
+    ],
+  );
+
+  return result.rows[0] ? mapEmailAutomationResultRow(result.rows[0]) : null;
+}
+
+export async function listEmailAutomationResultsForMessage(userId, input) {
+  if (!dbPool || !input?.emailId) {
+    return [];
+  }
+
+  const values = [userId, input.emailId, input.accountId || null, input.accountEmail || ""];
+  const result = await dbPool.query(
+    `
+      select automation.*
+      from email_automation_results automation
+      join email_index indexed on indexed.id = automation.email_index_id
+      where automation.user_id = $1
+        and automation.email_id = $2
+        and ($3::uuid is null or automation.email_account_id = $3::uuid)
+        and ($4::text = '' or lower(automation.account_email) = lower($4::text))
+      order by automation.updated_at desc, automation.created_at desc
+    `,
+    values,
+  );
+
+  return result.rows.map(mapEmailAutomationResultRow);
 }
 
 export async function getEmailIndexLabelCounts(userId, { accountIds = [], archivedOnly = false, labels = [] }) {
@@ -470,6 +581,19 @@ export function mapEmailIndexRow(row) {
     direction: row.direction || "inbox",
     aiActionSuggestions: hasCachedAiActions && Array.isArray(metadata.aiActionSuggestions) ? metadata.aiActionSuggestions : undefined,
     aiActionSuggestionsCachedAt: hasCachedAiActions ? metadata.aiActionSuggestionsUpdatedAt || null : undefined,
+    automationResultCount: Number(row.automation_result_count || 0),
+  };
+}
+
+function mapEmailAutomationResultRow(row) {
+  return {
+    id: row.id,
+    promptId: row.prompt_id || null,
+    promptName: row.prompt_name || "Automation",
+    response: row.response || "",
+    status: row.status || "success",
+    createdAt: new Date(row.created_at || Date.now()).toISOString(),
+    updatedAt: new Date(row.updated_at || row.created_at || Date.now()).toISOString(),
   };
 }
 

@@ -13,6 +13,7 @@ import {
   countUnreadEmailIndexEntries,
   deleteEmailIndexEntries,
   getEmailIndexLabelCounts,
+  listEmailAutomationResultsForMessage,
   listEmailIndexEntriesByLabel,
   listEmailIndexEntries,
   setEmailIndexCommitment,
@@ -578,7 +579,7 @@ async function getInboxMessage(userId, query) {
     const message = await fetchGmailInboxMessage(accessToken, account, query.emailId);
     const isRead = await markGmailMessageRead(accessToken, message);
     await updateEmailIndexReadStatus(userId, { accountId: account.id, emailId: message.id, mailbox: message.mailbox, isRead });
-    return attachSingleRuleStatus(userId, { ...message, isRead });
+    return attachSingleMessageMetadata(userId, { ...message, isRead });
   }
 
   if (isImapBackedProvider(account.provider)) {
@@ -586,7 +587,7 @@ async function getInboxMessage(userId, query) {
     const message = await fetchImapInboxMessage(account, { accessToken, emailId: query.emailId, mailbox: query.mailbox });
     const isRead = await markImapMessageRead(account, message, accessToken);
     await updateEmailIndexReadStatus(userId, { accountId: account.id, emailId: message.id, mailbox: message.mailbox, isRead });
-    return attachSingleRuleStatus(userId, { ...message, isRead });
+    return attachSingleMessageMetadata(userId, { ...message, isRead });
   }
 
   const error = new Error(`${account.provider} inbox detail is not implemented yet`);
@@ -692,6 +693,23 @@ async function attachRuleStatus(userId, messages) {
 async function attachSingleRuleStatus(userId, message) {
   const [messageWithRule] = await attachRuleStatus(userId, [message]);
   return messageWithRule;
+}
+
+async function attachSingleMessageMetadata(userId, message) {
+  const [messageWithRule, automationResults] = await Promise.all([
+    attachSingleRuleStatus(userId, message),
+    listEmailAutomationResultsForMessage(userId, {
+      accountEmail: message.accountEmail,
+      accountId: message.accountId,
+      emailId: message.id,
+    }),
+  ]);
+
+  return {
+    ...messageWithRule,
+    automationResults,
+    automationResultCount: automationResults.length,
+  };
 }
 
 async function getInboxLabelCounts(userId, { accountIds, archivedOnly = false }) {

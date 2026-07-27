@@ -26,6 +26,7 @@ import {
 import { UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
+import { upsertEmailAutomationResult } from "./email-index.js";
 
 const SECRET = process.env.BETTER_AUTH_SECRET || "local-byoai-secret";
 const clientEncryptionKeyPair = crypto.generateKeyPairSync("rsa", {
@@ -1148,6 +1149,7 @@ function queueCustomPromptAutomations(userId, target, labelsApplied) {
   const emailContext = {
     emailId: target.email.emailId,
     threadId: target.email.threadId || target.email.emailId,
+    emailAccountId: target.account.id,
     accountEmail: target.account.email,
     provider: target.account.provider,
     from: target.email.fromEmail,
@@ -1232,6 +1234,17 @@ async function runCustomPromptAutomations(userId, emailContext) {
         mcpClients: selectedClients,
         toolChoice: selectedClients.length > 0 ? prompt.toolChoice : "auto",
       });
+      const responseText = cleanAiTextResponse(response) || "(No response returned.)";
+
+      await upsertEmailAutomationResult(userId, {
+        accountEmail: emailContext.accountEmail,
+        emailAccountId: emailContext.emailAccountId,
+        emailId: emailContext.emailId,
+        promptId: prompt.id,
+        promptName: prompt.name,
+        response: responseText,
+        status: "success",
+      });
 
       await logSystemEvent(userId, {
         category: "ai",
@@ -1246,7 +1259,7 @@ async function runCustomPromptAutomations(userId, emailContext) {
           selectedLabelIds: prompt.selectedLabelIds,
           selectedTools: prompt.selectedTools,
           toolChoice: prompt.toolChoice,
-          response,
+          response: responseText,
         },
       });
     } catch (error) {
