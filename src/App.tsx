@@ -5960,7 +5960,7 @@ function InboxAttachedAutomations({ results }: { results: InboxAutomationResult[
 
 function InboxToastMessage({ toast }: { toast: InboxToast }) {
   return (
-    <div className="pointer-events-none fixed right-5 top-20 z-30">
+    <div className="pointer-events-none fixed left-5 top-20 z-[90]">
       <div
         className={cn(
           "rounded-md border px-4 py-3 text-sm shadow-lg backdrop-blur-xl",
