@@ -17,12 +17,8 @@ Available labels:
 {labelTable}`,
   },
   "draft-reply": {
-    title: "Draft Reply",
-    defaultMarkdown: `You are an email reply assistant.
-
-The voice should be warm but not overly casual. Use simple sentences and make the message clear and tactful. Do not use emojis or slang or colloquial terminology.
-
-Use the email examples below to get a better understand on what replies should sound like:`,
+    title: "Reply Prompt",
+    defaultMarkdown: "",
   },
 };
 
@@ -172,7 +168,7 @@ export function registerAiPromptRoutes(app) {
 
   app.put("/api/ai-prompts/:promptKey", requireSession, async (req, res) => {
     const definition = PROMPT_DEFINITIONS[req.params.promptKey];
-    const input = parsePromptInput(req.body);
+    const input = parsePromptInput(req.body, getPromptInputOptions(req.params.promptKey));
 
     if (!definition) {
       res.status(404).json({ error: "AI prompt not found" });
@@ -194,7 +190,7 @@ export function registerAiPromptRoutes(app) {
 
   app.post("/api/ai-prompts/:promptKey/preview", requireSession, async (req, res) => {
     const definition = PROMPT_DEFINITIONS[req.params.promptKey];
-    const input = parsePromptInput(req.body);
+    const input = parsePromptInput(req.body, getPromptInputOptions(req.params.promptKey));
 
     if (!definition) {
       res.status(404).json({ error: "AI prompt not found" });
@@ -263,11 +259,16 @@ function toWebHeaders(headers) {
   return webHeaders;
 }
 
-function parsePromptInput(body) {
-  const markdown = typeof body?.markdown === "string" ? body.markdown : "";
+function getPromptInputOptions(promptKey) {
+  return promptKey === "draft-reply" ? { maxLength: 500 } : {};
+}
 
-  if (markdown.length > 20_000) {
-    return { ok: false, error: "Prompt must be 20,000 characters or less" };
+function parsePromptInput(body, options = {}) {
+  const markdown = typeof body?.markdown === "string" ? body.markdown : "";
+  const maxLength = Number(options.maxLength) || 20_000;
+
+  if (markdown.length > maxLength) {
+    return { ok: false, error: `Prompt must be ${maxLength.toLocaleString()} characters or less` };
   }
 
   if (/!\[[^\]]*]\([^)]*\)/.test(markdown) || /<img[\s>]/i.test(markdown)) {
@@ -367,6 +368,11 @@ async function getAiPrompt(userId, promptKey) {
   );
 
   return result.rows[0] ?? null;
+}
+
+export async function getReplyPromptForUser(userId) {
+  const prompt = await getAiPrompt(userId, "draft-reply");
+  return String(prompt?.markdown ?? "").trim();
 }
 
 async function saveAiPrompt(userId, promptKey, markdown) {

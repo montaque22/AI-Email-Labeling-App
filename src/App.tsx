@@ -56,6 +56,7 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { LiquidGlassCard } from "./components/ui/liquid-glass";
 import { AiPromptsManager } from "./components/prompts/AiPromptsManager";
+import { ReplyPromptPage } from "./components/prompts/ReplyPromptPage";
 import { AiUsageChartCard } from "./components/metrics/AiUsageChartCard";
 import { AlarmEditorView, AlarmSimulationChart } from "./components/metrics/AlarmEditorView";
 import { AlarmResizableSplit } from "./components/metrics/AlarmResizableSplit";
@@ -721,6 +722,7 @@ const navItems = [
 
 const aiPromptSubItems = [
   { id: "ai-byoai" as const, label: "BYOAI" },
+  { id: "ai-draft-reply" as const, label: "Reply Prompt" },
   { id: "ai-prompt-library" as const, label: "Prompts" },
 ];
 
@@ -1760,6 +1762,7 @@ function AuthenticatedLayout({
           )}
           {activePage === "ai-prompts" && <AiPromptsPage onNavigate={onNavigate} />}
           {activePage === "ai-byoai" && <ByoAiPage />}
+          {activePage === "ai-draft-reply" && <ReplyPromptPage />}
           {activePage === "ai-prompt-library" && <AiPromptLibraryPage privacyMode={privacyMode} />}
           {activePage === "settings" && <SettingsPage onNavigate={onNavigate} />}
           {activePage === "system" && <SystemSettingsPage />}
@@ -15482,7 +15485,7 @@ function escapeHtml(value: string) {
 }
 
 function isAiPromptsPage(page: Page) {
-  return page === "ai-prompts" || page === "ai-byoai" || page === "ai-prompt-library";
+  return page === "ai-prompts" || page === "ai-byoai" || page === "ai-prompt-library" || page === "ai-draft-reply";
 }
 
 function isSettingsPage(page: Page) {
@@ -15665,6 +15668,10 @@ function pageFromPath(pathname: string): Page {
     return "documentation";
   }
 
+  if (normalizedPath === "/ai/prompts/draft-reply") {
+    return "ai-draft-reply";
+  }
+
   if (normalizedPath.startsWith("/ai/prompts")) {
     return "ai-prompt-library";
   }
@@ -15807,7 +15814,7 @@ function getPageTitle(page: Page) {
   }
 
   if (page === "ai-draft-reply") {
-    return "Draft Reply Prompt";
+    return "Reply Prompt";
   }
 
   if (page === "confidence-threshold") {

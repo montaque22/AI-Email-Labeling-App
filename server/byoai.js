@@ -8,6 +8,7 @@ import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
 import {
   getRenderedLabelInstructions,
+  getReplyPromptForUser,
   listCustomAiPrompts,
   renderAiPromptMarkdownForUser,
 } from "./ai-prompts.js";
@@ -830,7 +831,7 @@ async function generateAiReply(userId, request) {
   await assertAiEnabled(userId);
   const target = await findEmailTarget(userId, request);
   const aiResponse = await callBestAvailableAi(userId, {
-    systemPrompt: DEFAULT_DRAFT_REPLY_SYSTEM_PROMPT,
+    systemPrompt: await buildDraftReplySystemPrompt(userId),
     userPrompt: `Draft a reply for this email. Return JSON with keys: to, subject, bodyText, bodyHtml.\n\nSubject: ${target.email.subject}\nFrom: ${target.email.fromEmail}\nBody:\n${simplifyBody(target.email.bodyText)}`,
     responseShape: "reply",
     responseSchema: AI_REPLY_OUTPUT_SCHEMA,
@@ -1136,13 +1137,19 @@ async function generateComposeSuggestion(userId, request) {
   const draftLabel = request.message ? "Current reply draft written by the app user" : "Current email draft written by the app user";
   const instructionLabel = request.message ? "User instruction for how the app user's reply should be written" : "User instruction for how the app user's email should be written";
   const toolInstruction = buildComposeToolInstruction(requiredTools);
+  const draftSystemPrompt = await buildDraftReplySystemPrompt(userId);
   const aiResponse = await callBestAvailableAi(userId, {
-    systemPrompt: `${DEFAULT_DRAFT_REPLY_SYSTEM_PROMPT}\n\nYou are a helpful personal email assistant. Your task is isolated to finding information in the user's connected emails when needed and crafting replies or new email bodies based on the user's request. Use available tools when the user asks you to look up, find, verify, retrieve, or insert information from email. If the user includes a [Use tool: tool_name] directive, you MUST call that tool before writing the draft. Use tool results as supporting context, but return only the final drafted email body text.\n\n${toolInstruction}\n\nReturn only the drafted email body text. Do not include explanations, markdown fences, subject lines, or metadata. For replies, always write as the app user replying to the original sender, never as the original sender.`,
+    systemPrompt: `${draftSystemPrompt}\n\nYou are a helpful personal email assistant. Your task is isolated to finding information in the user's connected emails when needed and crafting replies or new email bodies based on the user's request. Use available tools when the user asks you to look up, find, verify, retrieve, or insert information from email. If the user includes a [Use tool: tool_name] directive, you MUST call that tool before writing the draft. Use tool results as supporting context, but return only the final drafted email body text.\n\n${toolInstruction}\n\nReturn only the drafted email body text. Do not include explanations, markdown fences, subject lines, or metadata. For replies, always write as the app user replying to the original sender, never as the original sender.`,
     userPrompt: `${context}\n\n${draftLabel}:\n${request.currentBody || "(empty)"}\n\n${instructionLabel}:\n${request.prompt}\n\n${toolInstruction}`,
     responseShape: "text",
   });
 
   return cleanAiTextResponse(aiResponse);
+}
+
+async function buildDraftReplySystemPrompt(userId) {
+  const replyPrompt = await getReplyPromptForUser(userId);
+  return [replyPrompt, DEFAULT_DRAFT_REPLY_SYSTEM_PROMPT].filter(Boolean).join("\n\n");
 }
 
 function queueCustomPromptAutomations(userId, target, labelsApplied) {
