@@ -72,9 +72,9 @@ export function LogErrorsTimelineCard({ data, isLoading }: { data: LogErrorSerie
             <p className="text-3xl font-semibold">{total.toLocaleString()}</p>
             <div className="h-48 w-full">
               <ResponsiveContainer height="100%" width="100%">
-                <LineChart data={chartData} margin={{ bottom: 4, left: -24, right: 10, top: 8 }}>
+                <LineChart data={chartData} margin={{ bottom: 4, left: 8, right: 10, top: 8 }}>
                   <XAxis axisLine={false} dataKey="label" interval="preserveStartEnd" tick={{ fill: "#71717a", fontSize: 12 }} tickLine={false} />
-                  <YAxis allowDecimals={false} axisLine={false} tick={{ fill: "#71717a", fontSize: 12 }} tickLine={false} width={36} />
+                  <YAxis allowDecimals={false} axisLine={false} tick={{ fill: "#71717a", fontSize: 12 }} tickLine={false} width={44} />
                   <RechartsTooltip
                     contentStyle={{
                       border: "1px solid #e4e4e7",

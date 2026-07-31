@@ -1907,7 +1907,7 @@ async function callBestAvailableAi(userId, prompt, options = {}) {
 
   for (const platform of connected) {
     try {
-      return await callAiPlatform(platform, prompt, { mcpClients, toolChoice: options.toolChoice });
+      return await callAiPlatformWithMetrics(userId, platform, prompt, { mcpClients, toolChoice: options.toolChoice });
     } catch (error) {
       lastError = error;
       await logSystemEvent(userId, {
@@ -1915,7 +1915,11 @@ async function callBestAvailableAi(userId, prompt, options = {}) {
         eventName: "ai_provider.call_failed",
         status: "error",
         message: error.message,
-        payload: { provider: platform.provider, model: platform.model },
+        payload: {
+          provider: platform.provider,
+          model: platform.model,
+          request: summarizeAiPromptForLogs(prompt, options),
+        },
       });
       console.warn(`AI provider ${platform.provider} failed:`, error.message);
     }
@@ -1935,6 +1939,41 @@ async function testAiPlatform(platform) {
 
 async function callAiPlatform(platform, { systemPrompt, userPrompt, responseShape, responseSchema, messages }, options = {}) {
   return callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, responseShape, responseSchema, messages }, options);
+}
+
+async function callAiPlatformWithMetrics(userId, platform, prompt, options = {}) {
+  const startedAt = Date.now();
+  const requestSummary = summarizeAiPromptForLogs(prompt, options);
+
+  await logSystemEvent(userId, {
+    category: "ai",
+    eventName: "ai_provider.call_started",
+    status: "info",
+    message: `AI call started: ${platform.provider} ${platform.model}`,
+    payload: {
+      provider: platform.provider,
+      model: platform.model,
+      request: requestSummary,
+    },
+  });
+
+  const output = await callAiPlatform(platform, prompt, options);
+
+  await logSystemEvent(userId, {
+    category: "ai",
+    eventName: "ai_provider.call_completed",
+    status: "success",
+    message: `AI call completed: ${platform.provider} ${platform.model}`,
+    payload: {
+      provider: platform.provider,
+      model: platform.model,
+      durationMs: Date.now() - startedAt,
+      request: requestSummary,
+      response: summarizeAiOutputForLogs(output),
+    },
+  });
+
+  return output;
 }
 
 async function callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, responseShape, responseSchema, messages }, options = {}) {
@@ -2331,6 +2370,36 @@ function safeJsonStringify(value) {
   } catch {
     return String(value ?? "");
   }
+}
+
+function summarizeAiPromptForLogs(prompt = {}, options = {}) {
+  const messages = Array.isArray(prompt.messages) ? prompt.messages : [];
+  return {
+    responseShape: prompt.responseShape || "text",
+    hasResponseSchema: Boolean(prompt.responseSchema),
+    toolChoice: options.toolChoice ?? null,
+    toolCount: Array.isArray(options.mcpClients)
+      ? options.mcpClients.reduce((count, client) => count + (Array.isArray(client.tools) ? client.tools.length : 0), 0)
+      : 0,
+    messageCount: messages.length,
+    systemPrompt: truncateLogText(prompt.systemPrompt, 8000),
+    userPrompt: truncateLogText(prompt.userPrompt, 12000),
+    messages: messages.slice(-20).map((message) => ({
+      role: message.role,
+      content: truncateLogText(message.content ?? message.text, 4000),
+    })),
+  };
+}
+
+function summarizeAiOutputForLogs(output) {
+  return {
+    text: truncateLogText(output, 12000),
+  };
+}
+
+function truncateLogText(value, maxLength) {
+  const text = String(value ?? "");
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...[truncated]` : text;
 }
 
 function extractMcpResultText(result) {

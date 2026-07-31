@@ -2653,6 +2653,7 @@ async function getAiUsageTimeline(userId) {
         from system_logs
         where user_id = $1
           and category = 'ai'
+          and event_name = 'ai_provider.call_completed'
           and created_at >= date_trunc('day', now()) - interval '13 days'
         group by date_trunc('day', created_at), model
       )
