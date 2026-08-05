@@ -770,6 +770,7 @@ export function App() {
   const user = homeAssistantUser ?? (session.data?.user ? mapAuthUser(session.data.user) : null);
   const pwaUpdate = usePwaUpdatePrompt();
   const publicLegalDocument = getPublicLegalDocument(window.location.pathname);
+  const isPublicHomePage = isPublicHomePath(window.location.pathname);
 
   useEffect(() => {
     void completeEmailAccountOAuthCallbackFromAppShell();
@@ -921,6 +922,15 @@ export function App() {
 
   if (session.isPending || isHomeAssistantSessionPending) {
     return <LoadingScreen />;
+  }
+
+  if (isPublicHomePage) {
+    return (
+      <>
+        <HomePage hideAuth={Boolean(user)} onAuthSuccess={() => session.refetch()} />
+        <PwaUpdatePrompt {...pwaUpdate} />
+      </>
+    );
   }
 
   return (
@@ -1087,7 +1097,7 @@ function WifiOffIcon() {
   );
 }
 
-function HomePage({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> }) {
+function HomePage({ hideAuth = false, onAuthSuccess }: { hideAuth?: boolean; onAuthSuccess: () => Promise<unknown> }) {
   const featureCards: Array<{
     description: string;
     icon: ComponentType<{ className?: string }>;
@@ -1148,7 +1158,12 @@ function HomePage({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> }) 
         </div>
       </header>
 
-      <section className="mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-10 px-5 pb-14 pt-10 lg:grid-cols-[minmax(0,1fr)_420px] lg:pb-20 lg:pt-16">
+      <section
+        className={cn(
+          "mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-10 px-5 pb-14 pt-10 lg:pb-20 lg:pt-16",
+          hideAuth ? "lg:grid-cols-1" : "lg:grid-cols-[minmax(0,1fr)_420px]",
+        )}
+      >
         <div className="landing-reveal max-w-2xl">
           <Badge className="mb-5 border-white/70 bg-white/50 text-zinc-700 shadow-sm backdrop-blur-[5px]">
             Email labeling, inbox, AI, MCP, APIs
@@ -1170,9 +1185,11 @@ function HomePage({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> }) 
           </div>
         </div>
 
-        <div className="landing-reveal landing-reveal-delay-1">
-          <AuthPanel onAuthSuccess={onAuthSuccess} />
-        </div>
+        {!hideAuth ? (
+          <div className="landing-reveal landing-reveal-delay-1">
+            <AuthPanel onAuthSuccess={onAuthSuccess} />
+          </div>
+        ) : null}
       </section>
 
       <section className="mx-auto w-full max-w-6xl px-5 pb-16">
@@ -15806,6 +15823,10 @@ function getPublicLegalDocument(pathname: string) {
     return legalDocuments["terms-of-service"] ?? null;
   }
   return null;
+}
+
+function isPublicHomePath(pathname: string) {
+  return stripRuntimeBasePath(pathname) === "/home";
 }
 
 function metricsTabFromPath(pathname: string): MetricsTab {
