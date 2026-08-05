@@ -1236,18 +1236,24 @@ function HomePage({ hideAuth = false, onAuthSuccess }: { hideAuth?: boolean; onA
         </Card>
       </section>
 
-      <footer className="mx-auto flex w-full max-w-6xl flex-col gap-3 border-t border-white/60 px-5 py-8 text-xs text-zinc-500 sm:flex-row sm:items-center sm:justify-between">
-        <p>Emailable is licensed under the AGPL-3.0.</p>
-        <nav className="flex flex-wrap gap-4">
-          <a className="transition-colors hover:text-zinc-950" href={getRuntimeUrl("/privacy-policy")}>
-            Privacy Policy
-          </a>
-          <a className="transition-colors hover:text-zinc-950" href={getRuntimeUrl("/terms-of-service")}>
-            Terms of Service
-          </a>
-        </nav>
-      </footer>
+      <PublicPageFooter />
     </main>
+  );
+}
+
+function PublicPageFooter({ className }: { className?: string }) {
+  return (
+    <footer className={cn("mx-auto flex w-full max-w-6xl flex-col gap-3 border-t border-white/60 px-5 py-8 text-xs text-zinc-500 sm:flex-row sm:items-center sm:justify-between", className)}>
+      <p>Emailable is licensed under the AGPL-3.0.</p>
+      <nav className="flex flex-wrap gap-4">
+        <a className="transition-colors hover:text-zinc-950" href={getRuntimeUrl("/privacy-policy")}>
+          Privacy Policy
+        </a>
+        <a className="transition-colors hover:text-zinc-950" href={getRuntimeUrl("/terms-of-service")}>
+          Terms of Service
+        </a>
+      </nav>
+    </footer>
   );
 }
 
@@ -1274,6 +1280,7 @@ function LegalPage({ document }: { document: LegalDocument }) {
           </CardContent>
         </Card>
       </div>
+      <PublicPageFooter className="mt-8 max-w-4xl px-0" />
     </main>
   );
 }
