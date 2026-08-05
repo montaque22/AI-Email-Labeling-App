@@ -18,6 +18,7 @@ import {
   Archive,
   ArrowDown,
   ArrowUp,
+  CalendarDays,
   Check,
   CheckCircle2,
   ChevronLeft,
@@ -65,6 +66,7 @@ import { LogErrorsTimelineCard } from "./components/metrics/LogErrorsTimelineCar
 import { LogOutcomePieCard } from "./components/metrics/LogOutcomePieCard";
 import { MetricsTabPill } from "./components/metrics/MetricsTabPill";
 import type { AiUsageSeries, AlarmGranularity, AlarmSimulationPoint, LogAlarm, LogAlarmDraft, LogErrorSeries, LogOutcomeSummary, MetricsTab } from "./components/metrics/types";
+import { CalendarPage } from "./components/calendar/CalendarPage";
 import { authClient } from "./lib/auth-client";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
@@ -72,6 +74,7 @@ import { cn } from "./lib/utils";
 type Page =
   | "overview"
   | "inbox"
+  | "calendar"
   | "labels"
   | "rules"
   | "metrics"
@@ -701,6 +704,12 @@ type DocumentationEntry = {
   title: string;
 };
 
+type LegalDocument = {
+  content: string;
+  path: string;
+  title: string;
+};
+
 const documentationModules = import.meta.glob("../documentation/*.md", {
   eager: true,
   import: "default",
@@ -709,10 +718,22 @@ const documentationModules = import.meta.glob("../documentation/*.md", {
 const documentationEntries = Object.entries(documentationModules)
   .map(([path, markdown]) => parseDocumentationEntry(path, markdown))
   .sort((left, right) => left.order - right.order || left.title.localeCompare(right.title));
+const legalDocumentModules = import.meta.glob("./legal/*.md", {
+  eager: true,
+  import: "default",
+  query: "?raw",
+}) as Record<string, string>;
+const legalDocuments = Object.fromEntries(
+  Object.entries(legalDocumentModules).map(([path, markdown]) => {
+    const slug = path.split("/").pop()?.replace(/\.md$/i, "") || "legal";
+    return [slug, parseLegalDocument(slug, markdown)];
+  }),
+) as Record<string, LegalDocument>;
 
 const navItems = [
   { id: "overview" as const, label: "Overview", icon: Gauge },
   { id: "inbox" as const, label: "Inbox", icon: Inbox },
+  { id: "calendar" as const, label: "Calendar", icon: CalendarDays },
   { id: "labels" as const, label: "Labels", icon: Tag },
   { id: "rules" as const, label: "Rule Review", icon: FileCheck2 },
   { id: "metrics" as const, label: "Metrics", icon: BarChart3 },
@@ -748,6 +769,7 @@ export function App() {
   const [ruleInitialFilter, setRuleInitialFilter] = useState<RulePendingFilter | null>(null);
   const user = homeAssistantUser ?? (session.data?.user ? mapAuthUser(session.data.user) : null);
   const pwaUpdate = usePwaUpdatePrompt();
+  const publicLegalDocument = getPublicLegalDocument(window.location.pathname);
 
   useEffect(() => {
     void completeEmailAccountOAuthCallbackFromAppShell();
@@ -886,6 +908,15 @@ export function App() {
     if (window.location.pathname !== path) {
       window.history.pushState({}, "", path);
     }
+  }
+
+  if (publicLegalDocument) {
+    return (
+      <>
+        <LegalPage document={publicLegalDocument} />
+        <PwaUpdatePrompt {...pwaUpdate} />
+      </>
+    );
   }
 
   if (session.isPending || isHomeAssistantSessionPending) {
@@ -1187,6 +1218,45 @@ function HomePage({ onAuthSuccess }: { onAuthSuccess: () => Promise<unknown> }) 
           </div>
         </Card>
       </section>
+
+      <footer className="mx-auto flex w-full max-w-6xl flex-col gap-3 border-t border-white/60 px-5 py-8 text-xs text-zinc-500 sm:flex-row sm:items-center sm:justify-between">
+        <p>Emailable is licensed under the AGPL-3.0.</p>
+        <nav className="flex flex-wrap gap-4">
+          <a className="transition-colors hover:text-zinc-950" href={getRuntimeUrl("/privacy-policy")}>
+            Privacy Policy
+          </a>
+          <a className="transition-colors hover:text-zinc-950" href={getRuntimeUrl("/terms-of-service")}>
+            Terms of Service
+          </a>
+        </nav>
+      </footer>
+    </main>
+  );
+}
+
+function LegalPage({ document }: { document: LegalDocument }) {
+  return (
+    <main className="min-h-screen bg-[radial-gradient(circle_at_8%_8%,rgba(219,234,254,0.9),transparent_34%),radial-gradient(circle_at_88%_18%,rgba(255,237,213,0.85),transparent_30%),linear-gradient(135deg,#eef5ff_0%,#f8fafc_48%,#fff7ed_100%)] px-5 py-8 text-zinc-950">
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
+        <a className="inline-flex w-fit items-center gap-3" href={getRuntimeUrl("/")}>
+          <EmailableLogo className="h-9 w-9 shrink-0" />
+          <span className="bg-gradient-to-r from-cyan-500 via-blue-600 to-violet-600 bg-clip-text text-xl font-bold text-transparent">
+            Emailable
+          </span>
+        </a>
+        <Card className="border border-white/70 bg-white/50 shadow-2xl shadow-slate-900/10 backdrop-blur-[5px]">
+          <CardHeader>
+            <CardTitle>{document.title}</CardTitle>
+            <CardDescription>Legal information for Emailable.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <article
+              className="prose prose-zinc max-w-none text-sm leading-7 prose-headings:tracking-normal prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline"
+              dangerouslySetInnerHTML={{ __html: renderMarkdownHtml(document.content) }}
+            />
+          </CardContent>
+        </Card>
+      </div>
     </main>
   );
 }
@@ -1751,6 +1821,7 @@ function AuthenticatedLayout({
             />
           )}
           {activePage === "inbox" && <InboxPage onNavigate={onNavigate} onOpenMobileMenu={() => setMobileMenuOpen(true)} privacyMode={privacyMode} />}
+          {activePage === "calendar" && <CalendarPage />}
           {activePage === "labels" && <LabelsPage privacyMode={privacyMode} />}
           {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} privacyMode={privacyMode} />}
           {activePage === "metrics" && <MetricsPage />}
@@ -15495,6 +15566,7 @@ function isSettingsPage(page: Page) {
 const pagePaths: Record<Page, string> = {
   overview: "/",
   inbox: "/inbox",
+  calendar: "/calendar",
   labels: "/labels",
   rules: "/rule-review",
   metrics: "/metrics",
@@ -15725,6 +15797,17 @@ function stripRuntimeBasePath(pathname: string) {
   return withoutBase.replace(/\/+$/, "") || "/";
 }
 
+function getPublicLegalDocument(pathname: string) {
+  const normalizedPath = stripRuntimeBasePath(pathname);
+  if (normalizedPath === "/privacy-policy") {
+    return legalDocuments["privacy-policy"] ?? null;
+  }
+  if (normalizedPath === "/terms-of-service") {
+    return legalDocuments["terms-of-service"] ?? null;
+  }
+  return null;
+}
+
 function metricsTabFromPath(pathname: string): MetricsTab {
   const path = stripRuntimeBasePath(pathname);
   if (path === "/metrics/logs") {
@@ -15790,6 +15873,15 @@ function parseDocumentationEntry(path: string, markdown: string): DocumentationE
     order: Number.isFinite(parsedOrder) ? parsedOrder : 999,
     slug: metadata.slug || filenameWithoutOrder.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
     title,
+  };
+}
+
+function parseLegalDocument(slug: string, markdown: string): LegalDocument {
+  const title = markdown.match(/^#\s+(.+)$/m)?.[1]?.trim();
+  return {
+    content: markdown,
+    path: `/${slug}`,
+    title: title || slug.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
   };
 }
 
