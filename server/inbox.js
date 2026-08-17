@@ -1890,10 +1890,6 @@ function parseBulkMessageInput(body) {
   if (body.messages.length === 0) {
     return { ok: false, error: "Select at least one message" };
   }
-  if (body.messages.length > 50) {
-    return { ok: false, error: "You can update up to 50 messages at a time" };
-  }
-
   const messages = [];
   for (const [index, message] of body.messages.entries()) {
     if (!message || typeof message !== "object") {

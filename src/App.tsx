@@ -3872,7 +3872,22 @@ function InboxPage({
       onTouchStart={handleMobilePullStart}
     >
       {toast ? <InboxToastMessage toast={toast} /> : null}
-      {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+      {error ? (
+        <>
+          <div className="fixed left-3 right-3 top-[calc(env(safe-area-inset-top)+4.75rem)] z-[95] flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50/95 px-4 py-3 text-sm text-red-700 shadow-xl shadow-red-900/10 backdrop-blur-xl md:hidden">
+            <span className="min-w-0 flex-1">{error}</span>
+            <button
+              aria-label="Dismiss error"
+              className="-mr-1 rounded-full p-1 text-red-600 transition hover:bg-red-100 hover:text-red-800"
+              onClick={() => setError(null)}
+              type="button"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <p className="hidden rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 md:block">{error}</p>
+        </>
+      ) : null}
 
       <div className="fixed inset-x-0 top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-white/60 bg-white/60 px-4 shadow-sm backdrop-blur-xl md:hidden">
         {isMobileEditMode ? (
@@ -3971,6 +3986,10 @@ function InboxPage({
       ) : null}
       {isBulkActionBarRendered ? (
         <div className="inbox-floating-actions fixed bottom-5 left-1/2 z-40 flex items-center gap-1 rounded-full border border-white/70 bg-white/70 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl" data-state={hasSelectedMessages ? "open" : "closed"}>
+          <span className="select-none whitespace-nowrap px-3 text-sm font-medium text-zinc-600" aria-live="polite">
+            {selectedMessages.length} selected
+          </span>
+          <div className="h-8 w-px bg-zinc-200/80" />
           {!selectedHasCommitments ? (
             <>
               <Button
