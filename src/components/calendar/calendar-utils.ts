@@ -88,6 +88,23 @@ export function formatEventTime(event: CalendarEvent) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(event.startsAt));
 }
 
+export function formatEventDateRange(event: CalendarEvent) {
+  const startsAt = new Date(event.startsAt);
+  const endsAt = event.endsAt ? new Date(event.endsAt) : null;
+  if (event.allDay) {
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(startsAt);
+  }
+  const dateFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "full" });
+  const timeFormatter = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+  if (!endsAt) {
+    return `${dateFormatter.format(startsAt)} at ${timeFormatter.format(startsAt)}`;
+  }
+  if (isSameDay(startsAt, endsAt)) {
+    return `${dateFormatter.format(startsAt)}, ${timeFormatter.format(startsAt)} - ${timeFormatter.format(endsAt)}`;
+  }
+  return `${dateFormatter.format(startsAt)} at ${timeFormatter.format(startsAt)} - ${dateFormatter.format(endsAt)} at ${timeFormatter.format(endsAt)}`;
+}
+
 export function getCalendarRange(view: CalendarView, visibleDate: Date) {
   if (view === "day") {
     const start = startOfDay(visibleDate);
