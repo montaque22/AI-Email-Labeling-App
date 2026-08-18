@@ -69,8 +69,9 @@ export function registerCalendarSubscriptionRoutes(app) {
     }
 
     try {
+      const parsedEvents = await validateCalendarFeed(input.subscription.url);
       const subscription = await upsertCalendarSubscription(req.user.id, input.subscription);
-      const syncResult = await syncCalendarSubscription(req.user.id, subscription.id);
+      const syncResult = await saveCalendarSyncSuccess(req.user.id, subscription.id, parsedEvents);
       res.status(201).json({ subscription: syncResult.subscription, eventCount: syncResult.eventCount });
     } catch (error) {
       handleCalendarError(res, error);
@@ -85,12 +86,15 @@ export function registerCalendarSubscriptionRoutes(app) {
     }
 
     try {
-      const subscription = await updateCalendarSubscription(req.user.id, req.params.id, input.subscription);
-      if (!subscription) {
+      const existingSubscription = await getCalendarSubscription(req.user.id, req.params.id);
+      if (!existingSubscription) {
         res.status(404).json({ error: "Calendar subscription not found" });
         return;
       }
-      const syncResult = await syncCalendarSubscription(req.user.id, subscription.id);
+
+      const parsedEvents = await validateCalendarFeed(input.subscription.url);
+      const subscription = await updateCalendarSubscription(req.user.id, req.params.id, input.subscription);
+      const syncResult = await saveCalendarSyncSuccess(req.user.id, subscription.id, parsedEvents);
       res.json({ subscription: syncResult.subscription, eventCount: syncResult.eventCount });
     } catch (error) {
       handleCalendarError(res, error);
@@ -148,6 +152,11 @@ async function listCalendarSubscriptions(userId) {
   return result.rows.map(mapSubscriptionRow);
 }
 
+async function getCalendarSubscription(userId, id) {
+  const result = await dbPool.query("select * from calendar_subscriptions where id = $1 and user_id = $2", [id, userId]);
+  return result.rows[0] ? mapSubscriptionRow(result.rows[0]) : null;
+}
+
 async function upsertCalendarSubscription(userId, subscription) {
   const result = await dbPool.query(
     `
@@ -192,14 +201,8 @@ async function syncCalendarSubscription(userId, subscriptionId) {
   }
 
   try {
-    const ics = await fetchCalendarFeed(subscription.url);
-    const parsedEvents = parseCalendarFeedEvents(ics);
-    await replaceSubscriptionEvents(userId, subscription.id, parsedEvents);
-    const updatedResult = await dbPool.query(
-      "update calendar_subscriptions set last_fetched_at = now(), last_error = null, updated_at = now() where id = $1 and user_id = $2 returning *",
-      [subscription.id, userId],
-    );
-    return { subscription: mapSubscriptionRow(updatedResult.rows[0]), eventCount: parsedEvents.length };
+    const parsedEvents = await validateCalendarFeed(subscription.url);
+    return await saveCalendarSyncSuccess(userId, subscription.id, parsedEvents);
   } catch (error) {
     await dbPool.query(
       "update calendar_subscriptions set last_error = $3, updated_at = now() where id = $1 and user_id = $2",
@@ -207,6 +210,23 @@ async function syncCalendarSubscription(userId, subscriptionId) {
     );
     throw error;
   }
+}
+
+async function validateCalendarFeed(url) {
+  const ics = await fetchCalendarFeed(url);
+  return parseCalendarFeedEvents(ics);
+}
+
+async function saveCalendarSyncSuccess(userId, subscriptionId, parsedEvents) {
+  await replaceSubscriptionEvents(userId, subscriptionId, parsedEvents);
+  const updatedResult = await dbPool.query(
+    "update calendar_subscriptions set last_fetched_at = now(), last_error = null, updated_at = now() where id = $1 and user_id = $2 returning *",
+    [subscriptionId, userId],
+  );
+  return {
+    subscription: { ...mapSubscriptionRow(updatedResult.rows[0]), eventCount: parsedEvents.length },
+    eventCount: parsedEvents.length,
+  };
 }
 
 async function fetchCalendarFeed(rawUrl) {
