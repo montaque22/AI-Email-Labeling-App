@@ -6,6 +6,7 @@ import { toNodeHandler } from "better-auth/node";
 import { auth, googleOAuthEnabled } from "./auth.js";
 import { ensureAiPromptsTable, registerAiPromptRoutes } from "./ai-prompts.js";
 import { ensureByoAiTables, registerByoAiRoutes } from "./byoai.js";
+import { ensureCalendarSubscriptionTables, registerCalendarSubscriptionRoutes } from "./calendar-subscriptions.js";
 import { dbPool } from "./db.js";
 import { ensureEmailAccountsTable, registerEmailAccountRoutes } from "./email-accounts.js";
 import { ensureEmailIndexTable } from "./email-index.js";
@@ -160,6 +161,7 @@ registerAiPromptRoutes(app);
 registerByoAiRoutes(app);
 registerMcpRoutes(app);
 registerPollingRoutes(app);
+registerCalendarSubscriptionRoutes(app);
 
 app.use(express.static(distDir, { index: false }));
 
@@ -240,6 +242,7 @@ async function startServer() {
     await ensureByoAiTables();
     await ensureMcpTables();
     await ensurePollingSettings();
+    await ensureCalendarSubscriptionTables();
   } catch (error) {
     console.error("Failed to initialize database tables:", error);
   }
