@@ -3766,7 +3766,7 @@ function InboxPage({
   const areInboxFilterSectionsDisabled = !isLabelFilteredInboxMode(inboxMode);
 
   const accountPicker = (
-    <div className="relative z-10 w-full" data-inbox-account-menu>
+    <div className="relative z-[90] w-full" data-inbox-account-menu>
       <Button
         className="w-full justify-between"
         disabled={areInboxFilterSectionsDisabled}
@@ -3777,7 +3777,7 @@ function InboxPage({
         Accounts {selectedAccountIds.length}/{accounts.length}
       </Button>
       {isAccountMenuOpen && !areInboxFilterSectionsDisabled ? (
-        <div className="absolute left-0 top-11 z-20 w-full min-w-72 rounded-md border border-zinc-200 bg-white p-2 shadow-xl">
+        <div className="absolute left-0 top-11 z-[120] w-full min-w-72 rounded-md border border-zinc-200 bg-white/95 p-2 shadow-2xl backdrop-blur-none">
           <div className="mb-2 flex gap-2">
             <Button onClick={() => setSelectedAccountIds(accounts.map((account) => account.id))} size="sm" type="button" variant="outline">
               All
@@ -4134,7 +4134,7 @@ function InboxPage({
             </CardHeader>
             <CardContent>{labelSelect}</CardContent>
           </Card>
-          <Card>
+          <Card className="relative z-30 overflow-visible">
             <CardHeader>
               <CardTitle>Accounts</CardTitle>
               <CardDescription>Include or exclude connected accounts.</CardDescription>
@@ -4145,16 +4145,16 @@ function InboxPage({
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-[280px_1px_minmax(0,1fr)] xl:gap-5">
           <>
-            <div className="sticky top-16 hidden max-h-[calc(100vh-5rem)] min-h-0 self-start overflow-y-auto pr-1 xl:block">
+            <div className="sticky top-16 hidden max-h-[calc(100vh-5rem)] min-h-0 self-start overflow-visible pr-1 xl:block">
               <div className="space-y-3">
-              <Card>
+              <Card className="relative z-30 overflow-visible">
                 <CardHeader>
                   <CardTitle>Accounts</CardTitle>
                   <CardDescription>Include connected accounts.</CardDescription>
                 </CardHeader>
                 <CardContent>{accountPicker}</CardContent>
               </Card>
-              <Card className="flex min-h-0 flex-col overflow-hidden">
+              <Card className="relative z-10 flex min-h-0 flex-col overflow-hidden">
                 <CardHeader>
                   <CardTitle>Labels</CardTitle>
                   <CardDescription>Choose a label or folder.</CardDescription>
