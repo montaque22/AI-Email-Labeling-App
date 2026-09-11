@@ -62,7 +62,9 @@ const AI_LABEL_MAX_CANDIDATES = 3;
 const AI_LABEL_NAME_MAX_LENGTH = 25;
 const AI_LABEL_REASON_MAX_LENGTH = 200;
 const AI_HELPER_HISTORY_LIMIT = 60;
+const AI_HELPER_MEMORY_TTL_MS = 60 * 60 * 1000;
 const CUSTOM_PROMPT_AUTOMATION_CONCURRENCY = 2;
+const aiHelperMemory = new Map();
 const DEFAULT_DRAFT_REPLY_SYSTEM_PROMPT = `You are an email reply assistant.
 
 The voice should be warm but not overly casual. Use simple sentences and make the message clear and tactful. Do not use emojis, slang, or colloquial terminology.
@@ -645,7 +647,7 @@ export function registerByoAiRoutes(app) {
         return;
       }
 
-      res.json({ message: await generateAiHelperChat(req.user.id, input.request) });
+      res.json(await generateAiHelperChat(req.user.id, input.request));
     } catch (error) {
       handleError(res, error);
     }
@@ -1387,10 +1389,14 @@ function filterMcpClientsForPrompt(clients, selectedTools) {
 
 async function generateAiHelperChat(userId, request) {
   await assertAiEnabled(userId);
-  const history = request.conversationHistory.slice(-AI_HELPER_HISTORY_LIMIT);
+  pruneAiHelperMemory();
+  const memory = getAiHelperSessionMemory(userId, request.sessionId);
+  const combinedHistory = mergeAiHelperHistory(memory.messages, request.conversationHistory);
+  const history = combinedHistory.slice(-AI_HELPER_HISTORY_LIMIT);
   const currentMessageIsInHistory = history.at(-1)?.role === "user" && history.at(-1)?.text === request.prompt;
   const previousHistory = currentMessageIsInHistory ? history.slice(0, -1) : history;
   const lastAssistantQuestion = [...previousHistory].reverse().find((message) => message.role === "assistant")?.text || "";
+  const toolResults = [];
   const context = request.contextMessages
     .slice(0, 30)
     .map((message, index) => [
@@ -1408,6 +1414,7 @@ async function generateAiHelperChat(userId, request) {
       "You are Emailable's AI Helper, an email-focused assistant acting as an agent for the app user.",
       "You can answer questions about email, help compose or reply to emails, and use available tools whenever they are the reliable way to answer.",
       "Keep conversational continuity. Interpret short follow-ups such as yes, sure, no, that one, do it, or continue as direct answers to your immediately previous question unless the user clearly changed topics.",
+      "When you list or identify emails and then ask whether the user wants to act on them, assume short follow-ups like delete them, archive them, yes, or do it refer to that same listed set.",
       "Emails visible on screen or selected by the user are active context and should be considered first.",
       "You must understand email state. Inbox, sent, drafts, archive, labels, read/unread, and rules are meaningfully different states.",
       "Do not answer state/count questions from visible context alone unless the user explicitly asks about only visible emails. For archived mail, sent mail, drafts, labels, read/unread status, or rule counts, use tools to query indexed/database-backed data.",
@@ -1438,9 +1445,22 @@ async function generateAiHelperChat(userId, request) {
       },
     ],
     responseShape: "text",
+  }, {
+    onToolResult: (result) => toolResults.push(result),
   });
 
-  return cleanAiTextResponse(aiResponse);
+  const message = cleanAiTextResponse(aiResponse);
+  const affectedEmails = extractAffectedEmailsFromAiHelperToolResults(toolResults);
+  updateAiHelperSessionMemory(userId, request.sessionId, [
+    ...previousHistory,
+    { role: "user", text: request.prompt },
+    { role: "assistant", text: message },
+  ], affectedEmails.length > 0 ? affectedEmails : memory.affectedEmails);
+
+  return {
+    message,
+    affectedEmails: affectedEmails.length > 0 ? affectedEmails : [],
+  };
 }
 
 async function suggestEmailActions(userId, request) {
@@ -1899,6 +1919,126 @@ export async function isAiActiveForUser(userId) {
   return Boolean(settings.aiEnabled && platforms.some((platform) => platform.status === "connected"));
 }
 
+function getAiHelperMemoryKey(userId, sessionId) {
+  return `${userId}:${sessionId || "default"}`;
+}
+
+function pruneAiHelperMemory() {
+  const now = Date.now();
+  for (const [key, value] of aiHelperMemory.entries()) {
+    if (!value?.updatedAt || now - value.updatedAt > AI_HELPER_MEMORY_TTL_MS) {
+      aiHelperMemory.delete(key);
+    }
+  }
+}
+
+function getAiHelperSessionMemory(userId, sessionId) {
+  const key = getAiHelperMemoryKey(userId, sessionId);
+  const memory = aiHelperMemory.get(key);
+  if (!memory || Date.now() - memory.updatedAt > AI_HELPER_MEMORY_TTL_MS) {
+    aiHelperMemory.delete(key);
+    return { affectedEmails: [], messages: [] };
+  }
+  return {
+    affectedEmails: Array.isArray(memory.affectedEmails) ? memory.affectedEmails : [],
+    messages: Array.isArray(memory.messages) ? memory.messages : [],
+  };
+}
+
+function updateAiHelperSessionMemory(userId, sessionId, messages, affectedEmails = []) {
+  aiHelperMemory.set(getAiHelperMemoryKey(userId, sessionId), {
+    affectedEmails: Array.isArray(affectedEmails) ? affectedEmails.slice(0, 50) : [],
+    messages: Array.isArray(messages)
+      ? messages
+          .filter((message) => message && (message.role === "assistant" || message.role === "user") && typeof message.text === "string")
+          .slice(-AI_HELPER_HISTORY_LIMIT)
+      : [],
+    updatedAt: Date.now(),
+  });
+}
+
+function mergeAiHelperHistory(serverHistory = [], clientHistory = []) {
+  const merged = [];
+  const seen = new Set();
+  for (const message of [...serverHistory, ...clientHistory]) {
+    if (!message || (message.role !== "assistant" && message.role !== "user") || typeof message.text !== "string") {
+      continue;
+    }
+    const text = message.text.trim();
+    if (!text) {
+      continue;
+    }
+    const key = `${message.role}:${text}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push({ role: message.role, text: text.slice(0, 4000) });
+  }
+  return merged.slice(-AI_HELPER_HISTORY_LIMIT);
+}
+
+function extractAffectedEmailsFromAiHelperToolResults(toolResults = []) {
+  const affected = [];
+  const seen = new Set();
+  for (const entry of toolResults) {
+    if (entry?.toolName !== "find_email") {
+      continue;
+    }
+    const result = parseToolResultPayload(entry.result);
+    const emails = Array.isArray(result?.emails?.results)
+      ? result.emails.results
+      : Array.isArray(result?.results)
+        ? result.results
+        : [];
+    for (const email of emails) {
+      const emailId = String(email?.emailId || email?.id || "").trim();
+      const accountId = String(email?.accountId || "").trim();
+      if (!emailId || !accountId) {
+        continue;
+      }
+      const key = `${accountId}:${email?.mailbox || ""}:${emailId}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      affected.push({
+        accountId,
+        accountEmail: String(email.accountEmail || email.to || ""),
+        date: String(email.date || email.receivedAt || ""),
+        from: [email.fromName, email.fromEmail].filter(Boolean).join(" <").replace(/ <$/, "") || String(email.from || email.sender || ""),
+        id: emailId,
+        isRead: email.isRead !== false,
+        labels: Array.isArray(email.labels) ? email.labels.filter((label) => typeof label === "string") : [],
+        mailbox: String(email.mailbox || ""),
+        provider: String(email.provider || ""),
+        sender: String(email.fromName || email.fromEmail || email.sender || ""),
+        snippet: String(email.snippet || ""),
+        subject: String(email.subject || ""),
+        threadId: String(email.threadId || emailId),
+      });
+    }
+  }
+  return affected.slice(0, 50);
+}
+
+function parseToolResultPayload(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  if (Array.isArray(value.content)) {
+    const text = value.content.find((entry) => entry?.type === "text" && typeof entry.text === "string")?.text;
+    if (text) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    }
+  }
+  return value;
+}
+
 async function callBestAvailableAi(userId, prompt, options = {}) {
   const platforms = await listAiPlatforms(userId, { includeSecret: true });
   const connected = platforms.filter((platform) => platform.status === "connected");
@@ -1907,7 +2047,11 @@ async function callBestAvailableAi(userId, prompt, options = {}) {
 
   for (const platform of connected) {
     try {
-      return await callAiPlatformWithMetrics(userId, platform, prompt, { mcpClients, toolChoice: options.toolChoice });
+      return await callAiPlatformWithMetrics(userId, platform, prompt, {
+        mcpClients,
+        onToolResult: options.onToolResult,
+        toolChoice: options.toolChoice,
+      });
     } catch (error) {
       lastError = error;
       await logSystemEvent(userId, {
@@ -1978,7 +2122,7 @@ async function callAiPlatformWithMetrics(userId, platform, prompt, options = {})
 
 async function callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, responseShape, responseSchema, messages }, options = {}) {
   const model = createSdkModel(platform);
-  const tools = buildSdkTools(options.mcpClients ?? []);
+  const tools = buildSdkTools(options.mcpClients ?? [], options.onToolResult);
   const hasTools = Object.keys(tools).length > 0;
   const promptInput = messages?.length
     ? { messages: normalizeSdkMessages(messages) }
@@ -2056,7 +2200,7 @@ function normalizeSdkMessages(messages = []) {
     .filter((message) => message.content.trim());
 }
 
-function buildSdkTools(clients) {
+function buildSdkTools(clients, onToolResult) {
   const tools = {};
   const usedNames = new Set();
   const addTool = ({ name, description, inputSchema, execute }) => {
@@ -2064,7 +2208,13 @@ function buildSdkTools(clients) {
     tools[sdkName] = tool({
       description,
       inputSchema: jsonSchema(inputSchema ?? { type: "object", properties: {}, additionalProperties: true }),
-      execute,
+      execute: async (input) => {
+        const result = await execute(input);
+        if (typeof onToolResult === "function") {
+          onToolResult({ input, result, toolName: name });
+        }
+        return result;
+      },
     });
   };
 

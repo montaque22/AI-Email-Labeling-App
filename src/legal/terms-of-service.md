@@ -72,4 +72,3 @@ These Terms are governed by the laws of the United States, without regard to con
 Questions about these Terms can be sent to **montaque.developer@gmail.com**.
 
 ---
-*This document is a template and does not constitute legal advice. Consider having it reviewed by a qualified attorney, especially given the sensitivity of handling email content and third-party API credentials, the interaction between AGPL-3.0's network-use clause and your private hosting setup, and especially if you later decide to open access beyond a private/invite-only group.*

@@ -1485,15 +1485,18 @@ function escapeSqlLike(value) {
 
 function indexedEmailToMcpResult(email) {
   return {
+    accountId: email.accountId,
     accountEmail: email.accountEmail,
     provider: email.provider,
     emailId: email.id,
     threadId: email.threadId,
+    mailbox: email.mailbox || "",
     fromEmail: extractEmailAddressFromText(email.from) || email.from,
     fromName: email.sender,
     to: email.accountEmail,
     subject: email.subject,
     snippet: email.snippet,
+    date: email.date,
     labels: email.labels,
     state: email.archived ? "archive" : email.direction || email.mailbox || "indexed",
     isRead: email.isRead,

@@ -666,6 +666,23 @@ type InboxAiChatMessage = {
   id: number;
   role: "assistant" | "user";
   text: string;
+  affectedEmails?: Array<{
+    accountId: string;
+    accountEmail: string;
+    date: string;
+    from: string;
+    id: string;
+    isRead: boolean;
+    key: string;
+    labels: string[];
+    mailbox?: string;
+    provider: string;
+    sender: string;
+    snippet: string;
+    subject: string;
+    threadId: string;
+  }>;
+  pendingBulkAction?: "archive" | "delete";
   draftBody?: string;
   subjectSuggestion?: string;
   options?: Array<{
@@ -740,6 +757,8 @@ const navItems = [
   { id: "ai-prompts" as const, label: "Artificial Intelligence", icon: Sparkles },
   { id: "settings" as const, label: "Settings", icon: Settings },
 ];
+const emailNavItems = navItems.filter((item) => item.id !== "ai-prompts" && item.id !== "settings");
+const configurationNavItems = navItems.filter((item) => item.id === "ai-prompts" || item.id === "settings");
 
 const aiPromptSubItems = [
   { id: "ai-byoai" as const, label: "BYOAI" },
@@ -1553,6 +1572,80 @@ function AuthenticatedLayout({
     setMobileMenuOpen(false);
   }
 
+  function renderNavItem(item: (typeof navItems)[number], navigateToPage: (page: Page) => void, isCollapsed = false) {
+    const Icon = item.icon;
+    const isActive =
+      activePage === item.id ||
+      (item.id === "settings" && isSettingsPage(activePage)) ||
+      (item.id === "ai-prompts" && isAiPromptsPage(activePage));
+
+    return (
+      <div key={item.id}>
+        <button
+          className={cn(
+            "flex h-10 w-full items-center rounded-md text-sm font-medium text-zinc-600 transition-colors hover:bg-white/55 hover:text-zinc-950",
+            isCollapsed ? "justify-center px-0" : "gap-3 px-3 text-left",
+            isActive &&
+              "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl hover:bg-white/80 hover:text-zinc-950",
+          )}
+          onClick={() => navigateToPage(item.id)}
+          title={isCollapsed ? item.label : undefined}
+          type="button"
+        >
+          <Icon className="h-4 w-4 shrink-0" />
+          {!isCollapsed ? item.label : null}
+        </button>
+        {!isCollapsed && item.id === "settings" && isSettingsPage(activePage) ? (
+          <div className="mt-1 space-y-1 pl-7">
+            {settingsSubItems.map((subItem) => (
+              <button
+                className={cn(
+                  "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-white/55 hover:text-zinc-950",
+                  activePage === subItem.id &&
+                    "border border-white/70 bg-white/65 text-zinc-950 shadow-sm backdrop-blur-xl",
+                )}
+                key={subItem.id}
+                onClick={() => navigateToPage(subItem.id)}
+                type="button"
+              >
+                {subItem.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {!isCollapsed && item.id === "ai-prompts" && isAiPromptsPage(activePage) ? (
+          <div className="mt-1 space-y-1 pl-7">
+            {aiPromptSubItems.map((subItem) => (
+              <button
+                className={cn(
+                  "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-white/55 hover:text-zinc-950",
+                  activePage === subItem.id &&
+                    "border border-white/70 bg-white/65 text-zinc-950 shadow-sm backdrop-blur-xl",
+                )}
+                key={subItem.id}
+                onClick={() => navigateToPage(subItem.id)}
+                type="button"
+              >
+                {subItem.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderNavSection(label: string, items: typeof navItems, navigateToPage: (page: Page) => void, isCollapsed = false) {
+    return (
+      <div className="space-y-1">
+        {!isCollapsed ? (
+          <p className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-400">{label}</p>
+        ) : null}
+        {items.map((item) => renderNavItem(item, navigateToPage, isCollapsed))}
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-transparent text-zinc-950">
       <aside className={cn("fixed inset-y-0 left-0 hidden border-r border-white/60 bg-white/55 shadow-sm backdrop-blur-2xl transition-all md:flex md:flex-col", sidebarCollapsed ? "w-20" : "w-64")}>
@@ -1578,65 +1671,9 @@ function AuthenticatedLayout({
           )}
         </div>
         <nav className={cn("flex-1 space-y-1 py-4", sidebarCollapsed ? "px-2" : "px-3")}>
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive =
-              activePage === item.id ||
-              (item.id === "settings" && isSettingsPage(activePage)) ||
-              (item.id === "ai-prompts" && isAiPromptsPage(activePage));
-
-            return (
-              <div key={item.id}>
-                <button
-                  className={cn(
-                    "flex h-10 w-full items-center rounded-md text-sm font-medium text-zinc-600 transition-colors hover:bg-white/55 hover:text-zinc-950",
-                    sidebarCollapsed ? "justify-center px-0" : "gap-3 px-3 text-left",
-                    isActive &&
-                      "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl hover:bg-white/80 hover:text-zinc-950",
-                  )}
-                  onClick={() => onNavigate(item.id)}
-                  title={sidebarCollapsed ? item.label : undefined}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {!sidebarCollapsed ? item.label : null}
-                </button>
-                {!sidebarCollapsed && item.id === "settings" && isSettingsPage(activePage) ? (
-                  <div className="mt-1 space-y-1 pl-7">
-                    {settingsSubItems.map((subItem) => (
-                      <button
-                        className={cn(
-                          "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-white/55 hover:text-zinc-950",
-                          activePage === subItem.id &&
-                            "border border-white/70 bg-white/65 text-zinc-950 shadow-sm backdrop-blur-xl",
-                        )}
-                        key={subItem.id}
-                        onClick={() => onNavigate(subItem.id)}
-                      >
-                        {subItem.label}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                {!sidebarCollapsed && item.id === "ai-prompts" && isAiPromptsPage(activePage) ? (
-                  <div className="mt-1 space-y-1 pl-7">
-                    {aiPromptSubItems.map((subItem) => (
-                      <button
-                        className={cn(
-                          "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-white/55 hover:text-zinc-950",
-                          activePage === subItem.id &&
-                            "border border-white/70 bg-white/65 text-zinc-950 shadow-sm backdrop-blur-xl",
-                        )}
-                        key={subItem.id}
-                        onClick={() => onNavigate(subItem.id)}
-                      >
-                        {subItem.label}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
+          {renderNavSection("Email", emailNavItems, onNavigate, sidebarCollapsed)}
+          <div className="my-3 border-t border-white/70" />
+          {renderNavSection("Configurations", configurationNavItems, onNavigate, sidebarCollapsed)}
         </nav>
         <div className={cn("relative space-y-2 border-t border-zinc-200 p-3", sidebarCollapsed && "px-2")}>
           <button
@@ -1732,66 +1769,9 @@ function AuthenticatedLayout({
                 </Button>
               </div>
               <nav className="space-y-1 px-3 py-4">
-                {navItems.map((item) => {
-                  const Icon = item.icon;
-                  const isActive =
-                    activePage === item.id ||
-                    (item.id === "settings" && isSettingsPage(activePage)) ||
-                    (item.id === "ai-prompts" && isAiPromptsPage(activePage));
-
-                  return (
-                    <div key={item.id}>
-                      <button
-                        className={cn(
-                          "flex h-10 w-full items-center gap-3 rounded-md px-3 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-white/55 hover:text-zinc-950",
-                          isActive &&
-                            "border border-white/70 bg-white/70 text-zinc-950 shadow-sm backdrop-blur-xl hover:bg-white/80 hover:text-zinc-950",
-                        )}
-                        onClick={() => navigateFromMobileMenu(item.id)}
-                        type="button"
-                      >
-                        <Icon className="h-4 w-4 shrink-0" />
-                        {item.label}
-                      </button>
-                      {item.id === "settings" && isSettingsPage(activePage) ? (
-                        <div className="mt-1 space-y-1 pl-7">
-                          {settingsSubItems.map((subItem) => (
-                            <button
-                              className={cn(
-                                "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-white/55 hover:text-zinc-950",
-                                activePage === subItem.id &&
-                                  "border border-white/70 bg-white/65 text-zinc-950 shadow-sm backdrop-blur-xl",
-                              )}
-                              key={subItem.id}
-                              onClick={() => navigateFromMobileMenu(subItem.id)}
-                              type="button"
-                            >
-                              {subItem.label}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                      {item.id === "ai-prompts" && isAiPromptsPage(activePage) ? (
-                        <div className="mt-1 space-y-1 pl-7">
-                          {aiPromptSubItems.map((subItem) => (
-                            <button
-                              className={cn(
-                                "flex min-h-9 w-full items-center rounded-md px-3 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-white/55 hover:text-zinc-950",
-                                activePage === subItem.id &&
-                                  "border border-white/70 bg-white/65 text-zinc-950 shadow-sm backdrop-blur-xl",
-                              )}
-                              key={subItem.id}
-                              onClick={() => navigateFromMobileMenu(subItem.id)}
-                              type="button"
-                            >
-                              {subItem.label}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
+                {renderNavSection("Email", emailNavItems, navigateFromMobileMenu)}
+                <div className="my-3 border-t border-white/70" />
+                {renderNavSection("Configurations", configurationNavItems, navigateFromMobileMenu)}
               </nav>
               <div className="space-y-2 border-t border-zinc-200 p-3">
                 <button
@@ -2183,6 +2163,7 @@ function InboxPage({
   const [isMobilePullRefreshing, setIsMobilePullRefreshing] = useState(false);
   const [inboxProcessingJob, setInboxProcessingJob] = useState<InboxProcessingJob | null>(null);
   const [isUnemailableReprocessing, setIsUnemailableReprocessing] = useState(false);
+  const [isInboxSyncing, setIsInboxSyncing] = useState(false);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreInFlightRef = useRef(false);
   const messageRequestIdRef = useRef(0);
@@ -3011,6 +2992,37 @@ function InboxPage({
       setIsUnemailableReprocessing(false);
       activeProcessingToastJobRef.current = null;
       showInboxToast(error instanceof Error ? error.message : "Could not start reprocessing.", "error");
+    }
+  }
+
+  async function syncInboxNow() {
+    if (isInboxSyncing) {
+      return;
+    }
+
+    setIsInboxSyncing(true);
+    setError(null);
+    showInboxToast("Syncing inbox. Emailable is checking all connected accounts...", "success", { persistent: true });
+
+    try {
+      const response = await fetchNoStore("/api/email-accounts/polling/run", {
+        method: "POST",
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Could not sync inbox.");
+      }
+
+      const processed = Number(data.processed ?? 0);
+      const failed = Number(data.failed ?? 0);
+      showInboxToast(`Inbox sync complete. ${processed} processed, ${failed} failed.`, failed > 0 ? "error" : "success");
+      await refreshInboxData();
+      void loadInboxProcessingStatus();
+    } catch (error) {
+      showInboxToast(error instanceof Error ? error.message : "Could not sync inbox.", "error");
+    } finally {
+      setIsInboxSyncing(false);
     }
   }
 
@@ -4188,6 +4200,11 @@ function InboxPage({
               </div>
               <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
                 <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
+                <InboxSyncButton
+                  disabled={!isByoAiActive || accounts.length === 0 || isInboxSyncing}
+                  isLoading={isInboxSyncing}
+                  onClick={syncInboxNow}
+                />
                 <UnemailableReprocessButton
                   disabled={!isByoAiActive || isUnemailableReprocessing}
                   isLoading={isUnemailableReprocessing}
@@ -4204,6 +4221,11 @@ function InboxPage({
                 <div className="min-w-0 flex-1">
                   <InboxModeToggle mode={inboxMode} onChange={handleInboxModeChange} />
                 </div>
+                <InboxSyncButton
+                  disabled={!isByoAiActive || accounts.length === 0 || isInboxSyncing}
+                  isLoading={isInboxSyncing}
+                  onClick={syncInboxNow}
+                />
                 <UnemailableReprocessButton
                   compact
                   disabled={!isByoAiActive || isUnemailableReprocessing}
@@ -4344,6 +4366,8 @@ function InboxPage({
           inboxMode={inboxMode}
           labels={labels}
           onClose={() => setIsAiHelperOpen(false)}
+          onArchiveMessages={archiveSelectedMessages}
+          onDeleteMessages={deleteSelectedMessages}
           onOpenComposeDraft={openComposeDraft}
           privacyMode={privacyMode}
           selectedMessages={selectedMessages}
@@ -4562,6 +4586,8 @@ function InboxAiHelperPanel({
   inboxMode,
   labels,
   onClose,
+  onArchiveMessages,
+  onDeleteMessages,
   onOpenComposeDraft,
   privacyMode,
   selectedMessages,
@@ -4571,6 +4597,8 @@ function InboxAiHelperPanel({
   inboxMode: InboxMode;
   labels: Label[];
   onClose: () => void;
+  onArchiveMessages: (messages: InboxMessage[]) => Promise<void>;
+  onDeleteMessages: (messages: InboxMessage[]) => Promise<void>;
   onOpenComposeDraft: (draft: Partial<InboxComposeDraft> | null) => void;
   privacyMode: boolean;
   selectedMessages: InboxMessage[];
@@ -4594,6 +4622,10 @@ function InboxAiHelperPanel({
             id: typeof message.id === "number" ? message.id : Date.now() + index,
             role: message.role,
             subjectSuggestion: typeof message.subjectSuggestion === "string" ? message.subjectSuggestion : undefined,
+            affectedEmails: Array.isArray(message.affectedEmails) ? message.affectedEmails : undefined,
+            pendingBulkAction: message.pendingBulkAction === "archive" || message.pendingBulkAction === "delete"
+              ? message.pendingBulkAction
+              : undefined,
             text: message.text,
           }));
       }
@@ -4617,6 +4649,10 @@ function InboxAiHelperPanel({
     draft: Partial<InboxComposeDraft>;
     step: "idle" | "recipient" | "account" | "body";
   }>({ draft: {}, step: "idle" });
+  const [pendingBulkAction, setPendingBulkAction] = useState<{
+    action: "archive" | "delete";
+    messages: InboxMessage[];
+  } | null>(null);
   const [isThinking, setIsThinking] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -4632,8 +4668,10 @@ function InboxAiHelperPanel({
 
   useEffect(() => {
     const persisted = messages.slice(-INBOX_AI_HELPER_HISTORY_LIMIT).map((message) => ({
+      affectedEmails: message.affectedEmails,
       draftBody: message.draftBody,
       id: message.id,
+      pendingBulkAction: message.pendingBulkAction,
       role: message.role,
       subjectSuggestion: message.subjectSuggestion,
       text: message.text,
@@ -4855,6 +4893,173 @@ function InboxAiHelperPanel({
     return response.ok ? (data.messages ?? []).slice(0, 5) as InboxMessage[] : [];
   }
 
+  function inferBulkEmailAction(prompt: string): "archive" | "delete" | null {
+    const normalized = prompt.toLowerCase();
+    if (/\b(delete|trash|remove)\b/.test(normalized) && /\b(email|emails|message|messages|mail|selected|these|them|visible|shown)\b/.test(normalized)) {
+      return "delete";
+    }
+    if (/\b(archive|hide from inbox)\b/.test(normalized) && /\b(email|emails|message|messages|mail|selected|these|them|visible|shown)\b/.test(normalized)) {
+      return "archive";
+    }
+    return null;
+  }
+
+  function isAffirmativeResponse(prompt: string) {
+    return /^(yes|y|yeah|yep|sure|ok|okay|confirm|confirmed|do it|proceed|go ahead|archive them|delete them)$/i.test(prompt.trim());
+  }
+
+  function isNegativeResponse(prompt: string) {
+    return /^(no|n|nope|cancel|stop|never mind|nevermind|do not|don't|deny)$/i.test(prompt.trim());
+  }
+
+  function summarizeAffectedEmail(message: InboxMessage): NonNullable<InboxAiChatMessage["affectedEmails"]>[number] {
+    return {
+      accountId: message.accountId,
+      accountEmail: message.accountEmail,
+      date: message.date,
+      from: message.from || message.sender,
+      id: message.id,
+      isRead: message.isRead,
+      key: getInboxMessageKey(message),
+      labels: message.labels,
+      mailbox: message.mailbox,
+      provider: message.provider,
+      sender: message.sender,
+      snippet: message.snippet,
+      subject: message.subject,
+      threadId: message.threadId,
+    };
+  }
+
+  function affectedEmailToInboxMessage(email: NonNullable<InboxAiChatMessage["affectedEmails"]>[number]): InboxMessage {
+    return {
+      accountEmail: email.accountEmail,
+      accountId: email.accountId,
+      date: email.date,
+      from: email.from,
+      hasAttachments: false,
+      id: email.id,
+      isRead: email.isRead,
+      labels: email.labels,
+      mailbox: email.mailbox,
+      provider: email.provider,
+      sender: email.sender,
+      snippet: email.snippet,
+      subject: email.subject,
+      threadId: email.threadId || email.id,
+    };
+  }
+
+  function getLatestAffectedMessagesFromChat() {
+    const latest = [...messages].reverse().find((message) => message.affectedEmails?.length);
+    return latest?.affectedEmails?.map(affectedEmailToInboxMessage) ?? [];
+  }
+
+  async function findBulkActionTargets(prompt: string) {
+    const normalized = prompt.toLowerCase();
+    const referencesSelected = /\b(selected|these|them|this|current)\b/.test(normalized);
+    if (selectedMessages.length > 0 && referencesSelected) {
+      return selectedMessages;
+    }
+    const latestAffectedMessages = getLatestAffectedMessagesFromChat();
+    if (latestAffectedMessages.length > 0 && /\b(them|those|these|listed|that list|the list|previous)\b/.test(normalized)) {
+      return latestAffectedMessages;
+    }
+
+    const referencesVisible = /\b(visible|shown|loaded|on screen|all of these|all these)\b/.test(normalized);
+    if (referencesVisible && contextMessages.length > 0) {
+      return contextMessages;
+    }
+
+    const searchResults = await searchIndexedMail(prompt);
+    if (searchResults.length > 0) {
+      return searchResults;
+    }
+
+    if (selectedMessages.length > 0) {
+      return selectedMessages;
+    }
+
+    return [];
+  }
+
+  async function prepareBulkEmailAction(prompt: string, action: "archive" | "delete") {
+    setIsThinking(true);
+    try {
+      const targets = await findBulkActionTargets(prompt);
+      if (targets.length === 0) {
+        addMessage({
+          role: "assistant",
+          text: `I could not find any emails to ${action}. Select emails first, say "visible emails", or describe the sender, subject, label, or mailbox to search.`,
+        });
+        return;
+      }
+      const blockedByCommitment = targets.filter((message) => Boolean(message.commitment));
+      if (blockedByCommitment.length > 0) {
+        addMessage({
+          affectedEmails: blockedByCommitment.map(summarizeAffectedEmail),
+          pendingBulkAction: action,
+          role: "assistant",
+          text: `${blockedByCommitment.length} matching email${blockedByCommitment.length === 1 ? " has" : "s have"} an active commitment. Complete or renege the commitment before ${action === "archive" ? "archiving" : "deleting"} ${blockedByCommitment.length === 1 ? "it" : "them"}.`,
+        });
+        return;
+      }
+
+      setPendingBulkAction({ action, messages: targets });
+      addMessage({
+        affectedEmails: targets.map(summarizeAffectedEmail),
+        pendingBulkAction: action,
+        role: "assistant",
+        text: `I found ${targets.length} email${targets.length === 1 ? "" : "s"} to ${action}. Reply "confirm" to ${action} ${targets.length === 1 ? "it" : "them"}, or "cancel" to stop.`,
+      });
+    } catch (error) {
+      addMessage({
+        role: "assistant",
+        text: error instanceof Error ? error.message : `I could not prepare emails to ${action}.`,
+      });
+    } finally {
+      setIsThinking(false);
+    }
+  }
+
+  async function handlePendingBulkActionResponse(prompt: string) {
+    if (!pendingBulkAction) {
+      return false;
+    }
+
+    if (isNegativeResponse(prompt)) {
+      const action = pendingBulkAction.action;
+      setPendingBulkAction(null);
+      addMessage({ role: "assistant", text: `Cancelled. I did not ${action} any emails.` });
+      return true;
+    }
+
+    if (!isAffirmativeResponse(prompt)) {
+      addMessage({ role: "assistant", text: `Please reply "confirm" to ${pendingBulkAction.action} the listed emails, or "cancel" to stop.` });
+      return true;
+    }
+
+    const { action, messages: targetMessages } = pendingBulkAction;
+    setPendingBulkAction(null);
+    setIsThinking(true);
+    try {
+      if (action === "archive") {
+        await onArchiveMessages(targetMessages);
+      } else {
+        await onDeleteMessages(targetMessages);
+      }
+      addMessage({ role: "assistant", text: `${action === "archive" ? "Archived" : "Deleted"} ${targetMessages.length} email${targetMessages.length === 1 ? "" : "s"}.` });
+    } catch (error) {
+      addMessage({
+        role: "assistant",
+        text: error instanceof Error ? error.message : `I could not ${action} those emails.`,
+      });
+    } finally {
+      setIsThinking(false);
+    }
+    return true;
+  }
+
   async function draftEmailBody(prompt: string, draft: Partial<InboxComposeDraft>) {
     const contextSummary = activeContext
       .slice(0, 8)
@@ -4907,11 +5112,41 @@ function InboxAiHelperPanel({
     if (!response.ok) {
       throw new Error(data.error ?? "AI Helper could not answer that.");
     }
-    return String(data.message ?? "").trim();
+    const affectedEmails = Array.isArray(data.affectedEmails)
+      ? data.affectedEmails
+          .filter((email: Partial<InboxMessage> & { emailId?: string }) => email && typeof email === "object" && typeof email.accountId === "string" && (typeof email.id === "string" || typeof email.emailId === "string"))
+          .map((email: Partial<InboxMessage> & { emailId?: string }) => ({
+            accountId: email.accountId ?? "",
+            accountEmail: email.accountEmail ?? "",
+            date: email.date ?? "",
+            from: email.from ?? email.sender ?? "",
+            id: email.id ?? email.emailId ?? "",
+            isRead: email.isRead !== false,
+            key: `${email.accountId}:${email.mailbox ?? ""}:${email.id ?? email.emailId ?? ""}`,
+            labels: Array.isArray(email.labels) ? email.labels : [],
+            mailbox: email.mailbox ?? "",
+            provider: email.provider ?? "",
+            sender: email.sender ?? "",
+            snippet: email.snippet ?? "",
+            subject: email.subject ?? "",
+            threadId: email.threadId ?? email.id ?? email.emailId ?? "",
+          }))
+      : [];
+    return { affectedEmails, message: String(data.message ?? "").trim() };
   }
 
   async function handleUserPrompt(prompt: string, conversationHistory: InboxAiChatMessage[]) {
     const normalizedPrompt = prompt.toLowerCase();
+
+    if (await handlePendingBulkActionResponse(prompt)) {
+      return;
+    }
+
+    const bulkAction = inferBulkEmailAction(prompt);
+    if (bulkAction) {
+      await prepareBulkEmailAction(prompt, bulkAction);
+      return;
+    }
 
     if (workflow.step === "recipient") {
       const typedEmail = extractEmailAddressFromText(prompt) || (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(prompt.trim()) ? prompt.trim() : "");
@@ -5007,7 +5242,12 @@ function InboxAiHelperPanel({
 
     setIsThinking(true);
     try {
-      addMessage({ role: "assistant", text: await askAiHelper(prompt, conversationHistory) });
+      const answer = await askAiHelper(prompt, conversationHistory);
+      addMessage({
+        affectedEmails: answer.affectedEmails,
+        role: "assistant",
+        text: answer.message,
+      });
     } catch (error) {
       addMessage({ role: "assistant", text: error instanceof Error ? error.message : "AI Helper could not answer that." });
     } finally {
@@ -5083,6 +5323,46 @@ function InboxAiHelperPanel({
               message.draftBody && "cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/80",
             )} onClick={() => applyDraftMessage(message)} role={message.draftBody ? "button" : undefined} tabIndex={message.draftBody ? 0 : undefined}>
               <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{message.text}</p>
+              {message.affectedEmails?.length ? (
+                <div className="mt-3 space-y-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                    {message.pendingBulkAction === "delete" ? "Emails to delete" : "Emails to archive"}
+                  </p>
+                  <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                    {message.affectedEmails.map((email) => (
+                      <div
+                        className="rounded-lg border border-white/70 bg-white/70 px-3 py-2 text-xs text-zinc-600 shadow-sm"
+                        key={email.key}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate font-semibold text-zinc-950">
+                              {extractDisplayNameFromText(email.from) || extractEmailAddressFromText(email.from) || email.from || "Unknown sender"}
+                            </p>
+                            <p className="truncate text-zinc-800">{email.subject || "No subject"}</p>
+                          </div>
+                          <span className="shrink-0 text-[11px] text-zinc-400">{formatInboxListDate(email.date)}</span>
+                        </div>
+                        <p className="mt-1 truncate text-zinc-500">{formatEmailForPrivacy(email.accountEmail, privacyMode)}</p>
+                        {email.labels.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {email.labels.slice(0, 3).map((label) => (
+                              <span className="rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700" key={`${email.key}-${label}`}>
+                                {label}
+                              </span>
+                            ))}
+                            {email.labels.length > 3 ? (
+                              <span className="rounded-full border border-zinc-200 bg-white/70 px-2 py-0.5 text-[11px] text-zinc-500">
+                                +{email.labels.length - 3}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {message.options?.length ? (
                 <div className="mt-3 space-y-2">
                   {message.options.map((option) => (
@@ -5277,6 +5557,36 @@ function InboxModeToggle({ mode, onChange }: { mode: InboxMode; onChange: (mode:
         );
       })}
     </LiquidGlassCard>
+  );
+}
+
+function InboxSyncButton({
+  disabled,
+  isLoading,
+  onClick,
+}: {
+  disabled: boolean;
+  isLoading: boolean;
+  onClick: () => void;
+}) {
+  const tooltipText = disabled && !isLoading
+    ? "Activate AI and connect at least one email account before syncing."
+    : "Run polling now and check all connected accounts for new emails.";
+
+  return (
+    <Tooltip align="end" text={tooltipText}>
+      <Button
+        aria-label="Sync inbox"
+        className="h-10 gap-2 rounded-full border-white/70 bg-white/50 px-4 text-sm font-medium text-zinc-700 shadow-sm backdrop-blur-xl hover:bg-white/70"
+        disabled={disabled}
+        onClick={onClick}
+        type="button"
+        variant="outline"
+      >
+        {isLoading ? <Loader /> : null}
+        <span>Sync</span>
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -7387,7 +7697,7 @@ function InboxRuleModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
-      <div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+      <div className="flex h-[calc(100dvh-2rem)] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
         <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
           <div className="flex shrink-0 items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
             <div className="min-w-0">
@@ -10620,7 +10930,7 @@ function RuleReviewPage({
 
         {selectedRule ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
-        <Card className="flex max-h-[92vh] w-full max-w-5xl min-w-0 overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+        <Card className="flex h-[calc(100dvh-2rem)] w-full max-w-5xl min-w-0 overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
           <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
             <CardHeader className="shrink-0 gap-3 border-b border-white/60 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
               <div className="min-w-0">

@@ -66,4 +66,3 @@ We may update this policy at any time, at our discretion, to reflect changes in 
 Questions about this policy or your data can be sent to **montaque.developer@gmail.com**.
 
 ---
-*This document is a template and does not constitute legal advice. If you plan to expand access beyond private/invite-only use, or handle data for users in jurisdictions with specific requirements (e.g., GDPR, CCPA), have this reviewed by a qualified attorney first — particularly given that the App stores email content and third-party API credentials.*
