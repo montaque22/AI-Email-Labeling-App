@@ -2164,7 +2164,6 @@ function InboxPage({
   const [inboxProcessingJob, setInboxProcessingJob] = useState<InboxProcessingJob | null>(null);
   const [isUnemailableReprocessing, setIsUnemailableReprocessing] = useState(false);
   const [isInboxSyncing, setIsInboxSyncing] = useState(false);
-  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreInFlightRef = useRef(false);
   const messageRequestIdRef = useRef(0);
   const emailAiActionsRequestIdRef = useRef(0);
@@ -2333,31 +2332,6 @@ function InboxPage({
     window.addEventListener("emailable:polling-complete", refreshAfterPolling);
     return () => window.removeEventListener("emailable:polling-complete", refreshAfterPolling);
   }, [inboxMode, selectedLabelId, selectedAccountIds.join(","), labels.length]);
-
-  useEffect(() => {
-    const sentinel = loadMoreSentinelRef.current;
-    if (
-      !sentinel ||
-      !nextPageToken ||
-      isLoading ||
-      isLoadingMore ||
-      selectedMessage ||
-      ruleEditorMessage ||
-      isComposeOpen
-    ) {
-      return;
-    }
-
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        observer.disconnect();
-        void loadMessages({ reset: false });
-      }
-    }, { rootMargin: "320px 0px" });
-
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [nextPageToken, isLoading, isLoadingMore, selectedMessage, ruleEditorMessage, isComposeOpen]);
 
   useEffect(() => {
     const shouldLockScroll = Boolean(
@@ -3984,10 +3958,10 @@ function InboxPage({
       >
         <Plus className="h-5 w-5" />
       </Button> : null}
-      {isByoAiActive ? (
+      {isByoAiActive && !isMobileEditMode ? (
         <Button
           aria-label="Open AI helper"
-          className="fixed bottom-24 right-5 z-[120] hidden h-14 w-14 rounded-full border-white/70 bg-white/70 text-zinc-900 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85 md:flex"
+          className="fixed bottom-24 right-5 z-[120] flex h-14 w-14 rounded-full border-white/70 bg-white/70 text-zinc-900 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85"
           onClick={() => setIsAiHelperOpen(true)}
           size="icon"
           type="button"
@@ -4321,8 +4295,23 @@ function InboxPage({
                 </>
               )}
               {nextPageToken ? (
-                <div aria-live="polite" className="flex min-h-24 items-start pt-3" ref={loadMoreSentinelRef}>
-                  {isLoadingMore ? <InboxMessageSkeletonRow /> : <span className="sr-only">More messages load as you scroll.</span>}
+                <div className="flex justify-center py-5">
+                  <Button
+                    className="rounded-full border-white/70 bg-white/70 px-5 shadow-sm backdrop-blur-xl hover:bg-white/85"
+                    disabled={isLoading || isLoadingMore}
+                    onClick={() => void loadMessages({ reset: false })}
+                    type="button"
+                    variant="outline"
+                  >
+                    {isLoadingMore ? (
+                      <>
+                        <Loader />
+                        Loading...
+                      </>
+                    ) : (
+                      "Load more"
+                    )}
+                  </Button>
                 </div>
               ) : null}
             </CardContent>
@@ -5303,7 +5292,7 @@ function InboxAiHelperPanel({
   }
 
   return (
-    <aside className="inbox-ai-helper fixed bottom-24 right-5 top-20 z-[120] hidden w-[420px] max-w-[calc(100vw-2.5rem)] flex-col rounded-2xl border border-white/70 bg-white/70 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:flex" data-state={isClosing ? "closing" : "open"}>
+    <aside className="inbox-ai-helper fixed inset-x-3 bottom-5 top-20 z-[120] flex flex-col rounded-2xl border border-white/70 bg-white/70 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:inset-x-auto md:bottom-24 md:right-5 md:w-[420px] md:max-w-[calc(100vw-2.5rem)]" data-state={isClosing ? "closing" : "open"}>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-zinc-950">AI Helper</p>
@@ -7210,6 +7199,7 @@ function InboxThreadConversation({
   onLinkAction: (link: EmailLinkAction) => void;
   privacyMode: boolean;
 }) {
+  const [attachmentPreview, setAttachmentPreview] = useState<InboxAttachmentPreview | null>(null);
   const messages: InboxThreadMessage[] = (detail.threadMessages?.length
     ? detail.threadMessages
     : [{
@@ -7230,6 +7220,7 @@ function InboxThreadConversation({
       }]).slice().sort((left, right) => new Date(right.date || 0).getTime() - new Date(left.date || 0).getTime());
 
   return (
+    <>
     <div className="space-y-4">
       {messages.map((message, messageIndex) => (
         <article className="min-w-0 overflow-hidden rounded-xl border border-white/80 bg-white/75 shadow-sm backdrop-blur-xl" key={message.id}>
@@ -7260,7 +7251,7 @@ function InboxThreadConversation({
                   )}
                   disabled={!attachment.downloadSupported}
                   key={`${message.id}-${attachment.filename}-${attachmentIndex}`}
-                  onClick={() => openInboxAttachment(message, attachment)}
+                  onClick={() => openInboxAttachment(message, attachment, setAttachmentPreview)}
                   title={attachment.downloadSupported ? "Download attachment" : "Attachment download is not available for this provider yet."}
                   type="button"
                 >
@@ -7279,17 +7270,45 @@ function InboxThreadConversation({
         </article>
       ))}
     </div>
+    {attachmentPreview ? (
+      <InboxAttachmentPreviewModal attachment={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
+    ) : null}
+    </>
   );
 }
 
-function openInboxAttachment(message: InboxThreadMessage, attachment: InboxAttachment) {
+type InboxAttachmentPreview = {
+  filename: string;
+  type: string;
+  url: string;
+};
+
+function openInboxAttachment(
+  message: InboxThreadMessage,
+  attachment: InboxAttachment,
+  onPreview: (preview: InboxAttachmentPreview) => void,
+) {
   if (!attachment.downloadSupported || !attachment.attachmentId) {
     return;
   }
 
+  const url = getInboxAttachmentUrl(message, attachment, attachment.attachmentId);
+  if (isPreviewableInboxAttachment(attachment)) {
+    onPreview({
+      filename: attachment.filename,
+      type: attachment.type,
+      url,
+    });
+    return;
+  }
+
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+function getInboxAttachmentUrl(message: InboxThreadMessage, attachment: InboxAttachment, attachmentId: string) {
   const params = new URLSearchParams({
     accountId: message.accountId,
-    attachmentId: attachment.attachmentId,
+    attachmentId,
     emailId: message.id,
     filename: attachment.filename,
     type: attachment.type,
@@ -7297,7 +7316,70 @@ function openInboxAttachment(message: InboxThreadMessage, attachment: InboxAttac
   if (message.mailbox) {
     params.set("mailbox", message.mailbox);
   }
-  window.open(getRuntimeUrl(`/api/inbox/attachment?${params.toString()}`), "_blank", "noopener,noreferrer");
+  return getRuntimeUrl(`/api/inbox/attachment?${params.toString()}`);
+}
+
+function isPreviewableInboxAttachment(attachment: InboxAttachment) {
+  const mimeType = attachment.type.toLowerCase();
+  const filename = attachment.filename.toLowerCase();
+  return (
+    mimeType.startsWith("image/") ||
+    mimeType === "application/pdf" ||
+    /\.(png|jpe?g|gif|webp|avif|svg|pdf)$/.test(filename)
+  );
+}
+
+function InboxAttachmentPreviewModal({
+  attachment,
+  onClose,
+}: {
+  attachment: InboxAttachmentPreview;
+  onClose: () => void;
+}) {
+  const isImage = attachment.type.toLowerCase().startsWith("image/") || /\.(png|jpe?g|gif|webp|avif|svg)$/.test(attachment.filename.toLowerCase());
+
+  return (
+    <div className="fixed inset-0 z-[140] flex flex-col bg-zinc-950/80 text-white backdrop-blur-sm">
+      <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-zinc-950/70 px-4 pt-[env(safe-area-inset-top)]">
+        <p className="min-w-0 truncate text-sm font-medium">{attachment.filename}</p>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            aria-label="Open attachment in browser"
+            className="border-white/20 bg-white/10 text-white hover:bg-white/20"
+            onClick={() => window.open(attachment.url, "_blank", "noopener,noreferrer")}
+            size="icon"
+            type="button"
+            variant="outline"
+          >
+            <ExternalLink className="h-4 w-4" />
+          </Button>
+          <Button
+            aria-label="Close attachment preview"
+            className="border-white/20 bg-white/10 text-white hover:bg-white/20"
+            onClick={onClose}
+            size="icon"
+            type="button"
+            variant="outline"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        {isImage ? (
+          <div className="flex min-h-full items-center justify-center">
+            <img alt={attachment.filename} className="max-h-full max-w-full rounded-lg object-contain shadow-2xl" src={attachment.url} />
+          </div>
+        ) : (
+          <iframe
+            className="h-full min-h-[70vh] w-full rounded-lg border border-white/15 bg-white"
+            src={attachment.url}
+            title={attachment.filename}
+          />
+        )}
+      </div>
+    </div>
+  );
 }
 
 function PlainTextEmailBody({ text, onLinkAction }: { text: string; onLinkAction: (link: EmailLinkAction) => void }) {
