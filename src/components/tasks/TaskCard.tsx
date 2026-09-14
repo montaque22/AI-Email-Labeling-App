@@ -37,13 +37,13 @@ export function TaskCard({
       shadowIntensity="xs"
       borderRadius="8px"
       glowIntensity={task.stuck ? "sm" : "none"}
-      className={cn("bg-white/50 p-4 text-zinc-950", task.stuck && "border-amber-200")}
+      className={cn("min-w-0 bg-white/50 p-4 text-zinc-950", task.stuck && "border-amber-200")}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onEdit(task)}>
           <div className="flex flex-wrap items-center gap-2">
             {rank ? <Badge>{rank}</Badge> : null}
-            <h3 className="truncate text-base font-semibold text-zinc-950">{task.title}</h3>
+            <h3 className="min-w-0 max-w-full truncate text-base font-semibold text-zinc-950">{task.title}</h3>
             {task.stuck ? (
               <Badge className="border-amber-200 bg-amber-50 text-amber-700">
                 <AlertCircle className="h-3 w-3" />
@@ -69,7 +69,7 @@ export function TaskCard({
           ) : null}
         </button>
 
-        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+        <div className="flex shrink-0 flex-wrap justify-start gap-2 sm:justify-end">
           <Button size="sm" variant="outline" disabled={busy} onClick={() => onComplete(task)}>
             <Check className="h-4 w-4" />
           </Button>

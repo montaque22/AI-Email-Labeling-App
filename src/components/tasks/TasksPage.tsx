@@ -134,8 +134,8 @@ export function TasksPage() {
 
       {error ? <div className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
 
-      <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
-        <div className="space-y-4">
+      <section className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,420px)]">
+        <div className="min-w-0 space-y-4">
           <div>
             <h2 className="mb-3 text-lg font-semibold text-zinc-950">Top 3</h2>
             {loading ? (
@@ -181,7 +181,7 @@ export function TasksPage() {
           />
         </div>
 
-        <div className="xl:sticky xl:top-20 xl:self-start">
+        <div className="hidden min-w-0 xl:sticky xl:top-20 xl:block xl:self-start">
           {showForm ? (
             <TaskForm
               task={selectedTask}
@@ -199,6 +199,33 @@ export function TasksPage() {
           )}
         </div>
       </section>
+
+      {showForm ? (
+        <div className="fixed inset-0 z-50 flex items-end bg-slate-950/25 p-3 xl:hidden">
+          <button
+            aria-label="Close task editor"
+            className="absolute inset-0 cursor-default"
+            onClick={() => {
+              setShowForm(false);
+              setSelectedTask(null);
+            }}
+            type="button"
+          />
+          <div className="relative z-10 max-h-[88vh] w-full overflow-hidden rounded-2xl shadow-2xl">
+            <div className="max-h-[88vh] overflow-y-auto">
+              <TaskForm
+                task={selectedTask}
+                onSaved={upsertTask}
+                onDeleted={removeTask}
+                onCancel={() => {
+                  setShowForm(false);
+                  setSelectedTask(null);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
