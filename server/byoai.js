@@ -219,6 +219,115 @@ const SYSTEM_MCP_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "searchTasks",
+    description: "Fuzzy search the user's incomplete Emailable tasks by title.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Task title or natural language title to fuzzy search." },
+        limit: { type: "number", minimum: 1, maximum: 5 },
+      },
+      required: ["title"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "createTask",
+    description: "Create a task, or increment an existing task's duplicate count when a sufficiently similar incomplete task already exists.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", minLength: 1, maxLength: 160 },
+        notes: { type: "string", maxLength: 4000 },
+        tags: { type: "array", maxItems: 12, items: { type: "string", maxLength: 40 } },
+        priority: { type: "number", enum: [1, 2, 3], description: "1 is highest priority, 3 is lowest priority." },
+        dueDate: { type: "string", description: "Optional ISO due date." },
+        project: { type: "string", maxLength: 80 },
+        sourceEmailId: { type: "string", maxLength: 255 },
+      },
+      required: ["title"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "getTask",
+    description: "Get a single task by id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", format: "uuid" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "editTask",
+    description: "Edit user-controlled task fields including title, notes, tags, priority, due date, project, and source email id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", format: "uuid" },
+        title: { type: "string", minLength: 1, maxLength: 160 },
+        notes: { type: "string", maxLength: 4000 },
+        tags: { type: "array", maxItems: 12, items: { type: "string", maxLength: 40 } },
+        priority: { type: "number", enum: [1, 2, 3], description: "1 is highest priority, 3 is lowest priority." },
+        dueDate: { type: "string", description: "Optional ISO due date." },
+        project: { type: "string", maxLength: 80 },
+        sourceEmailId: { type: "string", maxLength: 255 },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "deleteTask",
+    description: "Delete a task.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", format: "uuid" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "listTasks",
+    description: "List incomplete tasks sorted by Emailable's effective priority score.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", minimum: 1, maximum: 200 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "generateNudgeSteps",
+    description: "Generate small next steps for a stuck task.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", format: "uuid" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "simplifyNudgeStep",
+    description: "Rewrite the current nudge step so it is easier to act on.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", format: "uuid" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export async function ensureByoAiTables() {
@@ -2039,7 +2148,7 @@ function parseToolResultPayload(value) {
   return value;
 }
 
-async function callBestAvailableAi(userId, prompt, options = {}) {
+export async function callBestAvailableAi(userId, prompt, options = {}) {
   const platforms = await listAiPlatforms(userId, { includeSecret: true });
   const connected = platforms.filter((platform) => platform.status === "connected");
   const mcpClients = Array.isArray(options.mcpClients) ? options.mcpClients : await buildActivatedAiMcpClients(userId);
@@ -3617,7 +3726,7 @@ function extractMcpToolErrorMessage(result) {
   return text || (typeof result.message === "string" ? result.message : "");
 }
 
-function cleanAiTextResponse(value) {
+export function cleanAiTextResponse(value) {
   const text = String(value ?? "").trim();
   try {
     const parsed = JSON.parse(text);

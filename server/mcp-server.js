@@ -21,6 +21,16 @@ import {
 } from "./integrations.js";
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
+import {
+  createTaskFromWorkflow,
+  deleteTask,
+  generateNudgeSteps,
+  getTask,
+  listTasks,
+  searchTasks,
+  simplifyNudgeStep,
+  updateTask,
+} from "./tasks.js";
 
 const MCP_KEY_PREFIX = "mcp";
 export const SYSTEM_MCP_TOOL_DEFINITIONS = [
@@ -43,6 +53,46 @@ export const SYSTEM_MCP_TOOL_DEFINITIONS = [
     name: "find_email",
     title: "Find Email",
     description: "Search Emailable's indexed email database by id, subject, sender, account, label, archive/draft/sent/inbox state, read/unread status, and timestamps. Provider-wide connected-account search is optional.",
+  },
+  {
+    name: "searchTasks",
+    title: "Search Tasks",
+    description: "Fuzzy search the user's incomplete Emailable tasks by title.",
+  },
+  {
+    name: "createTask",
+    title: "Create Task",
+    description: "Create a task, or increment an existing task's duplicate count when a sufficiently similar incomplete task already exists.",
+  },
+  {
+    name: "getTask",
+    title: "Get Task",
+    description: "Get a single task by id.",
+  },
+  {
+    name: "editTask",
+    title: "Edit Task",
+    description: "Edit user-controlled task fields including title, notes, tags, priority, due date, project, and source email id.",
+  },
+  {
+    name: "deleteTask",
+    title: "Delete Task",
+    description: "Delete a task.",
+  },
+  {
+    name: "listTasks",
+    title: "List Tasks",
+    description: "List incomplete tasks sorted by Emailable's effective priority score.",
+  },
+  {
+    name: "generateNudgeSteps",
+    title: "Generate Nudge Steps",
+    description: "Generate small next steps for a stuck task.",
+  },
+  {
+    name: "simplifyNudgeStep",
+    title: "Simplify Nudge Step",
+    description: "Rewrite the current nudge step so it is easier to act on.",
   },
 ];
 
@@ -259,7 +309,145 @@ function createMcpServer(userId) {
     },
   );
 
+  server.registerTool(
+    "searchTasks",
+    {
+      title: "Search Tasks",
+      description: "Fuzzy search incomplete Emailable tasks by title. This is not substring search; use natural task titles.",
+      inputSchema: {
+        title: z.string().min(1).describe("Task title or natural language title to fuzzy search."),
+        limit: z.number().int().min(1).max(5).optional(),
+      },
+    },
+    async (input) => {
+      return loggedMcpToolResult(userId, "searchTasks", input, "/api/tasks/search", () => searchTasks(userId, input));
+    },
+  );
+
+  server.registerTool(
+    "createTask",
+    {
+      title: "Create Task",
+      description: "Create a task. If a sufficiently similar incomplete task already exists, Emailable increments duplicate_count instead of creating a duplicate.",
+      inputSchema: taskInputSchema(),
+    },
+    async (input) => {
+      return loggedMcpToolResult(userId, "createTask", input, "/api/tasks", () => createTaskFromWorkflow(userId, input));
+    },
+  );
+
+  server.registerTool(
+    "getTask",
+    {
+      title: "Get Task",
+      description: "Get a single task by id using the same behavior as the REST Get Task API.",
+      inputSchema: {
+        id: z.string().uuid(),
+      },
+    },
+    async (input) => {
+      return loggedMcpToolResult(userId, "getTask", input, `/api/tasks/${input.id}`, async () => {
+        const task = await getTask(userId, input.id);
+        if (!task) {
+          throw new Error("Task not found");
+        }
+        return { task };
+      });
+    },
+  );
+
+  server.registerTool(
+    "editTask",
+    {
+      title: "Edit Task",
+      description: "Edit user-controlled task fields.",
+      inputSchema: {
+        id: z.string().uuid(),
+        ...taskInputSchema({ partial: true }),
+      },
+    },
+    async (input) => {
+      const { id, ...updates } = input;
+      return loggedMcpToolResult(userId, "editTask", input, `/api/tasks/${id}`, () => updateTask(userId, id, updates));
+    },
+  );
+
+  server.registerTool(
+    "deleteTask",
+    {
+      title: "Delete Task",
+      description: "Delete a task.",
+      inputSchema: {
+        id: z.string().uuid(),
+      },
+    },
+    async (input) => {
+      return loggedMcpToolResult(userId, "deleteTask", input, `/api/tasks/${input.id}`, async () => {
+        await deleteTask(userId, input.id);
+        return { ok: true };
+      });
+    },
+  );
+
+  server.registerTool(
+    "listTasks",
+    {
+      title: "List Tasks",
+      description: "List incomplete tasks sorted by effective score. Lower effective_score means higher priority.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+    },
+    async (input) => {
+      return loggedMcpToolResult(userId, "listTasks", input, "/api/tasks", async () => {
+        const tasks = await listTasks(userId, { limit: input.limit ?? 200 });
+        return { tasks, top3: tasks.slice(0, 3) };
+      });
+    },
+  );
+
+  server.registerTool(
+    "generateNudgeSteps",
+    {
+      title: "Generate Nudge Steps",
+      description: "Generate small next steps for a stuck or deferred task.",
+      inputSchema: {
+        id: z.string().uuid(),
+      },
+    },
+    async (input) => {
+      return loggedMcpToolResult(userId, "generateNudgeSteps", input, `/api/tasks/${input.id}/nudge/generate`, () => generateNudgeSteps(userId, input.id));
+    },
+  );
+
+  server.registerTool(
+    "simplifyNudgeStep",
+    {
+      title: "Simplify Nudge Step",
+      description: "Simplify the current nudge step for a task.",
+      inputSchema: {
+        id: z.string().uuid(),
+      },
+    },
+    async (input) => {
+      return loggedMcpToolResult(userId, "simplifyNudgeStep", input, `/api/tasks/${input.id}/nudge/simplify`, () => simplifyNudgeStep(userId, input.id));
+    },
+  );
+
   return server;
+}
+
+function taskInputSchema({ partial = false } = {}) {
+  const title = z.string().trim().min(1).max(160).describe("Task title.");
+  return {
+    title: partial ? title.optional() : title,
+    notes: z.string().max(4000).optional(),
+    tags: z.array(z.string().max(40)).max(12).optional(),
+    priority: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional().describe("1 is highest priority, 3 is lowest priority."),
+    dueDate: z.string().optional().describe("Optional ISO due date."),
+    project: z.string().max(80).optional(),
+    sourceEmailId: z.string().max(255).optional(),
+  };
 }
 
 async function findEmailTool(userId, payload) {

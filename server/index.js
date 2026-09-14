@@ -17,6 +17,7 @@ import { ensureMcpTables, registerMcpRoutes } from "./mcp-server.js";
 import { ensurePollingSettings, registerPollingRoutes, startPollingWorker } from "./polling.js";
 import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
 import { ensureSystemLogsTable, startSystemLogRetentionWorker } from "./system-logs.js";
+import { ensureTasksTable, registerTaskRoutes, startTaskMidnightWorker } from "./tasks.js";
 import { resolveHomeAssistantIngressUser } from "./session.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -162,6 +163,7 @@ registerByoAiRoutes(app);
 registerMcpRoutes(app);
 registerPollingRoutes(app);
 registerCalendarSubscriptionRoutes(app);
+registerTaskRoutes(app);
 
 app.use(express.static(distDir, { index: false }));
 
@@ -243,6 +245,7 @@ async function startServer() {
     await ensureMcpTables();
     await ensurePollingSettings();
     await ensureCalendarSubscriptionTables();
+    await ensureTasksTable();
   } catch (error) {
     console.error("Failed to initialize database tables:", error);
   }
@@ -251,6 +254,7 @@ async function startServer() {
     console.log(`Server listening on port ${port}`);
     startPollingWorker();
     startSystemLogRetentionWorker();
+    startTaskMidnightWorker();
   });
 }
 

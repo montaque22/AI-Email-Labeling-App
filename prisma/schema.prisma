@@ -53,6 +53,7 @@ model user {
   integration_api_keys integration_api_keys[]
   labels               labels[]
   session              session[]
+  tasks                tasks[]
   user_settings        user_settings?
 }
 
@@ -171,4 +172,27 @@ model email_rules {
   @@unique([user_id, email_id])
   @@index([user_id, is_pending], map: "email_rules_is_pending_idx")
   @@index([user_id])
+}
+
+model tasks {
+  id              String    @id @db.Uuid
+  user_id         String
+  title           String
+  notes           String?
+  tags            Json      @default("[]")
+  priority        Int       @default(2)
+  due_date        DateTime? @db.Timestamptz(6)
+  project         String?
+  defer_count     Int       @default(0)
+  duplicate_count Int       @default(0)
+  source_email_id String?
+  stuck           Boolean   @default(false)
+  nudge           Json?
+  completed_at    DateTime? @db.Timestamptz(6)
+  created_at      DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime  @default(now()) @db.Timestamptz(6)
+  user            user      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, completed_at, created_at], map: "tasks_user_incomplete_idx")
+  @@index([user_id, source_email_id], map: "tasks_user_source_email_idx")
 }

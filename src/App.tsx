@@ -33,6 +33,7 @@ import {
   Inbox,
   LogOut,
   List,
+  ListChecks,
   MailCheck,
   Menu,
   MoreVertical,
@@ -67,6 +68,7 @@ import { LogOutcomePieCard } from "./components/metrics/LogOutcomePieCard";
 import { MetricsTabPill } from "./components/metrics/MetricsTabPill";
 import type { AiUsageSeries, AlarmGranularity, AlarmSimulationPoint, LogAlarm, LogAlarmDraft, LogErrorSeries, LogOutcomeSummary, MetricsTab } from "./components/metrics/types";
 import { CalendarPage } from "./components/calendar/CalendarPage";
+import { TasksPage } from "./components/tasks/TasksPage";
 import { authClient } from "./lib/auth-client";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
@@ -75,6 +77,7 @@ type Page =
   | "overview"
   | "inbox"
   | "calendar"
+  | "tasks"
   | "labels"
   | "rules"
   | "metrics"
@@ -357,7 +360,202 @@ const SYSTEM_MCP_TOOLS: AiMcpTool[] = [
     description: "Search Emailable's indexed email database by id, subject, sender, account, label, archive/draft/sent/inbox state, read/unread status, and timestamps. Provider-wide connected-account search is optional.",
     inputSchema: null,
   },
+  {
+    name: "searchTasks",
+    description: "Fuzzy search the user's incomplete Emailable tasks by title.",
+    inputSchema: null,
+  },
+  {
+    name: "createTask",
+    description: "Create a task, or increment an existing task's duplicate count when a sufficiently similar incomplete task already exists.",
+    inputSchema: null,
+  },
+  {
+    name: "getTask",
+    description: "Get a single task by id.",
+    inputSchema: null,
+  },
+  {
+    name: "editTask",
+    description: "Edit user-controlled task fields including title, notes, tags, priority, due date, project, and source email id.",
+    inputSchema: null,
+  },
+  {
+    name: "deleteTask",
+    description: "Delete a task.",
+    inputSchema: null,
+  },
+  {
+    name: "listTasks",
+    description: "List incomplete tasks sorted by Emailable's effective priority score.",
+    inputSchema: null,
+  },
+  {
+    name: "generateNudgeSteps",
+    description: "Generate small next steps for a stuck task.",
+    inputSchema: null,
+  },
+  {
+    name: "simplifyNudgeStep",
+    description: "Rewrite the current nudge step so it is easier to act on.",
+    inputSchema: null,
+  },
 ];
+
+const MCP_SERVER_TOOL_DOCS = [
+  {
+    path: "create_draft_reply",
+    title: "Create Draft Reply",
+    payload: {
+      accountEmail: "user@gmail.com",
+      emailId: "188c1f2d7e1a1234",
+      bodyText: "Thanks for the update. I will review this and follow up shortly.",
+      replyAll: false,
+    },
+    response: { draftId: "r123", messageId: "188c1f2d7e1a1234", threadId: "188c1f2d7e1a1234" },
+  },
+  {
+    path: "add_labels_on_email",
+    title: "Add Labels On Email",
+    notes: [
+      "Payload matches the REST classify-and-label endpoint.",
+      "labelsApplied supports up to 3 label candidate objects.",
+      "When exactly one candidate has the highest confidence and it meets the current threshold, that label is applied.",
+      "When candidates tie, no candidate meets the threshold, or no candidates are provided, a pending rule is created.",
+    ],
+    payload: {
+      emailId: "188c1f2d7e1a1234",
+      threadId: "188c1f2d7e1a1234",
+      fromEmail: "someone@gmail.com",
+      fromName: "Michael Montaque",
+      subject: "Invoice for review",
+      snippet: "Please review the attached invoice.",
+      labelsApplied: [
+        { labelName: "Invoice", confidence: 0.87, reason: "Use for vendor invoices and payment requests." },
+        { labelName: "Needs Review", confidence: 0.87, reason: "Use when the message needs human follow-up." },
+      ],
+    },
+    response: { action: "pending_rule_created", threshold: 0.9, confidence: 0.87 },
+  },
+  {
+    path: "query_email_rules",
+    title: "Query Email Rules",
+    notes: ["Supported equivalences: equals, notEquals, contains."],
+    payload: {
+      query: {
+        operator: "AND",
+        conditions: [
+          { field: "fromEmail", equivalence: "contains", value: "gmail.com" },
+          { field: "isPending", equivalence: "equals", value: true },
+        ],
+      },
+      limit: 25,
+    },
+    response: { rules: [{ emailId: "188c1f2d7e1a1234", isPending: true }] },
+  },
+  {
+    path: "find_email",
+    title: "Find Email",
+    notes: [
+      "All fields are optional. If no fields are supplied, no results are returned.",
+      "The to field narrows the search to the connected account with that email address.",
+      "emailId, subject, and from are used to find specific matching emails.",
+    ],
+    payload: {
+      emailId: "188c1f2d7e1a1234",
+      subject: "Invoice for review",
+      from: "vendor@example.com",
+      to: "user@gmail.com",
+    },
+    response: {
+      emails: [
+        {
+          accountEmail: "user@gmail.com",
+          provider: "gmail",
+          emailId: "188c1f2d7e1a1234",
+          threadId: "188c1f2d7e1a1234",
+          fromEmail: "vendor@example.com",
+          subject: "Invoice for review",
+          snippet: "Please review the attached invoice.",
+        },
+      ],
+    },
+  },
+  {
+    path: "searchTasks",
+    title: "Search Tasks",
+    notes: ["Searches incomplete tasks by fuzzy title matching."],
+    payload: { title: "schedule dentist appointment", limit: 3 },
+    response: { tasks: [{ id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", title: "Schedule dentist appointment" }] },
+  },
+  {
+    path: "createTask",
+    title: "Create Task",
+    notes: ["Creates a task or increments duplicate_count when a similar incomplete task already exists."],
+    payload: {
+      title: "Schedule dentist appointment",
+      notes: "Call the office this week.",
+      tags: ["health"],
+      priority: 2,
+      dueDate: "2026-09-18T17:00:00.000Z",
+      project: "Personal",
+      sourceEmailId: "188c1f2d7e1a1234",
+    },
+    response: { task: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", title: "Schedule dentist appointment" }, duplicate: false },
+  },
+  {
+    path: "getTask",
+    title: "Get Task",
+    notes: ["Reads a single task by id."],
+    payload: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee" },
+    response: { task: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", title: "Schedule dentist appointment" } },
+  },
+  {
+    path: "editTask",
+    title: "Edit Task",
+    notes: ["Updates task fields. Only include fields that should change."],
+    payload: {
+      id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee",
+      title: "Schedule dental cleaning",
+      priority: 1,
+    },
+    response: { task: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", title: "Schedule dental cleaning", priority: 1 } },
+  },
+  {
+    path: "deleteTask",
+    title: "Delete Task",
+    notes: ["Deletes a task by id."],
+    payload: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee" },
+    response: { ok: true },
+  },
+  {
+    path: "listTasks",
+    title: "List Tasks",
+    notes: ["Lists incomplete tasks sorted by Emailable's effective priority score."],
+    payload: { limit: 25 },
+    response: { tasks: [{ id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", title: "Schedule dental cleaning" }] },
+  },
+  {
+    path: "generateNudgeSteps",
+    title: "Generate Nudge Steps",
+    notes: ["Generates small next steps for a stuck task."],
+    payload: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee" },
+    response: { task: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", nudgeSteps: ["Find the dentist phone number.", "Call to ask for available times."] } },
+  },
+  {
+    path: "simplifyNudgeStep",
+    title: "Simplify Nudge Step",
+    notes: ["Simplifies the current nudge step for a task."],
+    payload: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee" },
+    response: { task: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", currentNudgeStep: "Call the dentist." } },
+  },
+] satisfies Array<{
+  path: string;
+  title: string;
+  payload: Record<string, unknown>;
+  response: Record<string, unknown> | Array<Record<string, unknown>>;
+  notes?: string[];
+}>;
 
 function getDefaultSystemMcpClient(): AiMcpClientConfig {
   return {
@@ -751,6 +949,7 @@ const navItems = [
   { id: "overview" as const, label: "Overview", icon: Gauge },
   { id: "inbox" as const, label: "Inbox", icon: Inbox },
   { id: "calendar" as const, label: "Calendar", icon: CalendarDays },
+  { id: "tasks" as const, label: "Tasks", icon: ListChecks },
   { id: "labels" as const, label: "Labels", icon: Tag },
   { id: "rules" as const, label: "Rule Review", icon: FileCheck2 },
   { id: "metrics" as const, label: "Metrics", icon: BarChart3 },
@@ -1826,6 +2025,7 @@ function AuthenticatedLayout({
           )}
           {activePage === "inbox" && <InboxPage onNavigate={onNavigate} onOpenMobileMenu={() => setMobileMenuOpen(true)} privacyMode={privacyMode} />}
           {activePage === "calendar" && <CalendarPage />}
+          {activePage === "tasks" && <TasksPage />}
           {activePage === "labels" && <LabelsPage privacyMode={privacyMode} />}
           {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} privacyMode={privacyMode} />}
           {activePage === "metrics" && <MetricsPage />}
@@ -14627,6 +14827,83 @@ function EndpointsPage() {
             }}
           />
           <div className="border-t border-zinc-200 pt-4">
+            <div className="mb-3">
+              <p className="text-sm font-semibold text-zinc-950">Task APIs</p>
+              <p className="text-sm text-zinc-500">Signed-in app endpoints used by the Tasks page and MCP task tools.</p>
+            </div>
+            <div className="space-y-3">
+              <EndpointDoc
+                method="GET"
+                path="/api/tasks"
+                title="List tasks"
+                notes={["Returns incomplete tasks sorted by effective score, with the first three repeated as top3."]}
+                response={{
+                  tasks: [
+                    {
+                      id: "task-id",
+                      title: "Send follow-up",
+                      priority: 1,
+                      dueDate: "2026-09-15T16:00:00.000Z",
+                      effectiveScore: -22,
+                    },
+                  ],
+                  top3: [{ id: "task-id", title: "Send follow-up" }],
+                }}
+              />
+              <EndpointDoc
+                method="POST"
+                path="/api/tasks"
+                title="Create task"
+                payload={{
+                  title: "Send follow-up",
+                  notes: "Include the invoice number.",
+                  tags: ["client", "invoice"],
+                  priority: 1,
+                  dueDate: "2026-09-15T16:00:00.000Z",
+                  project: "Client Ops",
+                  sourceEmailId: "email-provider-id",
+                }}
+                response={{ task: { id: "task-id", title: "Send follow-up", effectiveScore: -22 } }}
+              />
+              <EndpointDoc
+                method="PUT"
+                path="/api/tasks/:id"
+                title="Update task"
+                notes={["Updates user-editable task fields only. Completed tasks cannot be edited."]}
+                payload={{
+                  title: "Send follow-up to client",
+                  notes: "Mention the invoice number and next steps.",
+                  tags: ["client", "invoice"],
+                  priority: 2,
+                  dueDate: "2026-09-16T16:00:00.000Z",
+                  project: "Client Ops",
+                }}
+                response={{ task: { id: "task-id", title: "Send follow-up to client", priority: 2 } }}
+              />
+              <EndpointDoc
+                method="DELETE"
+                path="/api/tasks/:id"
+                title="Delete task"
+                notes={["Deletes the task for the signed-in user."]}
+                response={{ ok: true }}
+              />
+              <EndpointDoc
+                method="POST"
+                path="/api/tasks/:id/complete"
+                title="Complete task"
+                notes={["Marks the task complete and removes it from the incomplete task list."]}
+                response={{ task: { id: "task-id", completedAt: "2026-09-15T18:00:00.000Z" } }}
+              />
+              <EndpointDoc
+                method="POST"
+                path="/api/tasks/:id/defer"
+                title="Defer task"
+                notes={["Increments defer_count. At 3 defers, the task is marked stuck and Emailable generates nudge steps when AI is available."]}
+                response={{ task: { id: "task-id", deferCount: 3, stuck: true, nudge: { steps: ["Open the email and write one sentence."] } } }}
+              />
+            </div>
+          </div>
+          <div className="border-t border-zinc-200 pt-4">
             <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-sm font-semibold text-zinc-950">Emailable AI endpoints</p>
@@ -14688,6 +14965,42 @@ function EndpointsPage() {
                   accountEmail: "user@example.com",
                   emailId: "188c1f2d7e1a1234",
                   added: [{ name: "Invoice", providerLabelId: "Label_123" }],
+                }}
+              />
+              <EndpointDoc
+                method="POST"
+                path="/api/tasks/:id/nudge/generate"
+                statusBadge={<AiEndpointStatusBadge enabled={Boolean(aiConfig?.aiEnabled)} />}
+                title="Generate task nudge steps"
+                notes={[
+                  "Uses the user's active AI provider to create small concrete steps for a stuck task.",
+                  "This is also triggered automatically when a task reaches the defer threshold.",
+                ]}
+                response={{
+                  task: {
+                    id: "task-id",
+                    stuck: true,
+                    nudge: {
+                      steps: ["Open the related email.", "Write one sentence with the next action.", "Send or schedule the follow-up."],
+                      currentStepIndex: 0,
+                    },
+                  },
+                }}
+              />
+              <EndpointDoc
+                method="POST"
+                path="/api/tasks/:id/nudge/simplify"
+                statusBadge={<AiEndpointStatusBadge enabled={Boolean(aiConfig?.aiEnabled)} />}
+                title="Simplify current nudge step"
+                notes={["Uses the user's active AI provider to make the current nudge step easier and more concrete."]}
+                response={{
+                  task: {
+                    id: "task-id",
+                    nudge: {
+                      steps: ["Open the email and write only the greeting."],
+                      currentStepIndex: 0,
+                    },
+                  },
                 }}
               />
             </div>
@@ -14886,92 +15199,18 @@ function McpServerPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
               {" "}and deactivate MCP Client to use this server.
             </p>
           ) : null}
-          <EndpointDoc
-            method="TOOL"
-            path="create_draft_reply"
-            statusBadge={isMcpServerDisabled ? <Badge className="bg-red-50 text-red-700">Disabled</Badge> : undefined}
-            title="Create Draft Reply"
-            payload={{
-              accountEmail: "user@gmail.com",
-              emailId: "188c1f2d7e1a1234",
-              bodyText: "Thanks for the update. I will review this and follow up shortly.",
-              replyAll: false,
-            }}
-            response={{ draftId: "r123", messageId: "188c1f2d7e1a1234", threadId: "188c1f2d7e1a1234" }}
-          />
-          <EndpointDoc
-            method="TOOL"
-            path="add_labels_on_email"
-            statusBadge={isMcpServerDisabled ? <Badge className="bg-red-50 text-red-700">Disabled</Badge> : undefined}
-            title="Add Labels On Email"
-            notes={[
-              "Payload matches the REST classify-and-label endpoint.",
-              "labelsApplied supports up to 3 label candidate objects.",
-              "When exactly one candidate has the highest confidence and it meets the current threshold, that label is applied.",
-              "When candidates tie, no candidate meets the threshold, or no candidates are provided, a pending rule is created.",
-            ]}
-            payload={{
-              emailId: "188c1f2d7e1a1234",
-              threadId: "188c1f2d7e1a1234",
-              fromEmail: "someone@gmail.com",
-              fromName: "Michael Montaque",
-              subject: "Invoice for review",
-              snippet: "Please review the attached invoice.",
-              labelsApplied: [
-                { labelName: "Invoice", confidence: 0.87, reason: "Use for vendor invoices and payment requests." },
-                { labelName: "Needs Review", confidence: 0.87, reason: "Use when the message needs human follow-up." },
-              ],
-            }}
-            response={{ action: "pending_rule_created", threshold: 0.9, confidence: 0.87 }}
-          />
-          <EndpointDoc
-            method="TOOL"
-            path="query_email_rules"
-            statusBadge={isMcpServerDisabled ? <Badge className="bg-red-50 text-red-700">Disabled</Badge> : undefined}
-            title="Query Email Rules"
-            notes={["Supported equivalences: equals, notEquals, contains."]}
-            payload={{
-              query: {
-                operator: "AND",
-                conditions: [
-                  { field: "fromEmail", equivalence: "contains", value: "gmail.com" },
-                  { field: "isPending", equivalence: "equals", value: true },
-                ],
-              },
-              limit: 25,
-            }}
-            response={{ rules: [{ emailId: "188c1f2d7e1a1234", isPending: true }] }}
-          />
-          <EndpointDoc
-            method="TOOL"
-            path="find_email"
-            statusBadge={isMcpServerDisabled ? <Badge className="bg-red-50 text-red-700">Disabled</Badge> : undefined}
-            title="Find Email"
-            notes={[
-              "All fields are optional. If no fields are supplied, no results are returned.",
-              "The to field narrows the search to the connected account with that email address.",
-              "emailId, subject, and from are used to find specific matching emails.",
-            ]}
-            payload={{
-              emailId: "188c1f2d7e1a1234",
-              subject: "Invoice for review",
-              from: "vendor@example.com",
-              to: "user@gmail.com",
-            }}
-            response={{
-              emails: [
-                {
-                  accountEmail: "user@gmail.com",
-                  provider: "gmail",
-                  emailId: "188c1f2d7e1a1234",
-                  threadId: "188c1f2d7e1a1234",
-                  fromEmail: "vendor@example.com",
-                  subject: "Invoice for review",
-                  snippet: "Please review the attached invoice.",
-                },
-              ],
-            }}
-          />
+          {MCP_SERVER_TOOL_DOCS.map((toolDoc) => (
+            <EndpointDoc
+              key={toolDoc.path}
+              method="TOOL"
+              path={toolDoc.path}
+              statusBadge={isMcpServerDisabled ? <Badge className="bg-red-50 text-red-700">Disabled</Badge> : undefined}
+              title={toolDoc.title}
+              notes={toolDoc.notes}
+              payload={toolDoc.payload}
+              response={toolDoc.response}
+            />
+          ))}
         </CardContent>
       </Card>
     </div>
@@ -16002,6 +16241,7 @@ const pagePaths: Record<Page, string> = {
   overview: "/",
   inbox: "/inbox",
   calendar: "/calendar",
+  tasks: "/tasks",
   labels: "/labels",
   rules: "/rule-review",
   metrics: "/metrics",
@@ -16346,6 +16586,10 @@ function getPageTitle(page: Page) {
 
   if (page === "ai-draft-reply") {
     return "Reply Prompt";
+  }
+
+  if (page === "tasks") {
+    return "Tasks";
   }
 
   if (page === "confidence-threshold") {
