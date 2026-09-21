@@ -2352,6 +2352,7 @@ function InboxPage({
   const [isInboxSyncing, setIsInboxSyncing] = useState(false);
   const loadMoreInFlightRef = useRef(false);
   const messageRequestIdRef = useRef(0);
+  const removedMessageKeysRef = useRef<Set<string>>(new Set());
   const searchSuggestionRequestIdRef = useRef(0);
   const mobilePullStartYRef = useRef<number | null>(null);
   const mobilePullActiveRef = useRef(false);
@@ -2599,6 +2600,15 @@ function InboxPage({
   const unemailableCount = unemailableLabel ? labelCounts[unemailableLabel.id] ?? 0 : 0;
   const hasUnemailableEmails = typeof unemailableCount === "number" && unemailableCount > 0;
   const isInboxSearchActive = committedInboxSearch.trim().length > 0;
+  const knownInboxTotal = !isInboxSearchActive && inboxMode === "inbox"
+    ? selectedLabelId === INBOX_ALL_LABEL_ID
+      ? allLabelCount
+      : labelCounts[selectedLabelId] ?? null
+    : null;
+  const fallbackLoadMoreToken = !nextPageToken && typeof knownInboxTotal === "number" && filteredMessages.length < knownInboxTotal
+    ? buildFallbackInboxLoadMoreToken()
+    : null;
+  const loadMorePageToken = nextPageToken ?? fallbackLoadMoreToken;
 
   async function loadInboxSearchSuggestions(query: string) {
     if (accounts.length === 0) {
@@ -2751,9 +2761,9 @@ function InboxPage({
     }
   }
 
-  async function refreshInboxAfterMessageMutation() {
+  async function refreshInboxAfterMessageMutation(pageTokenOverride?: string | null) {
     await Promise.all([
-      loadMessages({ reset: true }),
+      pageTokenOverride ? loadMessages({ reset: false, pageTokenOverride }) : Promise.resolve(),
       isLabelFilteredInboxMode(inboxMode) && selectedAccountIds.length > 0 && labels.length > 0
         ? loadLabelCounts()
         : Promise.resolve(),
@@ -2830,7 +2840,7 @@ function InboxPage({
     mobilePullStartYRef.current = null;
   }
 
-  async function loadMessages({ reset }: { reset: boolean }) {
+  async function loadMessages({ reset, pageTokenOverride }: { reset: boolean; pageTokenOverride?: string | null }) {
     const activeSearch = committedInboxSearch.trim();
     const isSearchActive = activeSearch.length > 0;
     const activeAccountIds = isSearchActive ? accounts.map((account) => account.id) : selectedAccountIds;
@@ -2838,7 +2848,8 @@ function InboxPage({
       return;
     }
 
-    if (!reset && (loadMoreInFlightRef.current || !nextPageToken)) {
+    const pageTokenToUse = reset ? null : (pageTokenOverride ?? nextPageToken);
+    if (!reset && (loadMoreInFlightRef.current || !pageTokenToUse)) {
       return;
     }
 
@@ -2846,6 +2857,7 @@ function InboxPage({
     if (reset) {
       messageRequestIdRef.current = requestId;
       loadMoreInFlightRef.current = false;
+      removedMessageKeysRef.current.clear();
       setIsLoadingMore(false);
     } else {
       loadMoreInFlightRef.current = true;
@@ -2860,7 +2872,7 @@ function InboxPage({
     try {
       const endpoint = isSearchActive ? "/api/inbox/search" : inboxMode === "drafts" ? "/api/inbox/drafts" : inboxMode === "sent" ? "/api/inbox/sent" : "/api/inbox/messages";
       const isAllLabels = !isSearchActive && isLabelFilteredInboxMode(inboxMode) && selectedLabelId === INBOX_ALL_LABEL_ID;
-      const currentPageState = reset ? {} : decodeInboxPageToken(nextPageToken);
+      const currentPageState = reset ? {} : decodeInboxPageToken(pageTokenToUse);
       const targets = reset
         ? activeAccountIds.flatMap((accountId) => {
             if (isSearchActive) {
@@ -2942,10 +2954,21 @@ function InboxPage({
         return;
       }
 
-      setMessages((current) => sortInboxMessagesForClient(
-        mergeInboxMessages(reset ? [] : current, loadedMessages),
-        sort,
-      ));
+      const removedKeys = removedMessageKeysRef.current;
+      const visibleLoadedMessages = removedKeys.size > 0
+        ? loadedMessages.filter((message) => !removedKeys.has(getInboxMessageKey(message)))
+        : loadedMessages;
+      setMessages((current) => {
+        const baseMessages = reset
+          ? []
+          : removedKeys.size > 0
+            ? current.filter((message) => !removedKeys.has(getInboxMessageKey(message)))
+            : current;
+        return sortInboxMessagesForClient(
+          mergeInboxMessages(baseMessages, visibleLoadedMessages),
+          sort,
+        );
+      });
       setNextPageToken(encodeInboxPageToken(nextPageState));
       if (reset) {
         setSelectedMessageKeys([]);
@@ -3239,6 +3262,116 @@ function InboxPage({
     setSelectedMessageKeys([]);
   }
 
+  function getPaginationKeysForMessage(message: InboxMessage) {
+    const activeSearch = committedInboxSearch.trim();
+    if (activeSearch) {
+      return [getInboxPageStateKey(message.accountId, "search")];
+    }
+
+    if (!isLabelFilteredInboxMode(inboxMode)) {
+      return [getInboxPageStateKey(message.accountId, "")];
+    }
+
+    if (selectedLabelId !== INBOX_ALL_LABEL_ID) {
+      return [getInboxPageStateKey(message.accountId, "")];
+    }
+
+    const labelIdsByName = new Map(labels.map((label) => [label.name.toLowerCase(), label.id]));
+    return message.labels
+      .map((labelName) => labelIdsByName.get(labelName.toLowerCase()))
+      .filter((labelId): labelId is string => Boolean(labelId))
+      .map((labelId) => getInboxPageStateKey(message.accountId, labelId));
+  }
+
+  function adjustPageTokenAfterRemovingMessages(token: string | null, removedMessages: InboxMessage[]) {
+    if (!token || removedMessages.length === 0) {
+      return token;
+    }
+
+    const currentPageState = decodeInboxPageToken(token);
+    const removalCountsByPageKey = new Map<string, number>();
+    for (const message of removedMessages) {
+      for (const pageKey of getPaginationKeysForMessage(message)) {
+        removalCountsByPageKey.set(pageKey, (removalCountsByPageKey.get(pageKey) ?? 0) + 1);
+      }
+    }
+
+    if (removalCountsByPageKey.size === 0) {
+      return token;
+    }
+
+    const nextPageState = { ...currentPageState };
+    for (const [pageKey, removalCount] of removalCountsByPageKey.entries()) {
+      const providerPageToken = nextPageState[pageKey];
+      if (!providerPageToken || providerPageToken === INBOX_PAGE_DONE) {
+        continue;
+      }
+
+      const offset = Number.parseInt(providerPageToken, 10);
+      if (!Number.isFinite(offset)) {
+        continue;
+      }
+
+      nextPageState[pageKey] = String(Math.max(0, offset - removalCount));
+    }
+
+    return encodeInboxPageToken(nextPageState);
+  }
+
+  function buildFallbackInboxLoadMoreToken() {
+    if (committedInboxSearch.trim() || inboxMode !== "inbox" || selectedAccountIds.length === 0) {
+      return null;
+    }
+
+    const nextPageState: Record<string, string> = {};
+    if (selectedLabelId === INBOX_ALL_LABEL_ID) {
+      for (const accountId of selectedAccountIds) {
+        for (const label of labels) {
+          const loadedCount = filteredMessages.filter((message) =>
+            message.accountId === accountId &&
+            message.labels.some((labelName) => labelName.toLowerCase() === label.name.toLowerCase()),
+          ).length;
+          nextPageState[getInboxPageStateKey(accountId, label.id)] = String(loadedCount);
+        }
+      }
+      return encodeInboxPageToken(nextPageState);
+    }
+
+    for (const accountId of selectedAccountIds) {
+      const loadedCount = filteredMessages.filter((message) => message.accountId === accountId).length;
+      nextPageState[getInboxPageStateKey(accountId, "")] = String(loadedCount);
+    }
+
+    return encodeInboxPageToken(nextPageState);
+  }
+
+  function removeMessagesFromCurrentInboxView(removedMessages: InboxMessage[]) {
+    if (removedMessages.length === 0) {
+      return nextPageToken;
+    }
+
+    const removedKeys = new Set(removedMessages.map(getInboxMessageKey));
+    for (const removedKey of removedKeys) {
+      removedMessageKeysRef.current.add(removedKey);
+    }
+
+    messageRequestIdRef.current += 1;
+    loadMoreInFlightRef.current = false;
+    setIsLoading(false);
+    setIsLoadingMore(false);
+
+    const adjustedNextPageToken = adjustPageTokenAfterRemovingMessages(nextPageToken, removedMessages);
+    setNextPageToken(adjustedNextPageToken);
+    setMessages((current) => current.filter((message) => !removedKeys.has(getInboxMessageKey(message))));
+    setSelectedMessageKeys((current) => current.filter((key) => !removedKeys.has(key)));
+    if (selectedMessage && removedKeys.has(getInboxMessageKey(selectedMessage))) {
+      setSelectedMessage(null);
+      setMessageDetail(null);
+    }
+
+    return adjustedNextPageToken;
+  }
+
   function adjustLabelCountsByName(changesByName: Record<string, number>) {
     const labelIdsByName = new Map(labels.map((label) => [label.name.toLowerCase(), label.id]));
     setLabelCounts((current) => {
@@ -3338,11 +3471,14 @@ function InboxPage({
       const shouldRemoveFromCurrentInboxView = isLabelFilteredInboxMode(inboxMode) && currentLabelName && currentLabelName !== nextLabelName;
 
       updateCountsForDirectLabelChange(successfulUpdates, nextLabelName);
-      setMessages((current) =>
-        shouldRemoveFromCurrentInboxView
-          ? current.filter((message) => !updatedKeys.has(getInboxMessageKey(message)))
-          : current.map((message) => updatedKeys.has(getInboxMessageKey(message)) ? { ...message, labels: nextLabelName ? [nextLabelName] : [] } : message),
-      );
+      const adjustedNextPageToken = shouldRemoveFromCurrentInboxView
+        ? removeMessagesFromCurrentInboxView(successfulUpdates)
+        : nextPageToken;
+      if (!shouldRemoveFromCurrentInboxView) {
+        setMessages((current) =>
+          current.map((message) => updatedKeys.has(getInboxMessageKey(message)) ? { ...message, labels: nextLabelName ? [nextLabelName] : [] } : message),
+        );
+      }
       setSelectedMessage((current) =>
         current && updatedKeys.has(getInboxMessageKey(current))
           ? { ...current, labels: nextLabelName ? [nextLabelName] : [] }
@@ -3353,7 +3489,7 @@ function InboxPage({
 
       if (successfulUpdates.length > 0) {
         showInboxToast(nextLabelName ? `Updated ${successfulUpdates.length} message${successfulUpdates.length === 1 ? "" : "s"} to ${nextLabelName}.` : `Removed labels from ${successfulUpdates.length} message${successfulUpdates.length === 1 ? "" : "s"}.`);
-        await refreshInboxAfterMessageMutation();
+        await refreshInboxAfterMessageMutation(adjustedNextPageToken);
       }
       if (data.failed?.length) {
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be updated.`);
@@ -3592,19 +3728,13 @@ function InboxPage({
             ),
           )
         : messagesToDelete;
-      const deletedKeys = new Set(successfulDeletes.map(getInboxMessageKey));
       decrementCountsForMessages(successfulDeletes);
-      setMessages((current) => current.filter((message) => !deletedKeys.has(getInboxMessageKey(message))));
-      setSelectedMessageKeys((current) => current.filter((key) => !deletedKeys.has(key)));
-      if (selectedMessage && deletedKeys.has(getInboxMessageKey(selectedMessage))) {
-        setSelectedMessage(null);
-        setMessageDetail(null);
-      }
+      const adjustedNextPageToken = removeMessagesFromCurrentInboxView(successfulDeletes);
       void refreshPwaUnreadBadge();
       if (successfulDeletes.length > 0) {
         showInboxToast(`${successfulDeletes.length} message${successfulDeletes.length === 1 ? "" : "s"} deleted.`);
         setIsMobileEditMode(false);
-        await refreshInboxAfterMessageMutation();
+        await refreshInboxAfterMessageMutation(adjustedNextPageToken);
       }
       if (data.failed?.length) {
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be deleted.`);
@@ -3654,20 +3784,14 @@ function InboxPage({
             ),
           )
         : messagesToArchive;
-      const archivedKeys = new Set(successfulArchives.map(getInboxMessageKey));
 
       decrementCountsForMessages(successfulArchives);
-      setMessages((current) => current.filter((message) => !archivedKeys.has(getInboxMessageKey(message))));
-      setSelectedMessageKeys((current) => current.filter((key) => !archivedKeys.has(key)));
-      if (selectedMessage && archivedKeys.has(getInboxMessageKey(selectedMessage))) {
-        setSelectedMessage(null);
-        setMessageDetail(null);
-      }
+      const adjustedNextPageToken = removeMessagesFromCurrentInboxView(successfulArchives);
       void refreshPwaUnreadBadge();
       if (successfulArchives.length > 0) {
         showInboxToast(`${successfulArchives.length} message${successfulArchives.length === 1 ? "" : "s"} archived.`);
         setIsMobileEditMode(false);
-        await refreshInboxAfterMessageMutation();
+        await refreshInboxAfterMessageMutation(adjustedNextPageToken);
       }
       if (data.failed?.length) {
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be archived.`);
@@ -4253,12 +4377,12 @@ function InboxPage({
                   ))}
                 </>
               )}
-              {nextPageToken ? (
+              {loadMorePageToken ? (
                 <div className="flex justify-center py-5">
                   <Button
                     className="rounded-full border-white/70 bg-white/70 px-5 shadow-sm backdrop-blur-xl hover:bg-white/85"
                     disabled={isLoading || isLoadingMore}
-                    onClick={() => void loadMessages({ reset: false })}
+                    onClick={() => void loadMessages({ reset: false, pageTokenOverride: loadMorePageToken })}
                     type="button"
                     variant="outline"
                   >
