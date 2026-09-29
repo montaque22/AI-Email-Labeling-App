@@ -22,6 +22,7 @@ import {
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import {
+  completeTask,
   createTaskFromWorkflow,
   deleteTask,
   generateNudgeSteps,
@@ -78,6 +79,11 @@ export const SYSTEM_MCP_TOOL_DEFINITIONS = [
     name: "deleteTask",
     title: "Delete Task",
     description: "Delete a task.",
+  },
+  {
+    name: "completeTask",
+    title: "Complete Task",
+    description: "Close or complete an open task.",
   },
   {
     name: "listTasks",
@@ -292,7 +298,7 @@ function createMcpServer(userId) {
     "find_email",
     {
       title: "Find Email",
-      description: "Search Emailable's indexed email database first for emails and counts by id, subject, from, to/account, label, archive/draft/sent/inbox state, read/unread status, and received/sent timestamps. Set searchConnectedAccounts to true only after the user agrees to a slower provider-wide connected-account search.",
+      description: "Search Emailable's indexed email database first for emails and counts by id, subject, from, to/account, label, inbox/archive/trash/draft/sent state, read/unread status, and received/sent timestamps. Set searchConnectedAccounts to true when indexed results are missing or too shallow and a deeper connected-provider search is needed.",
       inputSchema: {
         emailId: z.string().optional().describe("Provider email/message id or RFC822 Message-ID."),
         subject: z.string().optional().describe("Subject text to search for."),
@@ -301,7 +307,7 @@ function createMcpServer(userId) {
         state: z.string().optional().describe("Optional mailbox/state filter such as inbox, sent, drafts, archive, archived, read, unread, or a label/folder name."),
         label: z.string().optional().describe("Optional Emailable label/folder name to filter by."),
         limit: z.number().min(1).max(200).optional().describe("Maximum indexed results to return. Use a small limit for examples and a larger limit for counting."),
-        searchConnectedAccounts: z.boolean().optional().describe("When true, search connected email providers if the indexed database does not contain a match. Use only after user confirmation."),
+        searchConnectedAccounts: z.boolean().optional().describe("When true, search connected email providers if the indexed database does not contain enough information. Use for deep searches across archive, trash, drafts, sent mail, or older/unindexed messages."),
       },
     },
     async (input) => {
@@ -386,6 +392,20 @@ function createMcpServer(userId) {
         await deleteTask(userId, input.id);
         return { ok: true };
       });
+    },
+  );
+
+  server.registerTool(
+    "completeTask",
+    {
+      title: "Complete Task",
+      description: "Close or complete an open task.",
+      inputSchema: {
+        id: z.string().uuid(),
+      },
+    },
+    async (input) => {
+      return loggedMcpToolResult(userId, "completeTask", input, `/api/tasks/${input.id}/complete`, () => completeTask(userId, input.id));
     },
   );
 

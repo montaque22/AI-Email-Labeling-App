@@ -15,6 +15,7 @@ import {
   createImapDraft,
   fetchImapEmailContextById,
   findImapMessageAccountMatch,
+  searchImapInboxMessages,
   searchImapEmailContexts,
   searchRecentImapEmailContexts,
   moveImapMessageToFolders,
@@ -1262,9 +1263,10 @@ async function searchRecentGmailPollingMessages(accessToken, account, since, ign
   return results;
 }
 
-async function searchConnectedEmailsForRules(userId, { query, accountEmail, fromEmail = "" }) {
+async function searchConnectedEmailsForRules(userId, { query, accountEmail, fromEmail = "", state = "", label = "", limit = 10 }) {
   const accounts = await getConnectedEmailAccounts(userId);
   const results = [];
+  const maxResults = Math.min(Math.max(Number(limit) || 10, 1), 50);
   const selectedAccounts = accountEmail
     ? accounts.filter((account) => account.email.toLowerCase() === accountEmail)
     : accounts;
@@ -1276,7 +1278,7 @@ async function searchConnectedEmailsForRules(userId, { query, accountEmail, from
   }
 
   for (const account of selectedAccounts) {
-    if (results.length >= 10) {
+    if (results.length >= maxResults) {
       break;
     }
 
@@ -1287,19 +1289,14 @@ async function searchConnectedEmailsForRules(userId, { query, accountEmail, from
     try {
       if (account.provider === "gmail") {
         const accessToken = await getValidEmailAccountAccessToken(account);
-        const emails = await searchGmailEmailsForRules(accessToken, { query, fromEmail }, 10 - results.length);
-        results.push(...emails.map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
+        const emails = await searchGmailEmailsForRules(accessToken, { query, fromEmail, state, label }, maxResults - results.length);
+        results.push(...emails.map((email) => ({ ...email, accountId: account.id, accountEmail: account.email, provider: account.provider })));
       } else {
         const accessToken = await getImapAccessToken(account);
-        const emails = await searchImapEmailContexts(
-          account,
-          { subject: query },
-          10 - results.length,
-          accessToken,
-        );
+        const emails = await searchImapEmailContextsAcrossMailboxes(account, { query, state, label }, maxResults - results.length, accessToken);
         results.push(...emails
           .filter((email) => !fromEmail || emailMatchesFrom(email, fromEmail))
-          .map((email) => ({ ...email, accountEmail: account.email, provider: account.provider })));
+          .map((email) => ({ ...email, accountId: account.id, accountEmail: account.email, provider: account.provider })));
       }
     } catch (error) {
       if (error.status !== 404) {
@@ -1308,7 +1305,7 @@ async function searchConnectedEmailsForRules(userId, { query, accountEmail, from
     }
   }
 
-  return results.slice(0, 10);
+  return results.slice(0, maxResults);
 }
 
 export async function findConnectedEmailsForMcp(userId, payload = {}) {
@@ -1327,7 +1324,13 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
 
   const indexedMatches = await findIndexedEmailsForMcp(userId, { emailId, subject, from, to, state, label, limit });
   if (indexedMatches.totalMatches > 0 || !searchConnectedAccounts) {
-    return indexedMatches;
+    if (indexedMatches.totalMatches === 0 && shouldAutoSearchConnectedAccounts({ emailId, subject, from, state, label })) {
+      // Fall through to connected-provider search. This keeps the AI Helper from stopping
+      // at an empty index result when the message exists in archive/trash/drafts or has not
+      // been indexed yet.
+    } else {
+      return searchConnectedAccounts ? await enrichIndexedEmailMatches(userId, indexedMatches, { subject, from, limit }) : indexedMatches;
+    }
   }
 
   if (emailId) {
@@ -1346,21 +1349,34 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
     }
   }
 
-  const candidates = await searchConnectedEmailsForRules(userId, { query: subject, accountEmail: to, fromEmail: from });
+  const candidates = await searchConnectedEmailsForRules(userId, {
+    query: subject || from || label || state,
+    accountEmail: to,
+    fromEmail: from,
+    state,
+    label,
+    limit,
+  });
   const results = candidates
     .filter((email) => !subject || normalizeComparableSubject(email.subject).includes(normalizeComparableSubject(subject)))
     .filter((email) => !from || emailMatchesFrom(email, from))
     .slice(0, limit)
     .map((email) => ({
+      accountId: email.accountId,
       accountEmail: email.accountEmail,
       provider: email.provider,
       emailId: email.emailId,
       threadId: email.threadId,
+      mailbox: email.mailbox || "",
       fromEmail: email.fromEmail,
       fromName: email.fromName,
       to: email.to,
       subject: email.subject,
       snippet: email.snippet,
+      bodyText: truncateTextForTool(email.bodyText || email.snippet || "", 4000),
+      date: email.receivedAt || email.date || "",
+      labels: Array.isArray(email.labels) ? email.labels : [],
+      isRead: email.isRead,
     }));
   return { returned: results.length, results, source: "connected_accounts", totalMatches: results.length };
 }
@@ -1378,9 +1394,12 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
     ? "sent"
     : normalizedState === "draft" || normalizedState === "drafts"
       ? "draft"
-      : "inbox";
+      : normalizedState === "inbox"
+        ? "inbox"
+        : "";
   const archivedOnly = normalizedState === "archive" || normalizedState === "archived";
-  const labelName = label || (!["", "inbox", "sent", "draft", "drafts", "archive", "archived", "read", "unread"].includes(normalizedState) ? normalizedState : "");
+  const trashOnly = ["trash", "deleted", "deleted items"].includes(normalizedState);
+  const labelName = label || (!["", "inbox", "sent", "draft", "drafts", "archive", "archived", "trash", "deleted", "deleted items", "read", "unread"].includes(normalizedState) ? normalizedState : "");
 
   if (emailId) {
     const values = [userId, emailId];
@@ -1403,6 +1422,7 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
       .filter((email) => !from || String(email.from || email.sender || "").toLowerCase().includes(from))
       .filter((email) => readFilter === null || email.isRead === readFilter)
       .filter((email) => !archivedOnly || email.archived === true)
+      .filter((email) => !trashOnly || emailStateLooksLikeTrash(email))
       .filter((email) => !labelName || email.labels.some((item) => item.toLowerCase() === labelName.toLowerCase()))
       .map(indexedEmailToMcpResult);
     return { returned: results.length, results, source: "indexed_database", totalMatches: results.length };
@@ -1413,7 +1433,7 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
     accountIds: accounts.map((account) => account.id),
     archivedOnly,
     direction,
-    includeArchived: archivedOnly || normalizedState === "read" || normalizedState === "unread",
+    includeArchived: !normalizedState || archivedOnly || normalizedState === "read" || normalizedState === "unread" || trashOnly,
     labelName,
     search,
     sort: "newest",
@@ -1425,15 +1445,17 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
     .filter((email) => !subject || normalizeComparableSubject(email.subject).includes(normalizeComparableSubject(subject)))
     .filter((email) => !from || String(email.from || email.sender || "").toLowerCase().includes(from))
     .filter((email) => !to || String(email.accountEmail || "").toLowerCase() === to || String(email.to || "").toLowerCase().includes(to))
-    .filter((email) => readFilter === null || email.isRead === readFilter);
+    .filter((email) => readFilter === null || email.isRead === readFilter)
+    .filter((email) => !trashOnly || emailStateLooksLikeTrash(email));
   const totalMatches = await countIndexedEmailsForMcp(userId, {
     accountIds: accounts.map((account) => account.id),
     archivedOnly,
     direction,
-    includeArchived: archivedOnly || normalizedState === "read" || normalizedState === "unread",
+    includeArchived: !normalizedState || archivedOnly || normalizedState === "read" || normalizedState === "unread" || trashOnly,
     labelName,
     readFilter,
     search,
+    trashOnly,
   });
   const results = filtered
     .slice(0, limit)
@@ -1441,7 +1463,7 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
   return { returned: results.length, results, source: "indexed_database", totalMatches };
 }
 
-async function countIndexedEmailsForMcp(userId, { accountIds, archivedOnly, direction, includeArchived, labelName, readFilter, search }) {
+async function countIndexedEmailsForMcp(userId, { accountIds, archivedOnly, direction, includeArchived, labelName, readFilter, search, trashOnly }) {
   const values = [userId];
   const conditions = ["user_id = $1"];
   if (accountIds.length) {
@@ -1470,6 +1492,14 @@ async function countIndexedEmailsForMcp(userId, { accountIds, archivedOnly, dire
     conditions.push("archived = true");
   } else if (!includeArchived) {
     conditions.push("archived = false");
+  }
+  if (trashOnly) {
+    conditions.push(`(
+      mailbox ilike '%trash%'
+      or mailbox ilike '%deleted%'
+      or 'Trash' = any(labels)
+      or 'TRASH' = any(labels)
+    )`);
   }
   if (readFilter !== null) {
     values.push(readFilter);
@@ -1503,18 +1533,107 @@ function indexedEmailToMcpResult(email) {
   };
 }
 
+async function enrichIndexedEmailMatches(userId, indexedMatches, { subject = "", from = "", limit = 20 } = {}) {
+  const results = [];
+  const enrichmentLimit = Math.min(Math.max(Number(limit) || 20, 1), 10);
+
+  for (const email of indexedMatches.results ?? []) {
+    if (results.length >= limit) {
+      break;
+    }
+    if (results.length >= enrichmentLimit) {
+      results.push(email);
+      continue;
+    }
+
+    try {
+      const match = await findConnectedEmailContextById(userId, {
+        accountEmail: email.accountEmail,
+        emailId: email.emailId,
+        subject: email.subject || subject,
+      });
+      if (from && !emailMatchesFrom(match.email, from)) {
+        results.push(email);
+        continue;
+      }
+      results.push({
+        ...email,
+        ...mcpEmailSearchResult(match),
+        source: "indexed_database_with_provider_detail",
+      });
+    } catch (error) {
+      results.push(email);
+    }
+  }
+
+  return {
+    ...indexedMatches,
+    results,
+    source: results.some((email) => email.source === "indexed_database_with_provider_detail")
+      ? "indexed_database_with_provider_detail"
+      : indexedMatches.source,
+  };
+}
+
 function mcpEmailSearchResult(match) {
   return {
+    accountId: match.account.id,
     accountEmail: match.account.email,
     provider: match.account.provider,
     emailId: match.email.emailId,
     threadId: match.email.threadId,
+    mailbox: match.email.mailbox || "",
     fromEmail: match.email.fromEmail,
     fromName: match.email.fromName,
     to: match.email.to,
     subject: match.email.subject,
     snippet: match.email.snippet,
+    bodyText: truncateTextForTool(match.email.bodyText || "", 4000),
+    threadBodyText: buildThreadBodyText(match.email.threadMessages),
+    date: match.email.receivedAt || match.email.date || "",
+    labels: Array.isArray(match.email.labels) ? match.email.labels : [],
+    isRead: match.email.isRead,
   };
+}
+
+function buildThreadBodyText(threadMessages = []) {
+  if (!Array.isArray(threadMessages) || threadMessages.length === 0) {
+    return "";
+  }
+  return truncateTextForTool(
+    threadMessages
+      .map((message, index) => [
+        `Thread message ${index + 1}`,
+        `From: ${message.from || ""}`,
+        `To: ${message.to || ""}`,
+        `Date: ${message.date || ""}`,
+        `Body: ${message.bodyText || ""}`,
+      ].join("\n"))
+      .join("\n\n"),
+    6000,
+  );
+}
+
+function truncateTextForTool(value = "", maxLength = 4000) {
+  const text = String(value || "").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function emailStateLooksLikeTrash(email) {
+  const mailbox = String(email.mailbox || email.state || "").toLowerCase();
+  const labels = Array.isArray(email.labels) ? email.labels.map((item) => String(item).toLowerCase()) : [];
+  return mailbox.includes("trash") || mailbox.includes("deleted") || labels.includes("trash") || labels.includes("deleted");
+}
+
+function shouldAutoSearchConnectedAccounts({ emailId = "", subject = "", from = "", state = "", label = "" } = {}) {
+  const normalizedState = String(state || "").toLowerCase();
+  return Boolean(
+    emailId ||
+    subject ||
+    from ||
+    label ||
+    ["archive", "archived", "trash", "deleted", "deleted items", "draft", "drafts", "sent"].includes(normalizedState),
+  );
 }
 
 function emailMatchesFrom(email, from) {
@@ -1528,19 +1647,33 @@ function extractEmailAddressFromText(value = "") {
   return (angleMatch?.[1] ?? emailMatch?.[0] ?? "").trim();
 }
 
-async function searchGmailEmailsForRules(accessToken, { query, fromEmail = "" }, limit) {
+async function searchGmailEmailsForRules(accessToken, { query, fromEmail = "", state = "", label = "" }, limit) {
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
-  const queryParts = [];
+  const queryParts = ["in:anywhere"];
+  const normalizedState = String(state || "").toLowerCase();
+  if (["trash", "deleted", "deleted items"].includes(normalizedState)) {
+    queryParts.push("in:trash");
+  } else if (["draft", "drafts"].includes(normalizedState)) {
+    queryParts.push("in:drafts");
+  } else if (normalizedState === "sent") {
+    queryParts.push("in:sent");
+  } else if (["archive", "archived"].includes(normalizedState)) {
+    queryParts.push("-in:inbox -in:sent -in:drafts -in:trash");
+  } else if (normalizedState === "inbox") {
+    queryParts.push("in:inbox");
+  }
+  const labelQuery = label || (!["", "inbox", "sent", "draft", "drafts", "archive", "archived", "trash", "deleted", "deleted items", "read", "unread"].includes(normalizedState) ? state : "");
+  if (labelQuery) {
+    queryParts.push(`label:${quoteGmailSearchValue(labelQuery)}`);
+  }
   if (query) {
-    queryParts.push(`subject:${quoteGmailSearchValue(query)}`);
+    queryParts.push(`{subject:${quoteGmailSearchValue(query)} from:${quoteGmailSearchValue(query)} to:${quoteGmailSearchValue(query)} ${quoteGmailSearchValue(query)}}`);
   }
   if (fromEmail) {
     queryParts.push(`from:${quoteGmailSearchValue(fromEmail)}`);
   }
-  if (queryParts.length) {
-    url.searchParams.set("q", queryParts.join(" "));
-  }
-  url.searchParams.set("maxResults", String(Math.min(Math.max(limit, 1), 10)));
+  url.searchParams.set("q", queryParts.join(" "));
+  url.searchParams.set("maxResults", String(Math.min(Math.max(limit, 1), 50)));
 
   const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
   const data = await response.json();
@@ -1555,12 +1688,93 @@ async function searchGmailEmailsForRules(accessToken, { query, fromEmail = "" },
   return emails;
 }
 
+async function searchImapEmailContextsAcrossMailboxes(account, { query = "", state = "", label = "" }, limit, accessToken = "") {
+  const metadata = account.metadata ?? {};
+  const normalizedState = String(state || "").toLowerCase();
+  const folders = [];
+  if (["sent"].includes(normalizedState)) {
+    folders.push(metadata.sentMailbox || "Sent");
+  } else if (["draft", "drafts"].includes(normalizedState)) {
+    folders.push(metadata.draftsMailbox || "Drafts");
+  } else if (["trash", "deleted", "deleted items"].includes(normalizedState)) {
+    folders.push(metadata.trashMailbox || "Trash", "Deleted Items");
+  } else if (label) {
+    folders.push(label);
+  } else {
+    folders.push(metadata.defaultMailbox || "INBOX", metadata.sentMailbox || "Sent", metadata.draftsMailbox || "Drafts", metadata.trashMailbox || "Trash", "Archive", "All Mail", "Deleted Items");
+  }
+
+  const results = [];
+  const seenFolders = new Set();
+  for (const folder of folders) {
+    const normalizedFolder = String(folder || "").trim();
+    const folderKey = normalizedFolder.toLowerCase();
+    if (!normalizedFolder || seenFolders.has(folderKey) || results.length >= limit) {
+      continue;
+    }
+    seenFolders.add(folderKey);
+    try {
+      const page = await searchImapInboxMessages(account, {
+        folder: normalizedFolder,
+        limit: Math.min(limit - results.length, 20),
+        query,
+        accessToken,
+      });
+      results.push(...page.messages.map((message) => ({
+        emailId: message.id,
+        threadId: message.threadId,
+        fromEmail: extractEmailAddressFromText(message.from),
+        fromName: message.sender || message.from,
+        to: message.to || account.email,
+        subject: message.subject,
+        snippet: message.snippet,
+        receivedAt: message.date,
+        mailbox: message.mailbox || normalizedFolder,
+        labels: message.labels || [normalizedFolder],
+        isRead: message.isRead,
+      })));
+    } catch (error) {
+      if (error.status !== 404) {
+        console.warn(`IMAP MCP search failed for ${account.email} ${normalizedFolder}:`, error.message);
+      }
+    }
+  }
+  return results.slice(0, limit);
+}
+
 async function fetchGmailMessageFull(accessToken, emailId) {
   const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}`);
   url.searchParams.set("format", "full");
 
   const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
   return response.json();
+}
+
+async function fetchGmailThreadTextMessages(accessToken, account, threadId) {
+  if (!threadId) {
+    return [];
+  }
+  const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`);
+  url.searchParams.set("format", "full");
+  const response = await providerFetch(url.toString(), accessToken, { method: "GET" });
+  const thread = await response.json();
+  return (thread.messages ?? []).map((message) => {
+    const headers = getGmailHeaders(message);
+    return {
+      id: message.id,
+      threadId: message.threadId || threadId,
+      accountEmail: account.email,
+      provider: account.provider,
+      from: headers.from || "",
+      to: headers.to || "",
+      cc: headers.cc || "",
+      subject: headers.subject || "",
+      date: message.internalDate
+        ? new Date(Number(message.internalDate)).toISOString()
+        : new Date(headers.date || Date.now()).toISOString(),
+      bodyText: extractGmailTextBody(message.payload) || message.snippet || "",
+    };
+  });
 }
 
 async function fetchGmailMessageFullByAnyId(accessToken, emailId) {
@@ -1620,6 +1834,7 @@ function normalizeRfc822MessageId(value = "") {
 function gmailMessageToRuleSearchResult(message, fallbackEmailId) {
   const headers = getGmailHeaders(message);
   const fromEmail = extractEmailAddress(headers.from || "");
+  const bodyText = extractGmailTextBody(message.payload) || message.snippet || "";
   const receivedAt = message.internalDate
     ? new Date(Number(message.internalDate)).toISOString()
     : new Date(headers.date || Date.now()).toISOString();
@@ -1631,11 +1846,23 @@ function gmailMessageToRuleSearchResult(message, fallbackEmailId) {
     fromName: extractDisplayName(headers.from || "") || fromEmail,
     to: formatEmailList(headers.to || ""),
     subject: headers.subject || "",
-    snippet: extractGmailTextBody(message.payload) || message.snippet || "",
+    snippet: bodyText.slice(0, 300),
+    bodyText,
     receivedAt,
     isRead: !Array.isArray(message.labelIds) || !message.labelIds.includes("UNREAD"),
+    labels: Array.isArray(message.labelIds) ? message.labelIds : [],
+    mailbox: gmailMailboxFromLabelIds(message.labelIds),
     hasAttachments: false,
   };
+}
+
+function gmailMailboxFromLabelIds(labelIds = []) {
+  const labels = Array.isArray(labelIds) ? labelIds : [];
+  if (labels.includes("TRASH")) return "Trash";
+  if (labels.includes("DRAFT")) return "Drafts";
+  if (labels.includes("SENT")) return "Sent";
+  if (labels.includes("INBOX")) return "INBOX";
+  return labels.includes("CATEGORY_PERSONAL") || labels.length ? "All Mail" : "";
 }
 
 async function findConnectedMessageById(userId, emailId, subject) {
@@ -1657,6 +1884,7 @@ async function findConnectedMessageById(userId, emailId, subject) {
         const receivedAt = message.internalDate
           ? new Date(Number(message.internalDate)).toISOString()
           : new Date(headers.date || Date.now()).toISOString();
+        const threadMessages = await fetchGmailThreadTextMessages(accessToken, account, message.threadId);
         matches.push({
           account,
           subject: getProviderMessageSubject(account.provider, message),
@@ -1671,6 +1899,7 @@ async function findConnectedMessageById(userId, emailId, subject) {
             subject: headers.subject || "",
             snippet: bodyText.slice(0, 300),
             bodyText,
+            threadMessages,
             receivedAt,
             isRead: !Array.isArray(message.labelIds) || !message.labelIds.includes("UNREAD"),
             hasAttachments: false,
@@ -1732,6 +1961,7 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
         const receivedAt = message.internalDate
           ? new Date(Number(message.internalDate)).toISOString()
           : new Date(headers.date || Date.now()).toISOString();
+        const threadMessages = await fetchGmailThreadTextMessages(accessToken, account, message.threadId);
         matches.push({
           account,
           email: {
@@ -1745,6 +1975,7 @@ export async function findConnectedEmailContextById(userId, { emailId, accountEm
             subject: headers.subject || "",
             snippet: bodyText.slice(0, 300),
             bodyText,
+            threadMessages,
             receivedAt,
             isRead: !Array.isArray(message.labelIds) || !message.labelIds.includes("UNREAD"),
             hasAttachments: false,

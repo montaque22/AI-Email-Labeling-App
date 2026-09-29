@@ -1,4 +1,4 @@
-import { AlertCircle, Check, Clock, Lightbulb, Sparkles, Trash2 } from "lucide-react";
+import { AlertCircle, Check, Clock, Mail, Lightbulb, Sparkles, Trash2 } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { LiquidGlassCard } from "../ui/liquid-glass";
@@ -13,6 +13,7 @@ type TaskCardProps = {
   onDefer: (task: Task) => void;
   onDelete: (task: Task) => void;
   onEdit: (task: Task) => void;
+  onOpenSourceEmail: (task: Task) => void;
   onGenerateNudge: (task: Task) => void;
   onSimplifyNudge: (task: Task) => void;
   onCompleteNudgeStep: (task: Task) => void;
@@ -26,6 +27,7 @@ export function TaskCard({
   onDefer,
   onDelete,
   onEdit,
+  onOpenSourceEmail,
   onGenerateNudge,
   onSimplifyNudge,
   onCompleteNudgeStep,
@@ -70,6 +72,11 @@ export function TaskCard({
         </button>
 
         <div className="flex shrink-0 flex-wrap justify-start gap-2 sm:justify-end">
+          {task.sourceEmailId ? (
+            <Button aria-label="Open source email" size="sm" variant="outline" disabled={busy} onClick={() => onOpenSourceEmail(task)}>
+              <Mail className="h-4 w-4" />
+            </Button>
+          ) : null}
           <Button size="sm" variant="outline" disabled={busy} onClick={() => onComplete(task)}>
             <Check className="h-4 w-4" />
           </Button>

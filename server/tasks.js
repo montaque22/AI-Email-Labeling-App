@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { dbPool } from "./db.js";
 import { requireSession } from "./session.js";
 import { callBestAvailableAi, cleanAiTextResponse } from "./byoai.js";
+import { getEmailIndexEntryBySourceId } from "./email-index.js";
 import { logSystemEvent } from "./system-logs.js";
 import { compareTasksByEffectiveScore, computeEffectiveScore, DEFER_THRESHOLD } from "../shared/task-scoring.js";
 
@@ -62,6 +63,30 @@ export function registerTaskRoutes(app) {
         limit: req.query.limit,
       });
       res.json({ tasks });
+    } catch (error) {
+      handleTaskError(res, error);
+    }
+  });
+
+  app.get("/api/tasks/:id/source-email", requireSession, async (req, res) => {
+    try {
+      const task = await getTask(req.user.id, req.params.id);
+      if (!task) {
+        res.status(404).json({ error: "Task not found" });
+        return;
+      }
+      if (!task.sourceEmailId) {
+        res.status(404).json({ error: "This task is not linked to an email." });
+        return;
+      }
+
+      const message = await getEmailIndexEntryBySourceId(req.user.id, task.sourceEmailId);
+      if (!message) {
+        res.status(404).json({ error: "Linked email was not found." });
+        return;
+      }
+
+      res.json({ message });
     } catch (error) {
       handleTaskError(res, error);
     }

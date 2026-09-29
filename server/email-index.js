@@ -147,6 +147,26 @@ export async function upsertEmailIndexEntry(userId, input) {
   return result.rows[0] ? mapEmailIndexRow(result.rows[0]) : null;
 }
 
+export async function getEmailIndexEntryBySourceId(userId, sourceEmailId) {
+  if (!dbPool || !sourceEmailId) {
+    return null;
+  }
+
+  const result = await dbPool.query(
+    `
+      select email_index.*
+      from email_index
+      where user_id = $1
+        and (email_id = $2 or id::text = $2)
+      order by received_at desc, updated_at desc
+      limit 1
+    `,
+    [userId, sourceEmailId],
+  );
+
+  return result.rows[0] ? mapEmailIndexRow(result.rows[0]) : null;
+}
+
 export async function updateEmailIndexReadStatus(userId, { accountId, emailId, mailbox = "", isRead }) {
   if (!dbPool) {
     return;

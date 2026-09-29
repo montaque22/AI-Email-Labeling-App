@@ -203,7 +203,7 @@ const SYSTEM_MCP_TOOLS = [
   },
   {
     name: "find_email",
-    description: "Search Emailable's indexed email database first for emails and counts by id, subject, from, to/account, label, archive/draft/sent/inbox state, read/unread status, and received/sent timestamps. Use this for questions like how many emails are archived, what is in a label, what drafts exist, or whether a sender has recent mail. Set searchConnectedAccounts to true only after the user confirms a slower provider-wide connected-account search.",
+    description: "Search Emailable's indexed email database first for emails and counts by id, subject, from, to/account, label, inbox/archive/trash/draft/sent state, read/unread status, and received/sent timestamps. Use this for questions like how many emails are archived, what is in trash, what is in a label, what drafts exist, or whether a sender has recent mail. When indexed results are missing or too shallow to answer, set searchConnectedAccounts to true to broaden the search across connected providers.",
     inputSchema: {
       type: "object",
       properties: {
@@ -214,7 +214,7 @@ const SYSTEM_MCP_TOOLS = [
         state: { type: "string", description: "Optional mailbox/state filter such as inbox, sent, drafts, archive, archived, read, unread, or a label/folder name." },
         label: { type: "string", description: "Optional Emailable label/folder name to filter by." },
         limit: { type: "number", description: "Maximum indexed results to return. Use a small limit for examples and a larger limit for counting." },
-        searchConnectedAccounts: { type: "boolean", description: "When true, search connected email providers if the indexed database does not contain a match. Use only after user confirmation." },
+        searchConnectedAccounts: { type: "boolean", description: "When true, search connected email providers if the indexed database does not contain enough information. Use for deep searches across archive, trash, drafts, sent mail, or older/unindexed messages." },
       },
       additionalProperties: false,
     },
@@ -234,7 +234,7 @@ const SYSTEM_MCP_TOOLS = [
   },
   {
     name: "createTask",
-    description: "Create a task, or increment an existing task's duplicate count when a sufficiently similar incomplete task already exists.",
+    description: "Create a task, or increment an existing task's duplicate count when a sufficiently similar incomplete task already exists. When the task is based on an email, include sourceEmailId so Emailable can link the task back to that email.",
     inputSchema: {
       type: "object",
       properties: {
@@ -284,6 +284,18 @@ const SYSTEM_MCP_TOOLS = [
   {
     name: "deleteTask",
     description: "Delete a task.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", format: "uuid" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "completeTask",
+    description: "Close or complete an open task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1510,6 +1522,8 @@ async function generateAiHelperChat(userId, request) {
     .slice(0, 30)
     .map((message, index) => [
       `${index + 1}. State: ${message.state || "visible"}`,
+      `Email ID: ${message.emailId || ""}`,
+      `Thread ID: ${message.threadId || message.emailId || ""}`,
       `Account: ${message.accountEmail || ""}`,
       `From: ${message.from || message.sender || ""}`,
       `Subject: ${message.subject || "(no subject)"}`,
@@ -1518,18 +1532,43 @@ async function generateAiHelperChat(userId, request) {
       `Snippet: ${message.snippet || ""}`,
     ].join("\n"))
     .join("\n\n");
+  const taskContext = request.contextTasks
+    .slice(0, 50)
+    .map((task, index) => [
+      `${index + 1}. ${task.title || "(untitled task)"}`,
+      `ID: ${task.id || ""}`,
+      `Project: ${task.project || "none"}`,
+      `Priority: ${task.priority || ""}`,
+      `Due: ${task.dueDate || "none"}`,
+      `Tags: ${Array.isArray(task.tags) && task.tags.length ? task.tags.join(", ") : "none"}`,
+      `Notes: ${task.notes || "none"}`,
+      `Status: ${task.completedAt ? "completed" : task.stuck ? "stuck" : "open"}`,
+    ].join("\n"))
+    .join("\n\n");
+  const rememberedTasks = memory.affectedTasks.length
+    ? memory.affectedTasks.map((task, index) => `${index + 1}. ${task.title} (${task.id})`).join("\n")
+    : "";
+  const singleActiveEmail = request.contextMessages.length === 1 ? request.contextMessages[0] : null;
+  const defaultTaskSourceEmailId = singleActiveEmail?.emailId || "";
   const aiResponse = await callBestAvailableAi(userId, {
     systemPrompt: [
-      "You are Emailable's AI Helper, an email-focused assistant acting as an agent for the app user.",
-      "You can answer questions about email, help compose or reply to emails, and use available tools whenever they are the reliable way to answer.",
+      "You are Emailable's AI Helper, an email and task assistant acting as an agent for the app user.",
+      "You can answer questions about email, help compose or reply to emails, manage Emailable tasks, and use available tools whenever they are the reliable way to answer.",
       "Keep conversational continuity. Interpret short follow-ups such as yes, sure, no, that one, do it, or continue as direct answers to your immediately previous question unless the user clearly changed topics.",
       "When you list or identify emails and then ask whether the user wants to act on them, assume short follow-ups like delete them, archive them, yes, or do it refer to that same listed set.",
+      "When you list or identify tasks and then ask whether the user wants to act on them, assume short follow-ups like delete them, defer them, close them, complete them, yes, or do it refer to that same listed set.",
       "Emails visible on screen or selected by the user are active context and should be considered first.",
+      "Tasks visible on screen or selected by the user are active context and should be considered first.",
+      "For task requests, use task tools to find, open, summarize, group, delete, defer, edit, and close/complete tasks. Use listTasks for broad summaries, searchTasks for fuzzy title lookup, getTask for a specific id, deleteTask for deletion, editTask for edits, and generateNudgeSteps or simplifyNudgeStep for next-step help.",
+      "When creating a task from an email, always include sourceEmailId with the exact Email ID from the active email context or from the find_email result that the task is based on.",
+      "When the user asks to open a task, identify the task clearly and include its id/title in your response; the UI will show an Open button for affected tasks.",
       "You must understand email state. Inbox, sent, drafts, archive, labels, read/unread, and rules are meaningfully different states.",
       "Do not answer state/count questions from visible context alone unless the user explicitly asks about only visible emails. For archived mail, sent mail, drafts, labels, read/unread status, or rule counts, use tools to query indexed/database-backed data.",
       "Infer the right tool and fields from the user's wording. For example, archive or archived means search indexed email state/archive; drafts means draft state; sent means sent state; label names mean label filters; pending/reviewed rules mean query_email_rules.",
-      "When searching for emails, first use indexed/database-backed information through find_email. Only use provider-wide connected-account search when the user explicitly agrees, because it can be slower.",
-      "If a request needs broader provider search, ask for confirmation once, then continue when the user says yes/sure/ok.",
+      "When searching for emails, first use indexed/database-backed information through find_email.",
+      "If indexed/database results are missing, too shallow, or do not include the body/replies needed to answer, call find_email again with searchConnectedAccounts true. Do this automatically; do not ask the user for permission first.",
+      "For broad searches, include likely states explicitly. Search inbox, archive/archived, trash, drafts, and sent when the user's wording suggests those locations or when the first search does not find enough information.",
+      "When a user asks about an email with replies or details inside the body, prefer tool results that include bodyText/threadBodyText over snippets. If only snippets are available, broaden the search.",
       "If solving the task would require more than 10 tool calls, stop and explain what is making it hard and what detail would help narrow the search.",
       "Be concise and practical. If you need a user decision before taking the next step, ask one clear question.",
     ].join("\n"),
@@ -1550,25 +1589,41 @@ async function generateAiHelperChat(userId, request) {
           "",
           `Active screen context (${request.contextDescription || "visible emails"}):`,
           context || "(no visible or selected email context)",
+          "",
+          "Active task context:",
+          taskContext || "(no visible task context)",
+          "",
+          "Recently affected tasks from this session:",
+          rememberedTasks || "(none)",
         ].join("\n"),
       },
     ],
     responseShape: "text",
+    toolChoice: "auto",
   }, {
+    mcpClients: await buildAiHelperMcpClients(userId),
     onToolResult: (result) => toolResults.push(result),
+    toolExecutionContext: {
+      defaultTaskSourceEmailId,
+    },
   });
 
   const message = cleanAiTextResponse(aiResponse);
   const affectedEmails = extractAffectedEmailsFromAiHelperToolResults(toolResults);
+  const affectedTasks = extractAffectedTasksFromAiHelperToolResults(toolResults);
   updateAiHelperSessionMemory(userId, request.sessionId, [
     ...previousHistory,
     { role: "user", text: request.prompt },
     { role: "assistant", text: message },
-  ], affectedEmails.length > 0 ? affectedEmails : memory.affectedEmails);
+  ], {
+    affectedEmails: affectedEmails.length > 0 ? affectedEmails : memory.affectedEmails,
+    affectedTasks: affectedTasks.length > 0 ? affectedTasks : memory.affectedTasks,
+  });
 
   return {
     message,
     affectedEmails: affectedEmails.length > 0 ? affectedEmails : [],
+    affectedTasks: affectedTasks.length > 0 ? affectedTasks : [],
   };
 }
 
@@ -2046,17 +2101,21 @@ function getAiHelperSessionMemory(userId, sessionId) {
   const memory = aiHelperMemory.get(key);
   if (!memory || Date.now() - memory.updatedAt > AI_HELPER_MEMORY_TTL_MS) {
     aiHelperMemory.delete(key);
-    return { affectedEmails: [], messages: [] };
+    return { affectedEmails: [], affectedTasks: [], messages: [] };
   }
   return {
     affectedEmails: Array.isArray(memory.affectedEmails) ? memory.affectedEmails : [],
+    affectedTasks: Array.isArray(memory.affectedTasks) ? memory.affectedTasks : [],
     messages: Array.isArray(memory.messages) ? memory.messages : [],
   };
 }
 
-function updateAiHelperSessionMemory(userId, sessionId, messages, affectedEmails = []) {
+function updateAiHelperSessionMemory(userId, sessionId, messages, affectedContext = {}) {
+  const affectedEmails = Array.isArray(affectedContext) ? affectedContext : affectedContext.affectedEmails;
+  const affectedTasks = Array.isArray(affectedContext?.affectedTasks) ? affectedContext.affectedTasks : [];
   aiHelperMemory.set(getAiHelperMemoryKey(userId, sessionId), {
     affectedEmails: Array.isArray(affectedEmails) ? affectedEmails.slice(0, 50) : [],
+    affectedTasks: affectedTasks.slice(0, 50),
     messages: Array.isArray(messages)
       ? messages
           .filter((message) => message && (message.role === "assistant" || message.role === "user") && typeof message.text === "string")
@@ -2131,6 +2190,69 @@ function extractAffectedEmailsFromAiHelperToolResults(toolResults = []) {
   return affected.slice(0, 50);
 }
 
+function extractAffectedTasksFromAiHelperToolResults(toolResults = []) {
+  const affected = [];
+  const seen = new Set();
+  for (const entry of toolResults) {
+    if (!entry?.toolName || !/task/i.test(entry.toolName)) {
+      continue;
+    }
+    const result = parseToolResultPayload(entry.result);
+    const candidates = collectTaskCandidates(result);
+    for (const task of candidates) {
+      const id = String(task?.id || "").trim();
+      const title = String(task?.title || "").trim();
+      if (!id || !title || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      affected.push({
+        id,
+        title,
+        notes: String(task.notes || ""),
+        tags: Array.isArray(task.tags) ? task.tags.filter((tag) => typeof tag === "string") : [],
+        priority: Number(task.priority || 0),
+        dueDate: task.dueDate || null,
+        project: String(task.project || ""),
+        deferCount: Number(task.deferCount || 0),
+        duplicateCount: Number(task.duplicateCount || 0),
+        sourceEmailId: String(task.sourceEmailId || ""),
+        stuck: Boolean(task.stuck),
+        completedAt: task.completedAt || null,
+      });
+    }
+  }
+  return affected.slice(0, 50);
+}
+
+function collectTaskCandidates(value) {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  const candidates = [];
+  const pushTask = (task) => {
+    if (task && typeof task === "object" && typeof task.id === "string" && typeof task.title === "string") {
+      candidates.push(task);
+    }
+  };
+  pushTask(value.task);
+  pushTask(value.createdTask);
+  pushTask(value.updatedTask);
+  if (Array.isArray(value.tasks)) {
+    value.tasks.forEach(pushTask);
+  }
+  if (Array.isArray(value.top3)) {
+    value.top3.forEach(pushTask);
+  }
+  if (Array.isArray(value.results)) {
+    value.results.forEach(pushTask);
+  }
+  if (value.result && typeof value.result === "object") {
+    collectTaskCandidates(value.result).forEach(pushTask);
+  }
+  return candidates;
+}
+
 function parseToolResultPayload(value) {
   if (!value || typeof value !== "object") {
     return null;
@@ -2159,6 +2281,7 @@ export async function callBestAvailableAi(userId, prompt, options = {}) {
       return await callAiPlatformWithMetrics(userId, platform, prompt, {
         mcpClients,
         onToolResult: options.onToolResult,
+        toolExecutionContext: options.toolExecutionContext,
         toolChoice: options.toolChoice,
       });
     } catch (error) {
@@ -2231,7 +2354,7 @@ async function callAiPlatformWithMetrics(userId, platform, prompt, options = {})
 
 async function callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, responseShape, responseSchema, messages }, options = {}) {
   const model = createSdkModel(platform);
-  const tools = buildSdkTools(options.mcpClients ?? [], options.onToolResult);
+  const tools = buildSdkTools(options.mcpClients ?? [], options.onToolResult, options.toolExecutionContext);
   const hasTools = Object.keys(tools).length > 0;
   const promptInput = messages?.length
     ? { messages: normalizeSdkMessages(messages) }
@@ -2309,7 +2432,7 @@ function normalizeSdkMessages(messages = []) {
     .filter((message) => message.content.trim());
 }
 
-function buildSdkTools(clients, onToolResult) {
+function buildSdkTools(clients, onToolResult, executionContext = {}) {
   const tools = {};
   const usedNames = new Set();
   const addTool = ({ name, description, inputSchema, execute }) => {
@@ -2335,7 +2458,10 @@ function buildSdkTools(clients, onToolResult) {
           name: systemTool.name,
           description: systemTool.description,
           inputSchema: systemTool.inputSchema,
-          execute: async (input) => callSystemMcpTool(systemTool.name, input ?? {}, client.bearerToken),
+          execute: async (input) => {
+            const normalizedInput = applySystemToolExecutionDefaults(systemTool.name, input ?? {}, executionContext);
+            return callSystemMcpTool(systemTool.name, normalizedInput, client.bearerToken);
+          },
         });
       }
       continue;
@@ -2353,6 +2479,19 @@ function buildSdkTools(clients, onToolResult) {
   }
 
   return tools;
+}
+
+function applySystemToolExecutionDefaults(toolName, input, executionContext = {}) {
+  if (toolName !== "createTask" || !input || typeof input !== "object" || Array.isArray(input)) {
+    return input;
+  }
+  if (typeof input.sourceEmailId === "string" && input.sourceEmailId.trim()) {
+    return input;
+  }
+  const sourceEmailId = typeof executionContext.defaultTaskSourceEmailId === "string"
+    ? executionContext.defaultTaskSourceEmailId.trim()
+    : "";
+  return sourceEmailId ? { ...input, sourceEmailId } : input;
 }
 
 function uniqueSdkToolName(name, usedNames) {
@@ -2749,13 +2888,36 @@ function parseAiHelperChatInput(body) {
     ? body.contextMessages.slice(0, 30).filter((message) => message && typeof message === "object").map((message) => ({
         accountEmail: typeof message.accountEmail === "string" ? message.accountEmail : "",
         date: typeof message.date === "string" ? message.date : "",
+        emailId: typeof message.emailId === "string"
+          ? message.emailId
+          : typeof message.id === "string"
+            ? message.id
+            : "",
         from: typeof message.from === "string" ? message.from : "",
         labels: Array.isArray(message.labels) ? message.labels.filter((label) => typeof label === "string").slice(0, 8) : [],
+        mailbox: typeof message.mailbox === "string" ? message.mailbox : "",
         sender: typeof message.sender === "string" ? message.sender : "",
         snippet: typeof message.snippet === "string" ? message.snippet.slice(0, 600) : "",
         state: typeof message.state === "string" ? message.state : "",
         subject: typeof message.subject === "string" ? message.subject : "",
+        threadId: typeof message.threadId === "string" ? message.threadId : "",
       }))
+    : [];
+  const contextTasks = Array.isArray(body?.contextTasks)
+    ? body.contextTasks.slice(0, 50).filter((task) => task && typeof task === "object").map((task) => ({
+        id: typeof task.id === "string" ? task.id : "",
+        title: typeof task.title === "string" ? task.title.slice(0, 240) : "",
+        notes: typeof task.notes === "string" ? task.notes.slice(0, 1200) : "",
+        tags: Array.isArray(task.tags) ? task.tags.filter((tag) => typeof tag === "string").slice(0, 12) : [],
+        priority: Number.isFinite(Number(task.priority)) ? Number(task.priority) : 0,
+        dueDate: typeof task.dueDate === "string" ? task.dueDate : "",
+        project: typeof task.project === "string" ? task.project.slice(0, 120) : "",
+        deferCount: Number.isFinite(Number(task.deferCount)) ? Number(task.deferCount) : 0,
+        duplicateCount: Number.isFinite(Number(task.duplicateCount)) ? Number(task.duplicateCount) : 0,
+        sourceEmailId: typeof task.sourceEmailId === "string" ? task.sourceEmailId : "",
+        stuck: Boolean(task.stuck),
+        completedAt: typeof task.completedAt === "string" ? task.completedAt : "",
+      })).filter((task) => task.id && task.title)
     : [];
 
   if (!prompt) {
@@ -2765,7 +2927,7 @@ function parseAiHelperChatInput(body) {
     return { ok: false, error: "AI Helper prompt must be 2,000 characters or less." };
   }
 
-  return { ok: true, request: { contextDescription, contextMessages, conversationHistory, prompt, sessionId } };
+  return { ok: true, request: { contextDescription, contextMessages, contextTasks, conversationHistory, prompt, sessionId } };
 }
 
 function parseEmailActionInput(body) {
@@ -3436,6 +3598,38 @@ async function buildActivatedAiMcpClients(userId) {
     };
   }
 
+  return activeClients.filter((client) => isUsableRemoteMcpClient(client));
+}
+
+async function buildAiHelperMcpClients(userId) {
+  const activeClients = await buildActivatedAiMcpClients(userId);
+  const taskToolNames = ["searchTasks", "createTask", "getTask", "editTask", "deleteTask", "completeTask", "listTasks", "generateNudgeSteps", "simplifyNudgeStep"];
+  const systemIndex = activeClients.findIndex((client) => client.isSystem);
+  if (systemIndex === -1) {
+    const internalToken = await getInternalMcpToken(userId);
+    return [
+      ...activeClients,
+      {
+        id: SYSTEM_MCP_CLIENT_ID,
+        isSystem: true,
+        name: "System MCP Tools",
+        serverUrl: getInternalMcpServerUrl(),
+        authType: "bearer",
+        bearerToken: internalToken,
+        headers: { Authorization: `Bearer ${internalToken}` },
+        enabled: true,
+        status: "connected",
+        tools: SYSTEM_MCP_TOOLS,
+        selectedTools: taskToolNames,
+      },
+    ].filter((client) => isUsableRemoteMcpClient(client));
+  }
+
+  const merged = new Set([...(activeClients[systemIndex].selectedTools ?? []), ...taskToolNames]);
+  activeClients[systemIndex] = {
+    ...activeClients[systemIndex],
+    selectedTools: Array.from(merged),
+  };
   return activeClients.filter((client) => isUsableRemoteMcpClient(client));
 }
 

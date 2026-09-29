@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, Sparkles } from "lucide-react";
 import { Button } from "../ui/button";
 import { LiquidGlassCard } from "../ui/liquid-glass";
 import { getRuntimeUrl } from "../../lib/runtime-base";
+import { TaskAiHelper } from "./TaskAiHelper";
 import { TaskCard } from "./TaskCard";
 import { TaskForm } from "./TaskForm";
 import { TaskList } from "./TaskList";
+import { TaskSourceEmailModal } from "./TaskSourceEmailModal";
 import type { Task } from "./types";
 
 export function TasksPage() {
@@ -16,6 +18,8 @@ export function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [busyTaskId, setBusyTaskId] = useState("");
   const [error, setError] = useState("");
+  const [sourceEmailTask, setSourceEmailTask] = useState<Task | null>(null);
+  const [aiHelperOpen, setAiHelperOpen] = useState(false);
 
   useEffect(() => {
     void loadTasks();
@@ -110,6 +114,30 @@ export function TasksPage() {
     }
   }
 
+  async function openTaskFromAi(task: Pick<Task, "id" | "title">) {
+    const existing = tasks.find((item) => item.id === task.id);
+    if (existing) {
+      setSelectedTask(existing);
+      setShowForm(true);
+      return;
+    }
+
+    setError("");
+    try {
+      const response = await fetch(getRuntimeUrl(`/api/tasks/${task.id}`), { credentials: "include" });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Could not open task");
+      }
+      if (data.task) {
+        setSelectedTask(data.task);
+        setShowForm(true);
+      }
+    } catch (openError) {
+      setError(openError instanceof Error ? openError.message : `Could not open ${task.title}`);
+    }
+  }
+
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
       <LiquidGlassCard shadowIntensity="xs" borderRadius="8px" glowIntensity="none" className="bg-white/50 p-5">
@@ -157,6 +185,7 @@ export function TasksPage() {
                       setSelectedTask(item);
                       setShowForm(true);
                     }}
+                    onOpenSourceEmail={setSourceEmailTask}
                     onGenerateNudge={(item) => runTaskAction(item, `/api/tasks/${item.id}/nudge/generate`)}
                     onSimplifyNudge={(item) => runTaskAction(item, `/api/tasks/${item.id}/nudge/simplify`)}
                     onCompleteNudgeStep={(item) => runTaskAction(item, `/api/tasks/${item.id}/nudge/complete-step`)}
@@ -178,6 +207,7 @@ export function TasksPage() {
               setSelectedTask(task);
               setShowForm(true);
             }}
+            onOpenSourceEmail={setSourceEmailTask}
           />
         </div>
 
@@ -225,6 +255,33 @@ export function TasksPage() {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {sourceEmailTask ? (
+        <TaskSourceEmailModal
+          task={sourceEmailTask}
+          onClose={() => setSourceEmailTask(null)}
+        />
+      ) : null}
+
+      <Button
+        aria-label="Open task AI"
+        className="fixed bottom-24 right-5 z-40 h-12 w-12 rounded-full bg-white/70 p-0 text-zinc-950 shadow-lg shadow-slate-900/15 backdrop-blur-xl hover:bg-white"
+        onClick={() => setAiHelperOpen(true)}
+        type="button"
+        variant="outline"
+      >
+        <Sparkles className="h-5 w-5" />
+      </Button>
+
+      {aiHelperOpen ? (
+        <TaskAiHelper
+          onClose={() => setAiHelperOpen(false)}
+          onOpenTask={(task) => void openTaskFromAi(task)}
+          onTasksChanged={() => void loadTasks()}
+          selectedTask={selectedTask}
+          tasks={tasks}
+        />
       ) : null}
     </div>
   );
