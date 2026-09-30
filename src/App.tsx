@@ -2527,7 +2527,8 @@ function InboxPage({
         commitmentDraftOpen ||
         commitmentConfirm ||
         isMobileFilterOpen ||
-        isMobileLabelPickerOpen,
+        isMobileLabelPickerOpen ||
+        isAiHelperOpen,
     );
 
     if (!shouldLockScroll) {
@@ -2543,7 +2544,7 @@ function InboxPage({
       document.body.style.overflow = previousBodyOverflow;
       document.documentElement.style.overflow = previousHtmlOverflow;
     };
-  }, [selectedMessage, ruleEditorMessage, isComposeOpen, commitmentDraftOpen, commitmentConfirm, isMobileFilterOpen, isMobileLabelPickerOpen]);
+  }, [selectedMessage, ruleEditorMessage, isComposeOpen, commitmentDraftOpen, commitmentConfirm, isMobileFilterOpen, isMobileLabelPickerOpen, isAiHelperOpen]);
 
   useEffect(() => {
     function refreshWhenVisible() {
@@ -5334,7 +5335,7 @@ function InboxAiHelperPanel({
   }
 
   return (
-    <aside className="inbox-ai-helper fixed inset-x-3 bottom-5 top-20 z-[120] flex flex-col rounded-2xl border border-white/70 bg-white/70 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:inset-x-auto md:bottom-24 md:right-5 md:w-[420px] md:max-w-[calc(100vw-2.5rem)]" data-state={isClosing ? "closing" : "open"}>
+    <aside className="inbox-ai-helper fixed inset-0 z-[120] flex h-[100dvh] w-screen flex-col rounded-none border-0 border-white/70 bg-white/95 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:inset-x-auto md:bottom-24 md:right-5 md:top-20 md:h-auto md:w-[420px] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:bg-white/70" data-state={isClosing ? "closing" : "open"}>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-zinc-950">AI Helper</p>

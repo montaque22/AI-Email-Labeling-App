@@ -35,6 +35,18 @@ export function TaskAiHelper({ onClose, onOpenTask, onTasksChanged, selectedTask
   const sessionId = useMemo(() => getTaskAiSessionId(), []);
 
   useEffect(() => {
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, []);
+
+  useEffect(() => {
     sessionStorage.setItem(TASK_AI_STORAGE_KEY, JSON.stringify(messages.slice(-TASK_AI_HISTORY_LIMIT)));
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
@@ -96,7 +108,7 @@ export function TaskAiHelper({ onClose, onOpenTask, onTasksChanged, selectedTask
   }
 
   return (
-    <aside className="fixed inset-x-3 bottom-5 top-20 z-[120] flex flex-col rounded-2xl border border-white/70 bg-white/75 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:inset-x-auto md:bottom-24 md:right-5 md:w-[420px] md:max-w-[calc(100vw-2.5rem)]">
+    <aside className="fixed inset-0 z-[120] flex h-[100dvh] w-screen flex-col rounded-none border-0 border-white/70 bg-white/95 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:inset-x-auto md:bottom-24 md:right-5 md:top-20 md:h-auto md:w-[420px] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:bg-white/75">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-zinc-950">Task AI</p>
