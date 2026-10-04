@@ -711,25 +711,6 @@ export function registerIntegrationRoutes(app) {
     await modifyMessageLabels(req, res, "remove");
   });
 
-  app.post("/api/integrations/email/labels/evaluate", requireApiKey, async (req, res) => {
-    const input = await parseLabelClassificationInput(req.integrationUser.id, req.body);
-
-    if (!input.ok) {
-      await tryApplyUnemailableFromPayload(req.integrationUser.id, req.body, input.error, "integration");
-      res.status(400).json({ error: input.error, labels: input.labels });
-      return;
-    }
-
-    try {
-      const result = await classifyEmailWithLabelCandidates(req.integrationUser.id, input.rule, { source: "integration" });
-      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/labels/evaluate", req.body, "success", result);
-      res.json(result);
-    } catch (error) {
-      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/labels/evaluate", req.body, "error", { error: error.message });
-      handleProviderError(res, error);
-    }
-  });
-
   app.post("/api/integrations/email/drafts/reply", requireApiKey, async (req, res) => {
     const input = parseDraftInput(req.body);
 
