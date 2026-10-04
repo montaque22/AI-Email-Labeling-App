@@ -225,6 +225,12 @@ type BulkRuleReviewResult = {
   failed: { emailId: string; error: string }[];
 };
 
+type RuleListPayload = {
+  rules?: EmailRule[];
+  total?: number;
+  error?: string;
+};
+
 type RulePendingFilter = "all" | "pending" | "not-pending";
 type RuleGroupBy = "none" | "isPending" | "fromEmail";
 
@@ -9915,41 +9921,83 @@ function RuleReviewPage({
     };
   }, [selectedRule, addRuleStep, isBulkLabelOpen]);
 
+  async function fetchRuleListPage(): Promise<{ ok: boolean; data: RuleListPayload }> {
+    const response = await fetch(
+      `/api/email-rules?page=${page}&pageSize=${pageSize}&status=${pendingFilter}&search=${encodeURIComponent(search)}`,
+      { credentials: "include" },
+    );
+
+    return { ok: response.ok, data: (await response.json()) as RuleListPayload };
+  }
+
+  function applyRuleListPage(data: RuleListPayload) {
+    setRules(data.rules ?? []);
+    setTotal(data.total ?? 0);
+    setSelectedRuleIds((current) => current.filter((emailId) => data.rules?.some((rule) => rule.emailId === emailId)));
+  }
+
   async function loadRuleReviewData() {
     setIsLoading(true);
     setError(null);
 
     try {
-      const [rulesResponse, labelsResponse, thresholdResponse, accountsResponse] = await Promise.all([
-        fetch(
-          `/api/email-rules?page=${page}&pageSize=${pageSize}&status=${pendingFilter}&search=${encodeURIComponent(search)}`,
-          { credentials: "include" },
-        ),
+      const [rulesResult, labelsResponse, thresholdResponse, accountsResponse] = await Promise.all([
+        fetchRuleListPage(),
         fetch("/api/labels", { credentials: "include" }),
         fetch("/api/settings/confidence-threshold", { credentials: "include" }),
         fetch("/api/email-accounts", { credentials: "include" }),
       ]);
-      const rulesData = await rulesResponse.json();
       const labelsData = await labelsResponse.json();
       const thresholdData = await thresholdResponse.json();
       const accountsData = await accountsResponse.json();
 
-      if (!rulesResponse.ok) {
-        setError(rulesData.error ?? "Could not load email rules.");
+      if (!rulesResult.ok) {
+        setError(rulesResult.data.error ?? "Could not load email rules.");
         return;
       }
 
-      setRules(rulesData.rules ?? []);
-      setTotal(rulesData.total ?? 0);
+      applyRuleListPage(rulesResult.data);
       setLabels(labelsData.labels ?? []);
       setEmailAccounts(accountsData.accounts ?? []);
       setConfidenceThreshold(Number(thresholdData.threshold ?? 0.9));
-      setSelectedRuleIds((current) => current.filter((emailId) => rulesData.rules?.some((rule: EmailRule) => rule.emailId === emailId)));
     } catch {
       setError("Could not load rule review data.");
     } finally {
       setIsLoading(false);
     }
+  }
+
+  // Labels, accounts and the confidence threshold cannot change as a result of a bulk
+  // rule action, so only the paged rule list (and the total it carries) is refetched.
+  async function refreshRuleListOnly() {
+    try {
+      const { ok, data } = await fetchRuleListPage();
+
+      if (ok) {
+        applyRuleListPage(data);
+      }
+    } catch {
+      // Keep the rules already applied from the action response; the next
+      // navigation or filter change reloads the list.
+    }
+  }
+
+  // The bulk response already returns the updated rules, so reflect them immediately
+  // instead of waiting on a refetch.
+  function applyReviewedRulesToList(reviewedRules: EmailRule[]) {
+    if (reviewedRules.length === 0) {
+      return;
+    }
+
+    const reviewedById = new Map(reviewedRules.map((rule) => [rule.emailId, rule]));
+
+    if (pendingFilter === "pending") {
+      setRules((current) => current.filter((rule) => !reviewedById.has(rule.emailId)));
+      setTotal((current) => Math.max(0, current - reviewedById.size));
+      return;
+    }
+
+    setRules((current) => current.map((rule) => reviewedById.get(rule.emailId) ?? rule));
   }
 
   async function loadRuleDetails(emailId: string) {
@@ -10215,8 +10263,10 @@ function RuleReviewPage({
         return;
       }
 
-      const reviewedIds = new Set((data.rules ?? []).map((rule) => rule.emailId));
+      const reviewedRules = data.rules ?? [];
+      const reviewedIds = new Set(reviewedRules.map((rule) => rule.emailId));
       setSelectedRuleIds((current) => current.filter((emailId) => !reviewedIds.has(emailId)));
+      applyReviewedRulesToList(reviewedRules);
       closeBulkLabelPicker();
       setBulkMessage({
         tone: (data.failed ?? []).length > 0 ? "warning" : "success",
@@ -10233,7 +10283,7 @@ function RuleReviewPage({
       if (page > nextTotalPages) {
         setPage(nextTotalPages);
       } else {
-        await loadRuleReviewData();
+        await refreshRuleListOnly();
       }
     } catch {
       setError("Could not review the selected rules.");

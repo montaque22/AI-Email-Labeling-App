@@ -14,7 +14,7 @@ import { listEmailIndexEntries, mapEmailIndexRow, upsertEmailIndexEntry, updateE
 import {
   createImapDraft,
   fetchImapEmailContextById,
-  findImapMessageAccountMatch,
+  findImapMessageWithContext,
   searchImapInboxMessages,
   searchImapEmailContexts,
   searchRecentImapEmailContexts,
@@ -469,6 +469,7 @@ export function registerIntegrationRoutes(app) {
         subject: input.rule.subject,
         labelName: input.rule.labelsApplied[0],
         removeLabelNames: currentRule?.labelsApplied ?? [],
+        accountEmail: currentRule?.accountEmail ?? "",
         source: "manual-rule-review",
       });
       const rule = await upsertEmailRule(req.user.id, {
@@ -608,6 +609,21 @@ export function registerIntegrationRoutes(app) {
       const reviewedRules = [];
       const skipped = [];
       const failed = [];
+      // One resolver for the whole batch: each distinct (account, label) pair is resolved
+      // against the provider once and reused by every rule that needs it.
+      const labelResolver = createBatchLabelResolver(req.user.id);
+      const suggestionCache = new Map();
+      const resolveSuggestedAppLabel = async (name) => {
+        const key = name.toLowerCase();
+        let pending = suggestionCache.get(key);
+
+        if (!pending) {
+          pending = resolveAppLabelsByName(req.user.id, [name]);
+          suggestionCache.set(key, pending);
+        }
+
+        return pending;
+      };
 
       for (const emailId of emailIds) {
         const currentRule = await getEmailRuleByEmailId(req.user.id, emailId);
@@ -627,7 +643,7 @@ export function registerIntegrationRoutes(app) {
             continue;
           }
 
-          const resolvedSuggestion = await resolveAppLabelsByName(req.user.id, [suggestion.labelName]);
+          const resolvedSuggestion = await resolveSuggestedAppLabel(suggestion.labelName);
 
           if (!resolvedSuggestion.ok) {
             failed.push({ emailId, error: `Suggested label ${suggestion.labelName} no longer exists.` });
@@ -643,6 +659,7 @@ export function registerIntegrationRoutes(app) {
             labelName,
             labelReasons: currentRule.labelReasons ?? {},
             source: targetLabel ? "bulk-rule-relabel" : "bulk-rule-review",
+            labelResolver,
           });
 
           if (!rule) {
@@ -939,7 +956,9 @@ async function modifyMessageLabels(req, res, action) {
 
 export async function classifyEmailWithLabelCandidates(userId, rule, { source = "integration" } = {}) {
   const threshold = await getConfidenceThreshold(userId);
-  const target = await findConnectedMessageById(userId, rule.emailId, rule.subject);
+  const target = await findConnectedMessageById(userId, rule.emailId, rule.subject, {
+    accountEmail: rule.accountEmail ?? "",
+  });
 
   if (!target) {
     const error = new Error("Email was not found in connected email accounts");
@@ -1102,8 +1121,41 @@ async function tryApplyUnemailableFromPayload(userId, payload, reason, source) {
   });
 }
 
-export async function applySingleLabelToEmail(userId, { emailId, subject, labelName, removeLabelNames = [], target = null, source = "integration" }) {
-  const messageTarget = target ?? await findConnectedMessageById(userId, emailId, subject);
+// Provider label resolution is keyed by (account, label) and is pure lookup work, so a
+// batch that labels many emails with the same label only needs to do it once. Callers that
+// process a batch create one resolver and hand it to every applySingleLabelToEmail call;
+// single calls get a throwaway resolver so there is only one code path.
+export function createBatchLabelResolver(userId) {
+  const cache = new Map();
+
+  return {
+    resolve(emailAccountId, labelName) {
+      const key = `${emailAccountId}::${String(labelName).toLowerCase()}`;
+      let pending = cache.get(key);
+
+      if (!pending) {
+        pending = (async () => {
+          const labels = await resolveProviderLabels(userId, emailAccountId, [labelName]);
+
+          if (!labels.ok) {
+            return { labels, syncedLabelsToRemove: [] };
+          }
+
+          return {
+            labels,
+            syncedLabelsToRemove: await resolveOtherSyncedProviderLabels(userId, emailAccountId, labelName),
+          };
+        })();
+        cache.set(key, pending);
+      }
+
+      return pending;
+    },
+  };
+}
+
+export async function applySingleLabelToEmail(userId, { emailId, subject, labelName, removeLabelNames = [], target = null, source = "integration", accountEmail = "", labelResolver = null }) {
+  const messageTarget = target ?? await findConnectedMessageById(userId, emailId, subject, { accountEmail });
 
   if (!messageTarget) {
     const error = new Error("Email was not found in connected email accounts");
@@ -1117,7 +1169,8 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
     throw error;
   }
 
-  const labels = await resolveProviderLabels(userId, messageTarget.account.id, [labelName]);
+  const resolver = labelResolver ?? createBatchLabelResolver(userId);
+  const { labels, syncedLabelsToRemove } = await resolver.resolve(messageTarget.account.id, labelName);
 
   if (!labels.ok) {
     const error = new Error(labels.error);
@@ -1125,8 +1178,6 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
     error.labels = labels.labels;
     throw error;
   }
-
-  const syncedLabelsToRemove = await resolveOtherSyncedProviderLabels(userId, messageTarget.account.id, labelName);
 
   if (messageTarget.account.provider === "gmail") {
     const accessToken = await getValidEmailAccountAccessToken(messageTarget.account);
@@ -1915,8 +1966,31 @@ function gmailMailboxFromLabelIds(labelIds = []) {
   return labels.includes("CATEGORY_PERSONAL") || labels.length ? "All Mail" : "";
 }
 
-async function findConnectedMessageById(userId, emailId, subject) {
+// `accountEmail` is a hint, not a filter: rules already store the account the message
+// came from, so we probe that account first and only sweep the rest when it misses.
+// `includeThreadMessages` keeps the (expensive) whole-thread Gmail fetch opt-in, since
+// the labeling path never reads it.
+async function findConnectedMessageById(userId, emailId, subject, { accountEmail = "", includeThreadMessages = false } = {}) {
   const accounts = await getConnectedEmailAccounts(userId);
+  const normalizedHint = String(accountEmail ?? "").trim().toLowerCase();
+  const hintedAccounts = normalizedHint
+    ? accounts.filter((account) => account.email.toLowerCase() === normalizedHint)
+    : [];
+
+  if (hintedAccounts.length > 0) {
+    const hintedMatch = await probeAccountsForMessage(hintedAccounts, emailId, subject, includeThreadMessages);
+
+    if (hintedMatch) {
+      return hintedMatch;
+    }
+  }
+
+  // Hint absent or wrong: fall back to the full probe, skipping accounts already checked.
+  const remainingAccounts = accounts.filter((account) => !hintedAccounts.includes(account));
+  return probeAccountsForMessage(remainingAccounts, emailId, subject, includeThreadMessages);
+}
+
+async function probeAccountsForMessage(accounts, emailId, subject, includeThreadMessages) {
   const matches = [];
 
   for (const account of accounts) {
@@ -1934,7 +2008,9 @@ async function findConnectedMessageById(userId, emailId, subject) {
         const receivedAt = message.internalDate
           ? new Date(Number(message.internalDate)).toISOString()
           : new Date(headers.date || Date.now()).toISOString();
-        const threadMessages = await fetchGmailThreadTextMessages(accessToken, account, message.threadId);
+        const threadMessages = includeThreadMessages
+          ? await fetchGmailThreadTextMessages(accessToken, account, message.threadId)
+          : [];
         matches.push({
           account,
           subject: getProviderMessageSubject(account.provider, message),
@@ -1957,10 +2033,13 @@ async function findConnectedMessageById(userId, emailId, subject) {
         });
       } else {
         const accessToken = await getImapAccessToken(account);
-        const match = await findImapMessageAccountMatch(account, emailId, subject, accessToken);
-        if (match) {
-          const email = await fetchImapEmailContextById(account, emailId, subject, accessToken);
-          matches.push({ account, subject: match.subject, email: email ?? { subject: match.subject } });
+        const found = await findImapMessageWithContext(account, emailId, subject, accessToken);
+        if (found) {
+          matches.push({
+            account,
+            subject: found.match.subject,
+            email: found.email ?? { subject: found.match.subject },
+          });
         }
       }
     } catch (error) {
@@ -2672,13 +2751,15 @@ export function getAcceptableRuleSuggestion(rule) {
   return { ok: true, labelName: suggestions[0] };
 }
 
-async function markEmailRuleReviewed(userId, { rule, labelName, labelReasons, source }) {
+async function markEmailRuleReviewed(userId, { rule, labelName, labelReasons, source, labelResolver = null }) {
   const applied = await applySingleLabelToEmail(userId, {
     emailId: rule.emailId,
     subject: rule.subject,
     labelName,
     removeLabelNames: rule.labelsApplied ?? [],
     source,
+    accountEmail: rule.accountEmail ?? "",
+    labelResolver,
   });
   const normalizedReasons = normalizeLabelReasons([labelName], labelReasons ?? {});
   const result = await dbPool.query(

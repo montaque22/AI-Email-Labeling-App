@@ -126,9 +126,12 @@ export async function ensureLabelSyncedToAccount(userId, labelId, emailAccountId
              ea.access_token,
              ea.refresh_token,
              ea.token_expires_at as "tokenExpiresAt",
-             ea.metadata
+             ea.metadata,
+             las.sync_status as "syncStatus",
+             las.provider_label_id as "providerLabelId"
       from labels l
       join email_accounts ea on ea.user_id = l.user_id
+      left join label_account_syncs las on las.label_id = l.id and las.email_account_id = ea.id
       where l.user_id = $1
         and l.id = $2
         and ea.id = $3
@@ -140,6 +143,11 @@ export async function ensureLabelSyncedToAccount(userId, labelId, emailAccountId
 
   if (!row) {
     return null;
+  }
+
+  // Already synced with a usable provider label: nothing to ensure, so skip the provider write.
+  if (row.syncStatus === "synced" && row.providerLabelId) {
+    return getSync(labelId, emailAccountId);
   }
 
   const label = { id: row.id, userId: row.userId, name: row.name, description: row.description };
