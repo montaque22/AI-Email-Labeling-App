@@ -10,13 +10,13 @@ class EmailableApiClient:
         self._api_key = api_key
 
     async def get_prompts(self) -> dict:
-        return await self._request("GET", "/api/integrations/ai-prompts")
+        return await self._request("GET", "/api/integrations/core-content")
 
     async def create_draft_reply(self, payload: dict) -> dict:
         return await self._request("POST", "/api/integrations/email/drafts/reply", json=payload)
 
     async def add_labels_on_email(self, payload: dict) -> dict:
-        return await self._request("POST", "/api/integrations/email/labels/evaluate", json=payload)
+        return await self._request("POST", "/api/integrations/email/labels/add", json=payload)
 
     async def query_email_rules(self, payload: dict) -> dict:
         return await self._request("POST", "/api/integrations/email-rules/query", json=payload)
