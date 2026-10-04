@@ -49,6 +49,10 @@ export async function ensureEmailIndexTable() {
       on email_index (user_id, email_account_id, email_id, mailbox)
   `);
   await dbPool.query("create index if not exists email_index_user_received_idx on email_index (user_id, received_at desc)");
+  // Rule hydration looks up the owning account for a batch of message ids. The unique index
+  // leads with user_id but then email_account_id, so it cannot seek on email_id; without
+  // this the lookup degrades into a scan of the user's whole index.
+  await dbPool.query("create index if not exists email_index_user_email_id_idx on email_index (user_id, email_id)");
   await dbPool.query("create index if not exists email_index_user_direction_idx on email_index (user_id, direction)");
   await dbPool.query("create index if not exists email_index_user_labels_idx on email_index using gin (labels)");
   await dbPool.query("create index if not exists email_index_user_commitment_idx on email_index (user_id, commitment_due_at) where commitment_set_at is not null");

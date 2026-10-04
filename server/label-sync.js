@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { dbPool } from "./db.js";
 import { getConnectedEmailAccounts, getValidEmailAccountAccessToken } from "./email-accounts.js";
 import { getImapFolder, listImapFolders, syncImapFolder } from "./imap-provider.js";
+import { fetchWithTimeout } from "./http.js";
 
 export async function ensureLabelSyncTable() {
   if (!dbPool) {
@@ -461,7 +462,7 @@ async function getGmailLabel({ accessToken, providerLabelId }) {
 }
 
 async function providerFetch(url, accessToken, options) {
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     ...options,
     headers: {
       Authorization: `Bearer ${accessToken}`,

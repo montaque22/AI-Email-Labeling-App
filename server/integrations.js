@@ -22,13 +22,36 @@ import {
 } from "./imap-provider.js";
 import { ensureLabelSyncedToAccount } from "./label-sync.js";
 import { getConfidenceThreshold } from "./settings.js";
-import { emitWebhookEvent } from "./webhooks.js";
+import { createDeadline, mapWithConcurrency } from "./concurrency.js";
+import { fetchWithTimeout } from "./http.js";
+import { emitWebhookEvent, emitWebhookEventDetached } from "./webhooks.js";
 import { deleteAllSystemLogs, exportSystemLogs, listSystemLogs, logSystemEvent } from "./system-logs.js";
 
 const API_KEY_PREFIX = "n8n";
 const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
 // One page of rules is the most the review page can select at once.
 const BULK_RULE_REVIEW_LIMIT = 50;
+// Rules reviewed in parallel. Each one is a provider round-trip (a Gmail modify call or an
+// IMAP move), so this is a provider rate-limit knob, not a CPU one. Do not raise it above 8
+// without measuring Gmail 429s and per-account IMAP connection limits first.
+const BULK_RULE_REVIEW_CONCURRENCY = 6;
+// Wall-clock budget for the bulk endpoint, sized to land inside a typical 60s proxy idle
+// timeout. Rules not started by the time it passes come back as not-attempted, so the caller
+// gets an honest partial result instead of a dropped connection.
+//
+// Precisely: this bounds when the endpoint stops *starting* rules. A rule already in flight
+// is never abandoned -- cancelling it would risk reporting a label as unapplied that the
+// provider had in fact applied -- so the response lands at the deadline plus however long
+// the slowest in-flight rule still needs. That tail is finite only because every provider
+// call is itself bounded (PROVIDER_REQUEST_TIMEOUT_MS); in practice it is well under a
+// second, since the deadline is only ever reached by providers that are slow, not hung.
+const BULK_RULE_REVIEW_DEADLINE_MS = 45_000;
+// Rules whose account we are willing to discover through the provider while rendering a
+// list. Everything above this cap keeps its empty accountEmail until a write path resolves
+// it, which keeps GET /api/email-rules bounded regardless of page size.
+const RULE_ACCOUNT_EMAIL_PROVIDER_LOOKUP_CAP = 3;
+// Account lookups in flight during hydration. Same provider-pressure reasoning as above.
+const RULE_ACCOUNT_EMAIL_LOOKUP_CONCURRENCY = 3;
 const EMAIL_RULE_REQUIRED_FIELDS = [
   "emailId",
   "threadId",
@@ -606,11 +629,10 @@ export function registerIntegrationRoutes(app) {
     }
 
     try {
-      const reviewedRules = [];
-      const skipped = [];
-      const failed = [];
       // One resolver for the whole batch: each distinct (account, label) pair is resolved
-      // against the provider once and reused by every rule that needs it.
+      // against the provider once and reused by every rule that needs it. Both caches store
+      // the pending promise rather than the settled value, so concurrent workers asking for
+      // the same label share one lookup instead of racing.
       const labelResolver = createBatchLabelResolver(req.user.id);
       const suggestionCache = new Map();
       const resolveSuggestedAppLabel = async (name) => {
@@ -625,55 +647,51 @@ export function registerIntegrationRoutes(app) {
         return pending;
       };
 
-      for (const emailId of emailIds) {
-        const currentRule = await getEmailRuleByEmailId(req.user.id, emailId);
-
-        if (!currentRule) {
-          failed.push({ emailId, error: "Email rule not found" });
-          continue;
-        }
-
-        let labelName = targetLabel;
-
-        if (!labelName) {
-          const suggestion = getAcceptableRuleSuggestion(currentRule);
-
-          if (!suggestion.ok) {
-            skipped.push({ emailId, reason: suggestion.reason });
-            continue;
-          }
-
-          const resolvedSuggestion = await resolveSuggestedAppLabel(suggestion.labelName);
-
-          if (!resolvedSuggestion.ok) {
-            failed.push({ emailId, error: `Suggested label ${suggestion.labelName} no longer exists.` });
-            continue;
-          }
-
-          labelName = resolvedSuggestion.labels[0];
-        }
-
-        try {
-          const rule = await markEmailRuleReviewed(req.user.id, {
-            rule: currentRule,
-            labelName,
-            labelReasons: currentRule.labelReasons ?? {},
-            source: targetLabel ? "bulk-rule-relabel" : "bulk-rule-review",
+      const deadline = createDeadline(BULK_RULE_REVIEW_DEADLINE_MS);
+      const outcomes = await mapWithConcurrency(emailIds, {
+        limit: BULK_RULE_REVIEW_CONCURRENCY,
+        deadline,
+        worker: (emailId) =>
+          reviewOneRuleForBulk(req.user.id, {
+            emailId,
+            targetLabel,
             labelResolver,
-          });
+            resolveSuggestedAppLabel,
+          }),
+      });
 
-          if (!rule) {
-            failed.push({ emailId, error: "Email rule not found" });
-            continue;
-          }
+      // Results are folded back in requested-emailIds order, not completion order, so the
+      // same request always produces the same response regardless of provider timing.
+      const reviewedRules = [];
+      const skipped = [];
+      const failed = [];
+      const notAttempted = [];
 
-          reviewedRules.push(rule);
-        } catch (error) {
-          failed.push({ emailId, error: error.message || "Could not review rule." });
+      outcomes.forEach((outcome, index) => {
+        const emailId = emailIds[index];
+
+        if (outcome.status === "not-attempted") {
+          notAttempted.push({ emailId, reason: "Reached the time limit for one bulk review. Not attempted." });
+          return;
         }
-      }
 
-      res.json({ reviewed: reviewedRules.length, rules: reviewedRules, skipped, failed });
+        if (outcome.status === "rejected") {
+          failed.push({ emailId, error: outcome.reason.message || "Could not review rule." });
+          return;
+        }
+
+        const result = outcome.value;
+
+        if (result.kind === "reviewed") {
+          reviewedRules.push(result.rule);
+        } else if (result.kind === "skipped") {
+          skipped.push({ emailId, reason: result.reason });
+        } else {
+          failed.push({ emailId, error: result.error });
+        }
+      });
+
+      res.json({ reviewed: reviewedRules.length, rules: reviewedRules, skipped, failed, notAttempted });
     } catch (error) {
       handleError(res, error);
     }
@@ -700,8 +718,9 @@ export function registerIntegrationRoutes(app) {
       );
       const deletedRules = deletedResult.rows.map(mapEmailRuleRow);
 
+      // Same per-item stall as bulk review: fifty deletes used to mean fifty awaited POSTs.
       for (const rule of deletedRules) {
-        await emitWebhookEvent(req.user.id, "email_rule.deleted", { rule });
+        emitWebhookEventDetached(req.user.id, "email_rule.deleted", { rule });
       }
 
       res.json({ deleted: deletedResult.rowCount });
@@ -1223,7 +1242,9 @@ export async function applySingleLabelToEmail(userId, { emailId, subject, labelN
     accountEmail: messageTarget.account.email,
     metadata: { provider: messageTarget.account.provider, labels: labels.labels.map((label) => label.name), source },
   });
-  await emitWebhookEvent(userId, "email.labels_updated", {
+  // Detached: labelling is finished at this point and the caller may be one of fifty in a
+  // batch, so an unreachable receiver must not add its timeout to the response.
+  emitWebhookEventDetached(userId, "email.labels_updated", {
     emailId,
     accountEmail: messageTarget.account.email,
     added: labels.labels.map((label) => label.name),
@@ -2751,6 +2772,69 @@ export function getAcceptableRuleSuggestion(rule) {
   return { ok: true, labelName: suggestions[0] };
 }
 
+/**
+ * One rule's worth of bulk-review work.
+ *
+ * Returns the outcome as a value instead of throwing for the expected cases, so the worker
+ * pool only ever sees a rejection for genuinely unexpected failures. Every branch here maps
+ * onto exactly one bucket of the response the endpoint has always returned.
+ *
+ * @typedef {{ kind: "reviewed", rule: object }
+ *   | { kind: "skipped", reason: string }
+ *   | { kind: "failed", error: string }} BulkRuleReviewOutcome
+ *
+ * @param {string} userId
+ * @param {object} input
+ * @param {string} input.emailId
+ * @param {string} input.targetLabel Explicit relabel target, or "" to accept the suggestion.
+ * @param {{ resolve: (emailAccountId: string, labelName: string) => Promise<object> }} input.labelResolver
+ * @param {(name: string) => Promise<{ ok: boolean, labels: string[] }>} input.resolveSuggestedAppLabel
+ * @returns {Promise<BulkRuleReviewOutcome>}
+ */
+async function reviewOneRuleForBulk(userId, { emailId, targetLabel, labelResolver, resolveSuggestedAppLabel }) {
+  const currentRule = await getEmailRuleByEmailId(userId, emailId);
+
+  if (!currentRule) {
+    return { kind: "failed", error: "Email rule not found" };
+  }
+
+  let labelName = targetLabel;
+
+  if (!labelName) {
+    const suggestion = getAcceptableRuleSuggestion(currentRule);
+
+    if (!suggestion.ok) {
+      return { kind: "skipped", reason: suggestion.reason };
+    }
+
+    const resolvedSuggestion = await resolveSuggestedAppLabel(suggestion.labelName);
+
+    if (!resolvedSuggestion.ok) {
+      return { kind: "failed", error: `Suggested label ${suggestion.labelName} no longer exists.` };
+    }
+
+    labelName = resolvedSuggestion.labels[0];
+  }
+
+  try {
+    const rule = await markEmailRuleReviewed(userId, {
+      rule: currentRule,
+      labelName,
+      labelReasons: currentRule.labelReasons ?? {},
+      source: targetLabel ? "bulk-rule-relabel" : "bulk-rule-review",
+      labelResolver,
+    });
+
+    if (!rule) {
+      return { kind: "failed", error: "Email rule not found" };
+    }
+
+    return { kind: "reviewed", rule };
+  } catch (error) {
+    return { kind: "failed", error: error.message || "Could not review rule." };
+  }
+}
+
 async function markEmailRuleReviewed(userId, { rule, labelName, labelReasons, source, labelResolver = null }) {
   const applied = await applySingleLabelToEmail(userId, {
     emailId: rule.emailId,
@@ -2781,7 +2865,8 @@ async function markEmailRuleReviewed(userId, { rule, labelName, labelReasons, so
   }
 
   const reviewedRule = mapEmailRuleRow(result.rows[0]);
-  await emitWebhookEvent(userId, "email_rule.modified", {
+  // Detached for the same reason as the label event above: the rule row is already written.
+  emitWebhookEventDetached(userId, "email_rule.modified", {
     rule: reviewedRule,
     changes: {
       labelsApplied: [labelName],
@@ -2875,37 +2960,119 @@ async function getRecentRules(userId, limit) {
   return hydrateRuleAccountEmails(userId, result.rows.map(mapEmailRuleRow));
 }
 
+/**
+ * Fills in `accountEmail` for rules that were saved without one.
+ *
+ * This runs on every rule list render, so its cost has to be bounded no matter how many
+ * rules the page asks for. Three tiers, cheapest first:
+ *   1. Rules that already know their account cost nothing.
+ *   2. The rest are resolved in one SQL round-trip against email_index, which records the
+ *      owning account for every message the app has touched. This covers the common case.
+ *   3. Only what is still unresolved falls through to the provider, capped at
+ *      RULE_ACCOUNT_EMAIL_PROVIDER_LOOKUP_CAP lookups per call and run with a small worker
+ *      pool rather than one at a time.
+ * Anything past the cap is returned as-is with an empty accountEmail; it is display sugar,
+ * and the write paths resolve it properly the next time the rule is reviewed.
+ *
+ * @param {string} userId
+ * @param {object[]} rules
+ * @returns {Promise<object[]>}
+ */
 async function hydrateRuleAccountEmails(userId, rules) {
-  const hydratedRules = [];
+  const missing = rules.filter((rule) => !rule.accountEmail && rule.emailId);
 
-  for (const rule of rules) {
-    if (rule.accountEmail) {
-      hydratedRules.push(rule);
-      continue;
-    }
-
-    const target = await findConnectedMessageById(userId, rule.emailId, rule.subject);
-    if (!target?.account?.email) {
-      hydratedRules.push(rule);
-      continue;
-    }
-
-    await dbPool.query(
-      `
-        update email_rules
-        set metadata = metadata || jsonb_build_object('accountEmail', $3::text)
-        where user_id = $1 and email_id = $2
-      `,
-      [userId, rule.emailId, target.account.email],
-    );
-
-    hydratedRules.push({
-      ...rule,
-      accountEmail: target.account.email,
-    });
+  if (missing.length === 0) {
+    return rules;
   }
 
-  return hydratedRules;
+  /** @type {Map<string, string>} */
+  const resolved = await lookupRuleAccountEmailsInIndex(userId, missing.map((rule) => rule.emailId));
+
+  const needsProvider = missing
+    .filter((rule) => !resolved.has(rule.emailId))
+    .slice(0, RULE_ACCOUNT_EMAIL_PROVIDER_LOOKUP_CAP);
+
+  const outcomes = await mapWithConcurrency(needsProvider, {
+    limit: RULE_ACCOUNT_EMAIL_LOOKUP_CONCURRENCY,
+    worker: async (rule) => {
+      const target = await findConnectedMessageById(userId, rule.emailId, rule.subject);
+      return target?.account?.email ?? "";
+    },
+  });
+
+  outcomes.forEach((outcome, index) => {
+    if (outcome.status === "fulfilled" && outcome.value) {
+      resolved.set(needsProvider[index].emailId, outcome.value);
+    } else if (outcome.status === "rejected") {
+      console.warn(`Could not resolve account for rule ${needsProvider[index].emailId}:`, outcome.reason.message);
+    }
+  });
+
+  if (resolved.size > 0) {
+    await persistRuleAccountEmails(userId, resolved);
+  }
+
+  // A rule we could not resolve is returned exactly as it came out of mapEmailRuleRow,
+  // accountEmail still null. Substituting "" here would change what the list endpoint has
+  // always reported for an unknown account.
+  return rules.map((rule) => {
+    if (rule.accountEmail) {
+      return rule;
+    }
+
+    const accountEmail = resolved.get(rule.emailId);
+    return accountEmail ? { ...rule, accountEmail } : rule;
+  });
+}
+
+/**
+ * Looks up the owning account for a batch of message ids from the local email index, which
+ * is one query no matter how many ids are asked for.
+ *
+ * @param {string} userId
+ * @param {string[]} emailIds
+ * @returns {Promise<Map<string, string>>}
+ */
+async function lookupRuleAccountEmailsInIndex(userId, emailIds) {
+  const uniqueIds = [...new Set(emailIds)];
+
+  if (uniqueIds.length === 0) {
+    return new Map();
+  }
+
+  const result = await dbPool.query(
+    `
+      select distinct on (email_id) email_id as "emailId", account_email as "accountEmail"
+      from email_index
+      where user_id = $1 and email_id = any($2::text[]) and account_email <> ''
+      order by email_id, updated_at desc
+    `,
+    [userId, uniqueIds],
+  );
+
+  return new Map(result.rows.map((row) => [row.emailId, row.accountEmail]));
+}
+
+/**
+ * Writes resolved account emails back onto the rules in a single statement so the next
+ * render skips the lookup entirely.
+ *
+ * @param {string} userId
+ * @param {Map<string, string>} accountEmailsByEmailId
+ * @returns {Promise<void>}
+ */
+async function persistRuleAccountEmails(userId, accountEmailsByEmailId) {
+  const entries = [...accountEmailsByEmailId];
+
+  await dbPool.query(
+    `
+      update email_rules
+      set metadata = metadata || jsonb_build_object('accountEmail', updates.account_email)
+      from unnest($2::text[], $3::text[]) as updates(email_id, account_email)
+      where email_rules.user_id = $1 and email_rules.email_id = updates.email_id
+    `,
+    [userId, entries.map(([emailId]) => emailId), entries.map(([, accountEmail]) => accountEmail)],
+  );
 }
 
 async function getRuleStatusCounts(userId) {
@@ -3937,7 +4104,7 @@ function normalizeComparableSubject(subject) {
 }
 
 async function providerFetch(url, accessToken, options) {
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     ...options,
     headers: {
       Authorization: `Bearer ${accessToken}`,

@@ -112,6 +112,10 @@ Both review actions behave exactly like reviewing each rule individually: the la
 
 A summary line appears above the rule list after each bulk action with the number reviewed, skipped, or failed. A rule can fail when its email is no longer reachable in the connected account or when the label was deleted, and the remaining rules still process.
 
+Emailable works through the selected rules several at a time rather than one after another, so a large selection finishes in a fraction of the time it used to.
+
+A bulk action also has a time limit of about 45 seconds. If a very slow email provider pushes the action past it, Emailable stops starting new rules and returns what it finished. The summary then reports the remainder as not attempted. Those rules stay selected and nothing was changed on them, so running the same action again is safe and picks up where it stopped.
+
 ## Add a rule manually
 
 The Rule Review page includes **Add Rule** for creating a rule from an existing email.
