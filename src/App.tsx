@@ -10644,7 +10644,7 @@ function RuleReviewPage({
 
         {isBulkLabelOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
-          <Card className="flex max-h-[92vh] w-full max-w-3xl min-w-0 overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+          <Card className="flex max-h-[calc(100dvh-2rem)] w-full max-w-3xl min-w-0 flex-col overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
             <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
               <CardHeader className="shrink-0 gap-3 border-b border-white/60 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
                 <div className="min-w-0">
