@@ -90,6 +90,28 @@ A rule does not watch the mailbox or act by itself. Something must start the AI 
 
 The workflow finds the email, retrieves relevant rules, asks the AI for a structured decision, and then applies Emailable's confidence and validation logic.
 
+## Review rules in bulk
+
+Reviewing one rule at a time is slow when many pending rules share an obvious outcome. The Rule Review page can act on every selected rule at once.
+
+Select rules with the row checkboxes or **Select all**, then choose one of:
+
+- **Accept suggested** marks each selected pending rule reviewed using the single label it already suggests. The button shows how many of the selected rules qualify.
+- **Change label** opens a label picker, applies the chosen label to every selected rule, and marks them reviewed.
+- **Delete selected** removes the selected rules.
+
+Both review actions behave exactly like reviewing each rule individually: the label is applied to the original email, the previous Emailable label is removed, confidence is set to `1`, and the rule stops being pending. Any reason already stored for the applied label is kept.
+
+**Accept suggested** skips rules it cannot decide for the user and reports them in the result summary:
+
+- A rule with more than one suggestion is skipped because the choice is ambiguous. Open it on its own.
+- A rule with no suggestion is skipped because there is nothing to accept.
+- A rule that is already reviewed is skipped because it has no pending decision.
+
+**Change label** has no such restriction. It applies the selected label to every selected rule, including reviewed rules whose label should change.
+
+A summary line appears above the rule list after each bulk action with the number reviewed, skipped, or failed. A rule can fail when its email is no longer reachable in the connected account or when the label was deleted, and the remaining rules still process.
+
 ## Add a rule manually
 
 The Rule Review page includes **Add Rule** for creating a rule from an existing email.
@@ -150,7 +172,7 @@ The Rule Review page supports:
 - Grouping by pending status or sender email.
 - Fuzzy searching loaded rules.
 - Changing the number of visible rules.
-- Selecting and deleting multiple rules.
+- Selecting multiple rules to accept their suggested label, change their label, or delete them.
 - Exporting rules to CSV.
 - Opening a rule from Recent Activity on the Overview page.
 

@@ -27,6 +27,8 @@ import { deleteAllSystemLogs, exportSystemLogs, listSystemLogs, logSystemEvent }
 
 const API_KEY_PREFIX = "n8n";
 const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
+// One page of rules is the most the review page can select at once.
+const BULK_RULE_REVIEW_LIMIT = 50;
 const EMAIL_RULE_REQUIRED_FIELDS = [
   "emailId",
   "threadId",
@@ -549,45 +551,112 @@ export function registerIntegrationRoutes(app) {
         return;
       }
 
-      const applied = await applySingleLabelToEmail(req.user.id, {
-        emailId: currentRule.emailId,
-        subject: currentRule.subject,
+      const rule = await markEmailRuleReviewed(req.user.id, {
+        rule: currentRule,
         labelName: resolvedLabels.labels[0],
-        removeLabelNames: currentRule.labelsApplied ?? [],
+        labelReasons: labelReasonsInput.labelReasons,
         source: "rule-review",
       });
-      const normalizedReasons = normalizeLabelReasons(resolvedLabels.labels, labelReasonsInput.labelReasons);
-      const result = await dbPool.query(
-        `
-          update email_rules
-          set labels_applied = $3,
-              is_pending = false,
-              confidence = 1,
-              metadata = (metadata - 'reason' - 'userQuestion' - 'ruleSuggestion' - 'recommendedAction') || jsonb_build_object('labelReasons', $4::jsonb, 'accountEmail', $5::text),
-              updated_at = now()
-          where user_id = $1 and email_id = $2
-          returning ${EMAIL_RULE_SELECT}
-        `,
-        [req.user.id, req.params.emailId, resolvedLabels.labels, JSON.stringify(normalizedReasons), applied.accountEmail],
-      );
 
-      if (!result.rows[0]) {
+      if (!rule) {
         res.status(404).json({ error: "Email rule not found" });
         return;
       }
 
-      const rule = mapEmailRuleRow(result.rows[0]);
-      await emitWebhookEvent(req.user.id, "email_rule.modified", {
-        rule,
-        changes: {
-          labelsApplied: resolvedLabels.labels,
-          labelReasons: normalizedReasons,
-          isPending: false,
-          confidence: 1,
-          clearedFields: ["reason", "userQuestion", "ruleSuggestion", "recommendedAction"],
-        },
-      });
       res.json({ rule });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.post("/api/email-rules/bulk-review", requireSession, async (req, res) => {
+    const emailIds = Array.isArray(req.body?.emailIds)
+      ? [
+          ...new Set(
+            req.body.emailIds
+              .filter((emailId) => typeof emailId === "string" && emailId.trim())
+              .map((emailId) => emailId.trim()),
+          ),
+        ]
+      : [];
+    const requestedLabel = typeof req.body?.labelName === "string" ? req.body.labelName.trim() : "";
+
+    if (emailIds.length === 0) {
+      res.status(400).json({ error: "Select at least one email rule to review" });
+      return;
+    }
+
+    if (emailIds.length > BULK_RULE_REVIEW_LIMIT) {
+      res.status(400).json({ error: `Review at most ${BULK_RULE_REVIEW_LIMIT} email rules at a time` });
+      return;
+    }
+
+    let targetLabel = "";
+
+    if (requestedLabel) {
+      const resolvedLabels = await resolveAppLabelsByName(req.user.id, [requestedLabel]);
+
+      if (!resolvedLabels.ok) {
+        res.status(400).json({ error: resolvedLabels.error, labels: resolvedLabels.labels });
+        return;
+      }
+
+      targetLabel = resolvedLabels.labels[0];
+    }
+
+    try {
+      const reviewedRules = [];
+      const skipped = [];
+      const failed = [];
+
+      for (const emailId of emailIds) {
+        const currentRule = await getEmailRuleByEmailId(req.user.id, emailId);
+
+        if (!currentRule) {
+          failed.push({ emailId, error: "Email rule not found" });
+          continue;
+        }
+
+        let labelName = targetLabel;
+
+        if (!labelName) {
+          const suggestion = getAcceptableRuleSuggestion(currentRule);
+
+          if (!suggestion.ok) {
+            skipped.push({ emailId, reason: suggestion.reason });
+            continue;
+          }
+
+          const resolvedSuggestion = await resolveAppLabelsByName(req.user.id, [suggestion.labelName]);
+
+          if (!resolvedSuggestion.ok) {
+            failed.push({ emailId, error: `Suggested label ${suggestion.labelName} no longer exists.` });
+            continue;
+          }
+
+          labelName = resolvedSuggestion.labels[0];
+        }
+
+        try {
+          const rule = await markEmailRuleReviewed(req.user.id, {
+            rule: currentRule,
+            labelName,
+            labelReasons: currentRule.labelReasons ?? {},
+            source: targetLabel ? "bulk-rule-relabel" : "bulk-rule-review",
+          });
+
+          if (!rule) {
+            failed.push({ emailId, error: "Email rule not found" });
+            continue;
+          }
+
+          reviewedRules.push(rule);
+        } catch (error) {
+          failed.push({ emailId, error: error.message || "Could not review rule." });
+        }
+      }
+
+      res.json({ reviewed: reviewedRules.length, rules: reviewedRules, skipped, failed });
     } catch (error) {
       handleError(res, error);
     }
@@ -2602,6 +2671,66 @@ async function updateEmailRule(userId, emailId, rule) {
   );
 
   return result.rows[0] ? mapEmailRuleRow(result.rows[0]) : null;
+}
+
+export function getAcceptableRuleSuggestion(rule) {
+  const suggestions = [...new Set((rule?.labelsApplied ?? []).map((label) => String(label).trim()).filter(Boolean))];
+
+  if (suggestions.length === 0) {
+    return { ok: false, reason: "No suggested label to accept." };
+  }
+
+  if (suggestions.length > 1) {
+    return { ok: false, reason: "More than one suggested label. Review this rule on its own." };
+  }
+
+  if (!rule.isPending) {
+    return { ok: false, reason: "Rule is already reviewed." };
+  }
+
+  return { ok: true, labelName: suggestions[0] };
+}
+
+async function markEmailRuleReviewed(userId, { rule, labelName, labelReasons, source }) {
+  const applied = await applySingleLabelToEmail(userId, {
+    emailId: rule.emailId,
+    subject: rule.subject,
+    labelName,
+    removeLabelNames: rule.labelsApplied ?? [],
+    source,
+  });
+  const normalizedReasons = normalizeLabelReasons([labelName], labelReasons ?? {});
+  const result = await dbPool.query(
+    `
+      update email_rules
+      set labels_applied = $3,
+          is_pending = false,
+          confidence = 1,
+          metadata = (metadata - 'reason' - 'userQuestion' - 'ruleSuggestion' - 'recommendedAction') || jsonb_build_object('labelReasons', $4::jsonb, 'accountEmail', $5::text),
+          updated_at = now()
+      where user_id = $1 and email_id = $2
+      returning ${EMAIL_RULE_SELECT}
+    `,
+    [userId, rule.emailId, [labelName], JSON.stringify(normalizedReasons), applied.accountEmail],
+  );
+
+  if (!result.rows[0]) {
+    return null;
+  }
+
+  const reviewedRule = mapEmailRuleRow(result.rows[0]);
+  await emitWebhookEvent(userId, "email_rule.modified", {
+    rule: reviewedRule,
+    changes: {
+      labelsApplied: [labelName],
+      labelReasons: normalizedReasons,
+      isPending: false,
+      confidence: 1,
+      clearedFields: ["reason", "userQuestion", "ruleSuggestion", "recommendedAction"],
+    },
+  });
+
+  return reviewedRule;
 }
 
 async function getEmailRuleByEmailId(userId, emailId) {
