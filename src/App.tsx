@@ -218,6 +218,13 @@ type RuleEmailSearchResult = {
   snippet: string;
 };
 
+type BulkRuleReviewResult = {
+  reviewed: number;
+  rules: EmailRule[];
+  skipped: { emailId: string; reason: string }[];
+  failed: { emailId: string; error: string }[];
+};
+
 type RulePendingFilter = "all" | "pending" | "not-pending";
 type RuleGroupBy = "none" | "isPending" | "fromEmail";
 
@@ -9846,6 +9853,10 @@ function RuleReviewPage({
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [ruleAction, setRuleAction] = useState<"review" | "delete" | null>(null);
+  const [bulkAction, setBulkAction] = useState<"accept" | "relabel" | "delete" | null>(null);
+  const [bulkLabelName, setBulkLabelName] = useState("");
+  const [isBulkLabelOpen, setIsBulkLabelOpen] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState<{ tone: "success" | "warning"; text: string } | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [addRuleStep, setAddRuleStep] = useState<"search" | "review" | null>(null);
   const [addRuleSearchQuery, setAddRuleSearchQuery] = useState("");
@@ -9867,6 +9878,7 @@ function RuleReviewPage({
   const availableLabels = labels;
   const visibleRuleIds = rules.map((rule) => rule.emailId);
   const allVisibleRulesSelected = visibleRuleIds.length > 0 && visibleRuleIds.every((emailId) => selectedRuleIds.includes(emailId));
+  const acceptableRuleCount = rules.filter((rule) => selectedRuleIds.includes(rule.emailId) && canAcceptSuggestedRuleLabel(rule)).length;
 
   useEffect(() => {
     if (initialPendingFilter) {
@@ -9892,7 +9904,7 @@ function RuleReviewPage({
   }, [rules, selectedRule, addRuleStep]);
 
   useEffect(() => {
-    if (!selectedRule && addRuleStep !== "search") return;
+    if (!selectedRule && addRuleStep !== "search" && !isBulkLabelOpen) return;
     const previousBodyOverflow = document.body.style.overflow;
     const previousHtmlOverflow = document.documentElement.style.overflow;
     document.body.style.overflow = "hidden";
@@ -9901,7 +9913,7 @@ function RuleReviewPage({
       document.body.style.overflow = previousBodyOverflow;
       document.documentElement.style.overflow = previousHtmlOverflow;
     };
-  }, [selectedRule, addRuleStep]);
+  }, [selectedRule, addRuleStep, isBulkLabelOpen]);
 
   async function loadRuleReviewData() {
     setIsLoading(true);
@@ -10167,13 +10179,79 @@ function RuleReviewPage({
     }
   }
 
+  function openBulkLabelPicker() {
+    setBulkLabelName("");
+    setBulkMessage(null);
+    setError(null);
+    setIsBulkLabelOpen(true);
+  }
+
+  function closeBulkLabelPicker() {
+    setIsBulkLabelOpen(false);
+    setBulkLabelName("");
+  }
+
+  async function reviewSelectedRules(labelName?: string) {
+    if (selectedRuleIds.length === 0) {
+      return;
+    }
+
+    setIsSaving(true);
+    setBulkAction(labelName ? "relabel" : "accept");
+    setError(null);
+    setBulkMessage(null);
+
+    try {
+      const response = await fetch("/api/email-rules/bulk-review", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailIds: selectedRuleIds, labelName: labelName ?? "" }),
+      });
+      const data: BulkRuleReviewResult & { error?: string } = await response.json();
+
+      if (!response.ok) {
+        setError(data.error ?? "Could not review the selected rules.");
+        return;
+      }
+
+      const reviewedIds = new Set((data.rules ?? []).map((rule) => rule.emailId));
+      setSelectedRuleIds((current) => current.filter((emailId) => !reviewedIds.has(emailId)));
+      closeBulkLabelPicker();
+      setBulkMessage({
+        tone: (data.failed ?? []).length > 0 ? "warning" : "success",
+        text: summarizeBulkRuleReview(data, labelName),
+      });
+
+      if (selectedRule && reviewedIds.has(selectedRule.emailId)) {
+        selectRule(null);
+      }
+
+      const removedFromView = pendingFilter === "pending" ? Number(data.reviewed ?? 0) : 0;
+      const nextTotalPages = Math.max(1, Math.ceil(Math.max(0, total - removedFromView) / pageSize));
+
+      if (page > nextTotalPages) {
+        setPage(nextTotalPages);
+      } else {
+        await loadRuleReviewData();
+      }
+    } catch {
+      setError("Could not review the selected rules.");
+    } finally {
+      setIsSaving(false);
+      setBulkAction(null);
+    }
+  }
+
   async function deleteSelectedRules() {
     if (selectedRuleIds.length === 0) {
       return;
     }
 
     setIsSaving(true);
+    setBulkAction("delete");
     setError(null);
+    setBulkMessage(null);
 
     try {
       const response = await fetch("/api/email-rules", {
@@ -10208,6 +10286,7 @@ function RuleReviewPage({
       setError("Could not delete selected rules.");
     } finally {
       setIsSaving(false);
+      setBulkAction(null);
     }
   }
 
@@ -10355,18 +10434,59 @@ function RuleReviewPage({
               <Button disabled={rules.length === 0 || isSaving} onClick={toggleAllVisibleRules} type="button" variant="outline">
                 {allVisibleRulesSelected ? "Clear selection" : "Select all"}
               </Button>
+              <Tooltip
+                align="end"
+                text={
+                  selectedRuleIds.length === 0
+                    ? "Select rules to accept the label the AI suggested."
+                    : acceptableRuleCount === 0
+                      ? "None of the selected rules are pending with exactly one suggested label."
+                      : "Mark the selected pending rules reviewed using their single suggested label."
+                }
+              >
+                <span>
+                  <Button
+                    disabled={acceptableRuleCount === 0 || isSaving}
+                    onClick={() => void reviewSelectedRules()}
+                    type="button"
+                    variant="outline"
+                  >
+                    {bulkAction === "accept" ? <Loader /> : <CheckCircle2 className="h-4 w-4" />}
+                    {bulkAction === "accept" ? "Accepting..." : `Accept suggested${acceptableRuleCount > 0 ? ` (${acceptableRuleCount})` : ""}`}
+                  </Button>
+                </span>
+              </Tooltip>
+              <Button
+                disabled={selectedRuleIds.length === 0 || isSaving}
+                onClick={openBulkLabelPicker}
+                type="button"
+                variant="outline"
+              >
+                {bulkAction === "relabel" ? <Loader /> : <Tag className="h-4 w-4" />}
+                {bulkAction === "relabel" ? "Applying..." : "Change label"}
+              </Button>
               <Button
                 disabled={selectedRuleIds.length === 0 || isSaving}
                 onClick={() => void deleteSelectedRules()}
                 type="button"
                 variant="outline"
               >
-                {isSaving && selectedRuleIds.length > 0 ? <Loader /> : <Trash2 className="h-4 w-4" />}
+                {bulkAction === "delete" ? <Loader /> : <Trash2 className="h-4 w-4" />}
                 Delete selected
               </Button>
             </div>
           </CardHeader>
           <CardContent>
+            {bulkMessage ? (
+              <p
+                className={cn(
+                  "mb-4 rounded-md px-3 py-2 text-sm",
+                  bulkMessage.tone === "warning" ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700",
+                )}
+              >
+                {bulkMessage.text}
+              </p>
+            ) : null}
             {isLoading ? (
               <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
                 Loading rules...
@@ -10517,6 +10637,61 @@ function RuleReviewPage({
                 )}
               </div>
               </CardContent>
+            </div>
+          </Card>
+        </div>
+        ) : null}
+
+        {isBulkLabelOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+          <Card className="flex max-h-[92vh] w-full max-w-3xl min-w-0 overflow-hidden rounded-2xl border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]">
+            <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
+              <CardHeader className="shrink-0 gap-3 border-b border-white/60 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
+                <div className="min-w-0">
+                  <CardTitle>Change label</CardTitle>
+                  <CardDescription>
+                    Apply one label to the {selectedRuleIds.length} selected rule{selectedRuleIds.length === 1 ? "" : "s"} and mark them reviewed.
+                  </CardDescription>
+                </div>
+                <Button
+                  aria-label="Close change label"
+                  className="shrink-0 bg-transparent shadow-none hover:bg-white/40"
+                  onClick={closeBulkLabelPicker}
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </CardHeader>
+              <CardContent className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-5">
+                {availableLabels.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
+                    Create a label before changing rules in bulk.
+                  </div>
+                ) : (
+                  <RuleLabelSelectionRows
+                    confidenceThreshold={confidenceThreshold.toFixed(2)}
+                    labels={availableLabels}
+                    onToggle={setBulkLabelName}
+                    selectedLabels={bulkLabelName ? [bulkLabelName] : []}
+                  />
+                )}
+              </CardContent>
+              <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-white/60 bg-white/25 p-5">
+                <Button disabled={isSaving} onClick={closeBulkLabelPicker} type="button" variant="outline">
+                  Cancel
+                </Button>
+                <Button
+                  className={cn(bulkLabelName && "bg-emerald-600 text-white hover:bg-emerald-700")}
+                  disabled={!bulkLabelName || isSaving}
+                  onClick={() => void reviewSelectedRules(bulkLabelName)}
+                  type="button"
+                >
+                  {bulkAction === "relabel" ? <Loader /> : <Save className="h-4 w-4" />}
+                  {bulkAction === "relabel" ? "Applying..." : "Apply to selected"}
+                </Button>
+              </div>
             </div>
           </Card>
         </div>
@@ -15244,6 +15419,34 @@ function getSuggestedRuleLabel(rule: EmailRule) {
     if (!Number.isFinite(bestConfidence) || candidateConfidence > bestConfidence) return label;
     return bestLabel;
   }, suggestions[0]);
+}
+
+function canAcceptSuggestedRuleLabel(rule: EmailRule) {
+  const suggestions = [...new Set((rule.labelsApplied ?? []).map((label) => label.trim()).filter(Boolean))];
+  return rule.isPending && suggestions.length === 1;
+}
+
+function summarizeBulkRuleReview(result: BulkRuleReviewResult, labelName?: string) {
+  const reviewed = Number(result.reviewed ?? 0);
+  const skipped = result.skipped ?? [];
+  const failed = result.failed ?? [];
+  const parts = [
+    labelName
+      ? `Applied ${labelName} to ${reviewed} rule${reviewed === 1 ? "" : "s"}.`
+      : `Accepted the suggested label on ${reviewed} rule${reviewed === 1 ? "" : "s"}.`,
+  ];
+
+  if (skipped.length > 0) {
+    const reasons = [...new Set(skipped.map((entry) => entry.reason))];
+    parts.push(`Skipped ${skipped.length}: ${reasons.join(" ")}`);
+  }
+
+  if (failed.length > 0) {
+    const errors = [...new Set(failed.map((entry) => entry.error))];
+    parts.push(`Failed ${failed.length}: ${errors.join(" ")}`);
+  }
+
+  return parts.join(" ");
 }
 
 function formatRuleLabelReasons(rule: EmailRule) {
