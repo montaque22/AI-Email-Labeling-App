@@ -488,33 +488,42 @@ export function registerIntegrationRoutes(app) {
 
     try {
       const currentRule = await getEmailRuleByEmailId(req.user.id, input.rule.emailId);
-      const applied = await applySingleLabelToEmail(req.user.id, {
-        emailId: input.rule.emailId,
-        subject: input.rule.subject,
-        labelName: input.rule.labelsApplied[0],
-        removeLabelNames: currentRule?.labelsApplied ?? [],
-        accountEmail: currentRule?.accountEmail ?? "",
-        source: "manual-rule-review",
-      });
+      const labelName = input.rule.labelsApplied[0];
+      const providerAccountEmail = currentRule?.accountEmail || input.rule.accountEmail || "";
       const rule = await upsertEmailRule(req.user.id, {
         ...input.rule,
         confidence: 1,
         isPending: false,
         metadata: {
           labelReasons: input.rule.metadata.labelReasons,
-          accountEmail: applied.accountEmail,
+          accountEmail: providerAccountEmail,
+          providerApply: {
+            ok: null,
+            status: "queued",
+            queuedAt: new Date().toISOString(),
+          },
           source: "manual-rule-review",
         },
       });
 
-      await emitWebhookEvent(req.user.id, currentRule ? "email_rule.modified" : "email_rule.created", {
+      emitWebhookEventDetached(req.user.id, currentRule ? "email_rule.modified" : "email_rule.created", {
         rule,
         payload: input.rule,
         previous: currentRule,
       });
+      startReviewedRuleProviderApply(req.user.id, {
+        rule: currentRule ?? {
+          ...rule,
+          labelsApplied: [],
+          accountEmail: providerAccountEmail,
+        },
+        reviewedRule: rule,
+        labelName,
+        source: "manual-rule-review",
+      });
       res.status(currentRule ? 200 : 201).json({ rule });
     } catch (error) {
-      handleProviderError(res, error);
+      handleError(res, error);
     }
   });
 
@@ -743,7 +752,7 @@ export function registerIntegrationRoutes(app) {
       const rule = result.rows[0] ? mapEmailRuleRow(result.rows[0]) : null;
 
       if (rule) {
-        await emitWebhookEvent(req.user.id, "email_rule.deleted", { rule });
+        emitWebhookEventDetached(req.user.id, "email_rule.deleted", { rule });
       }
 
       res.json({ deleted: result.rowCount });
@@ -2311,6 +2320,7 @@ async function parseManualRuleReviewInput(userId, body) {
 
     rule[field] = body[field].trim();
   }
+  rule.accountEmail = typeof body.accountEmail === "string" ? body.accountEmail.trim().toLowerCase() : "";
 
   const labelsApplied = Array.isArray(body.labelsApplied)
     ? body.labelsApplied.filter((label) => typeof label === "string").map((label) => label.trim()).filter(Boolean)

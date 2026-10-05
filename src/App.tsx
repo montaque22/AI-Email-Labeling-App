@@ -642,6 +642,7 @@ type InboxMode = "inbox" | "drafts" | "sent" | "archive";
 
 const INBOX_ALL_LABEL_ID = "__all__";
 const INBOX_PAGE_DONE = "__done__";
+const INBOX_CLIENT_PAGE_SIZE = 10;
 const MOBILE_PULL_REFRESH_THRESHOLD = 76;
 
 function fetchNoStore(input: RequestInfo | URL, init: RequestInit = {}) {
@@ -3585,6 +3586,10 @@ function InboxPage({
       return token;
     }
 
+    if (/^\d+$/.test(token)) {
+      return String(Math.max(0, Number.parseInt(token, 10) - removedMessages.length));
+    }
+
     const currentPageState = decodeInboxPageToken(token);
     const removalCountsByPageKey = new Map<string, number>();
     for (const message of removedMessages) {
@@ -3620,26 +3625,7 @@ function InboxPage({
       return null;
     }
 
-    const nextPageState: Record<string, string> = {};
-    if (selectedLabelId === INBOX_ALL_LABEL_ID) {
-      for (const accountId of selectedAccountIds) {
-        for (const label of labels) {
-          const loadedCount = filteredMessages.filter((message) =>
-            message.accountId === accountId &&
-            message.labels.some((labelName) => labelName.toLowerCase() === label.name.toLowerCase()),
-          ).length;
-          nextPageState[getInboxPageStateKey(accountId, label.id)] = String(loadedCount);
-        }
-      }
-      return encodeInboxPageToken(nextPageState);
-    }
-
-    for (const accountId of selectedAccountIds) {
-      const loadedCount = filteredMessages.filter((message) => message.accountId === accountId).length;
-      nextPageState[getInboxPageStateKey(accountId, "")] = String(loadedCount);
-    }
-
-    return encodeInboxPageToken(nextPageState);
+    return String(filteredMessages.length);
   }
 
   function removeMessagesFromCurrentInboxView(removedMessages: InboxMessage[]) {
@@ -4031,7 +4017,9 @@ function InboxPage({
       if (successfulDeletes.length > 0) {
         showInboxToast(`${successfulDeletes.length} message${successfulDeletes.length === 1 ? "" : "s"} deleted.`);
         setIsMobileEditMode(false);
-        await refreshInboxAfterMessageMutation(adjustedNextPageToken);
+        const visibleAfterDelete = Math.max(0, messages.length - successfulDeletes.length);
+        const topUpPageToken = adjustedNextPageToken ?? String(visibleAfterDelete);
+        await refreshInboxAfterMessageMutation(visibleAfterDelete < INBOX_CLIENT_PAGE_SIZE ? topUpPageToken : null);
       }
       if (data.failed?.length) {
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be deleted.`);
@@ -10494,6 +10482,7 @@ function RuleReviewPage({
           fromName: selectedRule.fromName,
           subject: selectedRule.subject,
           snippet: selectedRule.snippet,
+          accountEmail: selectedRule.accountEmail ?? "",
           labelsApplied: draftLabels,
           labelReasons: pickLabelReasons(draftLabels, draftLabelReasons),
         }),
