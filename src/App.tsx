@@ -4268,7 +4268,7 @@ function InboxPage({
 
       {!isMobileEditMode ? <Button
         aria-label="Compose email"
-        className="fixed bottom-5 right-5 z-40 h-14 w-14 rounded-full border-white/70 bg-white/70 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85"
+        className="fixed bottom-24 right-5 z-40 h-14 w-14 rounded-full border-white/70 bg-white/70 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85 md:bottom-28"
         onClick={() => {
           openComposeDraft(null);
         }}
@@ -4281,7 +4281,7 @@ function InboxPage({
       {isByoAiActive && !isMobileEditMode ? (
         <Button
           aria-label="Open AI helper"
-          className="fixed bottom-24 right-5 z-[120] flex h-14 w-14 rounded-full border-white/70 bg-white/70 text-zinc-900 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85"
+          className="fixed bottom-44 right-5 z-[120] flex h-14 w-14 rounded-full border-white/70 bg-white/70 text-zinc-900 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85 md:bottom-48"
           onClick={() => setIsAiHelperOpen(true)}
           size="icon"
           type="button"
@@ -4291,7 +4291,7 @@ function InboxPage({
         </Button>
       ) : null}
       {isBulkActionBarRendered ? (
-        <div className="inbox-floating-actions fixed bottom-5 left-1/2 z-40 flex items-center gap-1 rounded-full border border-white/70 bg-white/70 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl" data-state={hasSelectedMessages ? "open" : "closed"}>
+        <div className="inbox-floating-actions fixed bottom-24 left-1/2 z-40 flex items-center gap-1 rounded-full border border-white/70 bg-white/70 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:bottom-28" data-state={hasSelectedMessages ? "open" : "closed"}>
           <span className="select-none whitespace-nowrap px-3 text-sm font-medium text-zinc-600" aria-live="polite">
             {selectedMessages.length} selected
           </span>
