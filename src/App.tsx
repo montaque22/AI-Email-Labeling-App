@@ -6188,17 +6188,19 @@ function InboxMessageRow({
           {!message.isRead ? <span aria-label="Unread" className="h-2 w-2 shrink-0 rounded-full bg-blue-500" title="Unread" /> : null}
           <span className="min-w-0 truncate">{message.sender || message.from || "Unknown sender"}</span>
         </button>
-        <button className="flex min-w-0 cursor-pointer items-center gap-2 text-left" onClick={onOpen} type="button">
-          {message.commitment ? (
-            <Badge className={cn("shrink-0", commitmentTone.labelClassName)}>
-              <Gem className="mr-1 h-3 w-3" />
-              Commitment
-            </Badge>
-          ) : null}
-          {message.labels[0] ? <Badge className="shrink-0 bg-blue-50 text-blue-700">{message.labels[0]}</Badge> : null}
-          <InboxAutomationIndicator count={message.automationResultCount ?? 0} />
-          <span className="min-w-0 truncate text-sm font-medium text-zinc-950">{message.subject || "(no subject)"}</span>
-          <span className="min-w-0 truncate text-xs text-zinc-400">{message.snippet || "No preview available."}</span>
+        <button className="flex min-w-0 cursor-pointer flex-col gap-0.5 text-left" onClick={onOpen} type="button">
+          <span className="flex min-w-0 items-center gap-2">
+            {message.commitment ? (
+              <Badge className={cn("shrink-0", commitmentTone.labelClassName)}>
+                <Gem className="mr-1 h-3 w-3" />
+                Commitment
+              </Badge>
+            ) : null}
+            {message.labels[0] ? <Badge className="shrink-0 bg-blue-50 text-blue-700">{message.labels[0]}</Badge> : null}
+            <InboxAutomationIndicator count={message.automationResultCount ?? 0} />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-zinc-950">{message.subject || "(no subject)"}</span>
+          </span>
+          <span className="block min-w-0 truncate text-xs text-zinc-400">{message.snippet || "No preview available."}</span>
         </button>
         <div className="flex shrink-0 items-center justify-end gap-2 text-xs text-zinc-500">
           {replyCount > 0 ? (
