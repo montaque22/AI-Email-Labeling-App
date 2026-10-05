@@ -69,7 +69,11 @@ import { MetricsTabPill } from "./components/metrics/MetricsTabPill";
 import type { AiUsageSeries, AlarmGranularity, AlarmSimulationPoint, LogAlarm, LogAlarmDraft, LogErrorSeries, LogOutcomeSummary, MetricsTab } from "./components/metrics/types";
 import { CalendarPage } from "./components/calendar/CalendarPage";
 import { TasksPage } from "./components/tasks/TasksPage";
+import { BackgroundTaskDrawer } from "./components/background-tasks/BackgroundTaskDrawer";
+import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/rules/RuleProviderApplyNotice";
 import { authClient } from "./lib/auth-client";
+import { fetchNoStore } from "./lib/http";
+import { clearPwaUnreadBadge, refreshPwaUnreadBadge } from "./lib/pwa-badge";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
 
@@ -202,6 +206,10 @@ type EmailRule = {
   labelReasons?: Record<string, string>;
   labelConfidences?: Record<string, number>;
   isPending: boolean;
+  // Outcome of pushing the reviewed label to Gmail/IMAP. Absent on rules that were never
+  // reviewed through the apply path; anything but "complete" means the provider email does
+  // not actually carry the label the rule claims.
+  providerApply?: RuleProviderApply;
   createdAt: string;
   updatedAt: string;
 };
@@ -645,67 +653,6 @@ const INBOX_PAGE_DONE = "__done__";
 const INBOX_CLIENT_PAGE_SIZE = 10;
 const MOBILE_PULL_REFRESH_THRESHOLD = 76;
 
-function fetchNoStore(input: RequestInfo | URL, init: RequestInit = {}) {
-  const headers = new Headers(init.headers);
-  headers.set("Cache-Control", "no-cache");
-
-  return fetch(input, {
-    ...init,
-    cache: "no-store",
-    credentials: init.credentials ?? "include",
-    headers,
-  });
-}
-
-type AppBadgeNavigator = {
-  clearAppBadge?: () => Promise<void>;
-  setAppBadge?: (contents?: number) => Promise<void>;
-};
-
-function getAppBadgeNavigator(): AppBadgeNavigator | null {
-  if (typeof navigator === "undefined") {
-    return null;
-  }
-
-  const badgeNavigator = navigator as unknown as AppBadgeNavigator;
-  return typeof badgeNavigator.setAppBadge === "function" || typeof badgeNavigator.clearAppBadge === "function"
-    ? badgeNavigator
-    : null;
-}
-
-async function clearPwaUnreadBadge() {
-  const badgeNavigator = getAppBadgeNavigator();
-  if (!badgeNavigator?.clearAppBadge) {
-    return;
-  }
-
-  try {
-    await badgeNavigator.clearAppBadge();
-  } catch {
-    // Badge support varies by browser and should never block app usage.
-  }
-}
-
-async function refreshPwaUnreadBadge() {
-  const badgeNavigator = getAppBadgeNavigator();
-  if (!badgeNavigator) {
-    return;
-  }
-
-  try {
-    const response = await fetchNoStore("/api/inbox/unread-count");
-    const data = await response.json().catch(() => ({}));
-    const count = response.ok ? Number(data.count ?? 0) : 0;
-    if (count > 0 && badgeNavigator.setAppBadge) {
-      await badgeNavigator.setAppBadge(count);
-    } else if (badgeNavigator.clearAppBadge) {
-      await badgeNavigator.clearAppBadge();
-    }
-  } catch {
-    // Badge support is best-effort and should never affect inbox use.
-  }
-}
-
 type InboxRuleStatus = {
   emailId: string;
   isPending: boolean;
@@ -849,21 +796,6 @@ type InboxProcessingJob = {
   startedAt: string;
   updatedAt: string;
   message: string;
-};
-
-type BackgroundTask = {
-  id: string;
-  type: string;
-  title: string;
-  message: string;
-  status: "running" | "success" | "warning" | "error";
-  total: number;
-  completed: number;
-  failed: number;
-  errors: { message: string; description?: string }[];
-  description?: string;
-  createdAt: string;
-  updatedAt: string;
 };
 
 type InboxAiActionPlan = {
@@ -1209,218 +1141,6 @@ export function App() {
       <BackgroundTaskDrawer user={user} />
       <PwaUpdatePrompt {...pwaUpdate} />
     </>
-  );
-}
-
-function BackgroundTaskDrawer({ user }: { user: AuthUser | null }) {
-  const [tasks, setTasks] = useState<BackgroundTask[]>([]);
-  const [isOpen, setIsOpen] = useState(false);
-  const [isDismissing, setIsDismissing] = useState(false);
-  const lastCompletedTaskIdsRef = useRef(new Set<string>());
-
-  async function loadTasks() {
-    if (!user) {
-      setTasks([]);
-      return;
-    }
-
-    try {
-      const response = await fetchNoStore("/api/background-tasks");
-      const data = await response.json().catch(() => ({}));
-      if (response.ok) {
-        const nextTasks = Array.isArray(data.tasks) ? data.tasks as BackgroundTask[] : [];
-        setTasks(nextTasks);
-        for (const task of nextTasks) {
-          if (task.status === "running") {
-            continue;
-          }
-          if (lastCompletedTaskIdsRef.current.has(task.id)) {
-            continue;
-          }
-          lastCompletedTaskIdsRef.current.add(task.id);
-          if (task.type === "polling") {
-            void refreshPwaUnreadBadge();
-            window.dispatchEvent(new Event("emailable:polling-complete"));
-          }
-        }
-      }
-    } catch {
-      // Background task polling is best effort.
-    }
-  }
-
-  useEffect(() => {
-    if (!user) {
-      setTasks([]);
-      return;
-    }
-
-    void loadTasks();
-    const intervalId = window.setInterval(() => {
-      void loadTasks();
-    }, 2500);
-    const handleRefresh = () => {
-      void loadTasks();
-    };
-    window.addEventListener("emailable:background-tasks-refresh", handleRefresh);
-    return () => {
-      window.clearInterval(intervalId);
-      window.removeEventListener("emailable:background-tasks-refresh", handleRefresh);
-    };
-  }, [user?.email]);
-
-  const visibleTasks = tasks.filter((task) => task.status === "running" || task.status === "success" || task.status === "warning" || task.status === "error");
-  const runningCount = visibleTasks.filter((task) => task.status === "running").length;
-  const errorCount = visibleTasks.filter((task) => task.status === "error").length;
-  const warningCount = visibleTasks.filter((task) => task.status === "warning").length;
-  const successCount = visibleTasks.filter((task) => task.status === "success").length;
-
-  useEffect(() => {
-    if (visibleTasks.length === 0) {
-      setIsOpen(false);
-    }
-  }, [visibleTasks.length]);
-
-  useEffect(() => {
-    document.body.classList.toggle("emailable-background-tasks-visible", Boolean(user && visibleTasks.length > 0));
-    return () => {
-      document.body.classList.remove("emailable-background-tasks-visible");
-    };
-  }, [user, visibleTasks.length]);
-
-  if (!user || visibleTasks.length === 0) {
-    return null;
-  }
-
-  async function dismissAll() {
-    setIsDismissing(true);
-    try {
-      const response = await fetch("/api/background-tasks", {
-        method: "DELETE",
-        credentials: "include",
-      });
-      const data = await response.json().catch(() => ({}));
-      if (response.ok) {
-        setTasks(Array.isArray(data.tasks) ? data.tasks : []);
-      }
-    } finally {
-      setIsDismissing(false);
-    }
-  }
-
-  return (
-    <div className="fixed bottom-5 right-5 z-[9000] flex max-w-[calc(100vw-2rem)] flex-col items-end gap-2">
-      {!isOpen ? (
-        <button
-          type="button"
-          onClick={() => setIsOpen(true)}
-          className="relative rounded-full border border-white/70 bg-white/85 px-4 py-2 text-sm font-medium text-zinc-800 shadow-lg backdrop-blur-xl transition hover:bg-white"
-        >
-          {runningCount > 0 ? "Background tasks" : errorCount > 0 || warningCount > 0 ? "Task needs attention" : "Task complete"}
-          {errorCount + warningCount > 0 ? (
-            <span
-              className={cn(
-                "absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full px-1 text-[11px] font-semibold text-white",
-                errorCount > 0 ? "bg-red-600" : "bg-amber-500",
-              )}
-            >
-              {errorCount + warningCount}
-            </span>
-          ) : null}
-        </button>
-      ) : (
-        <LiquidGlassCard
-          borderRadius="16px"
-          blurIntensity="sm"
-          glowIntensity="sm"
-          shadowIntensity="sm"
-          className="w-[min(420px,calc(100vw-2rem))] bg-white/70 p-0 text-zinc-900"
-        >
-          <div className="flex items-start justify-between gap-3 border-b border-white/60 px-4 py-3">
-            <div>
-              <h3 className="text-sm font-semibold">Background tasks</h3>
-              <p className="text-xs text-zinc-500">
-                {runningCount > 0 ? `${runningCount} running` : `${successCount} complete`}
-                {errorCount > 0 ? `, ${errorCount} error${errorCount === 1 ? "" : "s"}` : ""}
-                {warningCount > 0 ? `, ${warningCount} warning${warningCount === 1 ? "" : "s"}` : ""}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                disabled={isDismissing || visibleTasks.every((task) => task.status === "running")}
-                onClick={dismissAll}
-                size="sm"
-                variant="outline"
-              >
-                Dismiss all
-              </Button>
-              <button
-                aria-label="Close background tasks"
-                className="rounded-full p-1 text-zinc-500 transition hover:bg-white/70 hover:text-zinc-900"
-                onClick={() => setIsOpen(false)}
-                type="button"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-          <div className="max-h-80 space-y-3 overflow-y-auto px-4 py-3">
-            {visibleTasks.map((task) => (
-              <BackgroundTaskRow key={task.id} task={task} />
-            ))}
-          </div>
-        </LiquidGlassCard>
-      )}
-    </div>
-  );
-}
-
-function BackgroundTaskRow({ task }: { task: BackgroundTask }) {
-  const done = Math.max(0, Number(task.completed ?? 0) + Number(task.failed ?? 0));
-  const total = Math.max(0, Number(task.total ?? 0));
-  const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : task.status === "running" ? 20 : 100;
-  const statusLabel = task.status === "running" ? "Running" : task.status === "error" ? "Error" : task.status === "warning" ? "Warning" : "Complete";
-  const detailMessage = task.status === "error" || task.status === "warning"
-    ? task.errors?.[0]?.message || task.message
-    : task.message;
-  const description = task.description || task.errors?.[0]?.description || "";
-
-  return (
-    <div className="rounded-xl border border-white/70 bg-white/65 p-3 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-zinc-900">{task.title}</p>
-          <p className={cn("mt-1 text-xs", task.status === "error" ? "text-red-700" : task.status === "warning" ? "text-amber-700" : "text-zinc-500")}>
-            {detailMessage}
-          </p>
-          {description ? <p className="mt-2 text-xs leading-relaxed text-zinc-600">{description}</p> : null}
-        </div>
-        <span
-          className={cn(
-            "shrink-0 rounded-full px-2 py-1 text-[11px] font-medium",
-            task.status === "running" && "bg-blue-50 text-blue-700",
-            task.status === "success" && "bg-emerald-50 text-emerald-700",
-            task.status === "warning" && "bg-amber-50 text-amber-700",
-            task.status === "error" && "bg-red-50 text-red-700",
-          )}
-        >
-          {statusLabel}
-        </span>
-      </div>
-      <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-200/80">
-        <div
-          className={cn(
-            "h-full rounded-full transition-all",
-            task.status === "error" ? "bg-red-500" : task.status === "warning" ? "bg-amber-500" : task.status === "success" ? "bg-emerald-500" : "bg-blue-500",
-          )}
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-      <div className="mt-2 flex justify-between text-[11px] text-zinc-500">
-        <span>{total > 0 ? `${done}/${total}` : task.status === "running" ? "Preparing" : "Done"}</span>
-        {task.failed > 0 ? <span>{task.failed} failed</span> : null}
-      </div>
-    </div>
   );
 }
 
@@ -10897,6 +10617,7 @@ function RuleReviewPage({
                                 <Badge className={rule.isPending ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}>
                                   {rule.isPending ? "Pending" : "Reviewed"}
                                 </Badge>
+                                <RuleProviderApplyNotice providerApply={rule.providerApply} />
                                 <p className="truncate text-sm font-medium text-zinc-950">{formatEmailForPrivacy(rule.fromEmail, privacyMode)}</p>
                               </div>
                               <p className="mt-1 truncate text-xs text-zinc-500">
@@ -11102,6 +10823,7 @@ function RuleReviewPage({
                   </div>
                   <p className="mt-4 text-sm font-medium text-zinc-950">{selectedRule.subject}</p>
                   <p className="mt-2 text-sm leading-6 text-zinc-600">{selectedRule.snippet}</p>
+                  <RuleProviderApplyNotice className="mt-3" providerApply={selectedRule.providerApply} variant="detail" />
                 </div>
 
                 <div className="min-w-0">

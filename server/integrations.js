@@ -24,6 +24,7 @@ import {
 import { ensureLabelSyncedToAccount } from "./label-sync.js";
 import { getConfidenceThreshold } from "./settings.js";
 import { createDeadline, mapWithConcurrency } from "./concurrency.js";
+import { runDetachedTask, runGuardedStep } from "./detached-tasks.js";
 import { fetchWithTimeout } from "./http.js";
 import { emitWebhookEvent, emitWebhookEventDetached } from "./webhooks.js";
 import { deleteAllSystemLogs, exportSystemLogs, listSystemLogs, logSystemEvent } from "./system-logs.js";
@@ -2196,8 +2197,31 @@ function summarizeProviderLookupError(error) {
   return error.message || "lookup_failed";
 }
 
+/**
+ * The specific "the provider no longer has this message" 404s, and nothing else.
+ *
+ * A match tells the user their email was deleted or moved, so this must not fire for the
+ * other 404s raised in this file — "Email account not found", "Label was not found" — which
+ * mean something entirely different and have their own remediation. Matching on the exact
+ * messages rather than a bare `not found` keeps a future 404 from silently inheriting the
+ * wrong explanation.
+ *
+ * @param {{ status?: number, message?: string } | null | undefined} error
+ * @returns {boolean}
+ */
 function isProviderMessageNotFoundError(error) {
-  return error?.status === 404 && /email was not found|message not found|not found/i.test(String(error.message || ""));
+  if (error?.status !== 404) {
+    return false;
+  }
+
+  const message = String(error.message || "");
+  return (
+    /email was not found in connected email accounts/i.test(message)
+    || /gmail message not found/i.test(message)
+    // Deliberately not "IMAP mailbox was not found": a missing mailbox is a configuration
+    // problem, not a deleted email, and must not be explained to the user as one.
+    || /imap (?:message|draft) was not found/i.test(message)
+  );
 }
 
 function assertGmailAccountHasRequiredScopes(account) {
@@ -2899,6 +2923,9 @@ async function markEmailRuleReviewed(userId, { rule, labelName, labelReasons, so
   return reviewedRule;
 }
 
+const PROVIDER_MESSAGE_MISSING_DESCRIPTION =
+  "This usually means the email was deleted or moved out of the connected account after Emailable created the pending rule. The reviewed rule is still saved and can still help future emails, but there was no provider email left to relabel.";
+
 function startReviewedRuleProviderApply(userId, { rule, reviewedRule, labelName, source, labelResolver = null }) {
   const task = createBackgroundTask(userId, {
     type: "rule_review_apply",
@@ -2907,7 +2934,7 @@ function startReviewedRuleProviderApply(userId, { rule, reviewedRule, labelName,
     total: 1,
   });
 
-  void (async () => {
+  runDetachedTask("email_rule.review_apply", async () => {
     try {
       const applied = await applySingleLabelToEmail(userId, {
         emailId: rule.emailId,
@@ -2929,38 +2956,42 @@ function startReviewedRuleProviderApply(userId, { rule, reviewedRule, labelName,
       });
     } catch (error) {
       const providerMessageMissing = isProviderMessageNotFoundError(error);
-      const providerMissingDescription =
-        "This usually means the email was deleted or moved out of the connected account after Emailable created the pending rule. The reviewed rule is still saved and can still help future emails, but there was no provider email left to relabel.";
       const providerApply = {
         ok: false,
         status: providerMessageMissing ? "warning" : "error",
         error: error.message || "Could not apply the selected label to the provider email.",
-        description: providerMessageMissing ? providerMissingDescription : "",
+        description: providerMessageMissing ? PROVIDER_MESSAGE_MISSING_DESCRIPTION : "",
         lookupFailures: Array.isArray(error.lookupFailures) ? error.lookupFailures : [],
         failedAt: new Date().toISOString(),
       };
-      await updateReviewedRuleProviderApplyMetadata(userId, rule.emailId, providerApply, reviewedRule.accountEmail || rule.accountEmail || "");
-      await logSystemEvent(userId, {
-        category: "email",
-        eventName: "email_rule.review_apply_failed",
-        status: providerMessageMissing ? "warning" : "error",
-        message: "Rule was reviewed, but Emailable could not apply the selected label to the provider message.",
-        payload: {
-          accountEmail: rule.accountEmail ?? "",
-          description: providerApply.description,
-          emailId: rule.emailId,
-          error: providerApply.error,
-          labelName,
-          lookupFailures: providerApply.lookupFailures,
-          source,
-          subject: rule.subject,
-        },
-      });
+      // Each recovery write is guarded on its own: a database blip while recording the
+      // metadata must not stop the system-event write or leave the drawer showing "running"
+      // forever, and none of them may reject out of this catch.
+      await runGuardedStep("email_rule.review_apply.metadata", () =>
+        updateReviewedRuleProviderApplyMetadata(userId, rule.emailId, providerApply, reviewedRule.accountEmail || rule.accountEmail || ""));
+      await runGuardedStep("email_rule.review_apply.log", () =>
+        logSystemEvent(userId, {
+          category: "email",
+          eventName: "email_rule.review_apply_failed",
+          status: providerMessageMissing ? "warning" : "error",
+          message: "Rule was reviewed, but Emailable could not apply the selected label to the provider message.",
+          payload: {
+            accountEmail: rule.accountEmail ?? "",
+            description: providerApply.description,
+            emailId: rule.emailId,
+            error: providerApply.error,
+            labelName,
+            lookupFailures: providerApply.lookupFailures,
+            source,
+            subject: rule.subject,
+          },
+        }));
+
       if (providerMessageMissing) {
         updateBackgroundTask(userId, task.id, { completed: 1 });
         warnBackgroundTask(userId, task.id, error, {
           message: `Provider email was not found for "${labelName}".`,
-          description: providerMissingDescription,
+          description: PROVIDER_MESSAGE_MISSING_DESCRIPTION,
         });
         return;
       }
@@ -2968,7 +2999,97 @@ function startReviewedRuleProviderApply(userId, { rule, reviewedRule, labelName,
       updateBackgroundTask(userId, task.id, { failed: 1 });
       failBackgroundTask(userId, task.id, error, { message: `Could not apply "${labelName}" to the provider email.` });
     }
-  })();
+  });
+}
+
+// How long a `providerApply` row may sit at "queued" before the startup sweep decides nobody
+// is coming back for it. Comfortably longer than a slow IMAP round-trip, short enough that a
+// restart does not leave a user staring at a stale "queued" for the rest of the day.
+const QUEUED_PROVIDER_APPLY_GRACE = "5 minutes";
+const PROVIDER_APPLY_INTERRUPTED_DESCRIPTION =
+  "Emailable restarted before it finished applying this label to the provider email. The reviewed rule is saved and still shapes future emails, but the provider message was never relabelled. Review the rule again to retry.";
+
+/**
+ * Truthfully resolves `providerApply` rows that were orphaned by a restart.
+ *
+ * `markEmailRuleReviewed` commits `status: "queued"` and then hands the provider call to an
+ * in-memory detached task. If the process dies between the two — a deploy, or the crash this
+ * change removes — the row reads as reviewed forever while the Gmail/IMAP label was never
+ * applied. Run once at startup, before the process can queue anything of its own.
+ *
+ * This marks rather than retries on purpose. Retrying would have to reuse
+ * `applySingleLabelToEmail`, whose `removeLabelNames` comes from `rule.labelsApplied` — which
+ * the review already overwrote with the new label, so a replay would ask the provider to add
+ * and remove the same label. Honest state plus a visible prompt to re-review is correct here;
+ * an automatic retry needs the pre-review labels persisted first, which is a schema change.
+ *
+ * @returns {Promise<number>} Rows moved out of "queued".
+ */
+export async function reconcileInterruptedProviderApplies() {
+  if (!dbPool) {
+    return 0;
+  }
+
+  const interrupted = {
+    ok: false,
+    status: "interrupted",
+    error: "Emailable restarted before the provider label was applied.",
+    description: PROVIDER_APPLY_INTERRUPTED_DESCRIPTION,
+    lookupFailures: [],
+    interruptedAt: new Date().toISOString(),
+  };
+
+  // The CASE is load-bearing: it pins evaluation order so a malformed `queuedAt` is never
+  // cast. Missing or unparseable timestamps sort as -infinity, which is the behaviour we
+  // want — a row with no record of when it was queued is by definition not in flight now.
+  const result = await dbPool.query(
+    `
+      update email_rules
+      set metadata = metadata || jsonb_build_object('providerApply', (coalesce(metadata->'providerApply', '{}'::jsonb) || $1::jsonb)),
+          updated_at = now()
+      where metadata->'providerApply'->>'status' = 'queued'
+        and (
+          case
+            when coalesce(metadata->'providerApply'->>'queuedAt', '') ~ '^\\d{4}-\\d{2}-\\d{2}T'
+              then (metadata->'providerApply'->>'queuedAt')::timestamptz
+            else '-infinity'::timestamptz
+          end
+        ) < now() - interval '${QUEUED_PROVIDER_APPLY_GRACE}'
+      returning user_id as "userId", email_id as "emailId", subject
+    `,
+    [JSON.stringify(interrupted)],
+  );
+
+  const rows = result.rows;
+  if (rows.length === 0) {
+    return 0;
+  }
+
+  /** @type {Map<string, Array<{ emailId: string, subject: string }>>} */
+  const byUser = new Map();
+  for (const row of rows) {
+    const existing = byUser.get(row.userId) ?? [];
+    existing.push({ emailId: row.emailId, subject: row.subject });
+    byUser.set(row.userId, existing);
+  }
+
+  for (const [userId, affected] of byUser) {
+    await runGuardedStep("email_rule.provider_apply_interrupted.log", () =>
+      logSystemEvent(userId, {
+        category: "email",
+        eventName: "email_rule.provider_apply_interrupted",
+        status: "warning",
+        message: `${affected.length} reviewed rule${affected.length === 1 ? " was" : "s were"} saved but never relabelled in the provider because Emailable restarted.`,
+        payload: {
+          count: affected.length,
+          description: PROVIDER_APPLY_INTERRUPTED_DESCRIPTION,
+          // Bounded so one bad restart cannot write an unbounded payload.
+          emails: affected.slice(0, 25),
+        },
+      }));
+  }
+
+  return rows.length;
 }
 
 async function updateReviewedRuleProviderApplyMetadata(userId, emailId, providerApply, accountEmail) {
