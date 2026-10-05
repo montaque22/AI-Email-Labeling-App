@@ -2838,8 +2838,9 @@ function InboxPage({
   ]);
 
   const filteredMessages = messages;
-  const committedMessages = filteredMessages.filter((message) => Boolean(message.commitment));
-  const regularMessages = filteredMessages.filter((message) => !message.commitment);
+  const animatedMessages = useAnimatedInboxMessages(filteredMessages);
+  const committedMessages = animatedMessages.filter((row) => Boolean(row.message.commitment));
+  const regularMessages = animatedMessages.filter((row) => !row.message.commitment);
   const selectedLabel = labels.find((label) => label.id === selectedLabelId) ?? null;
   const allLabelCount = getInboxAllLabelCount(labels, labelCounts);
   const unemailableLabel = labels.find((label) => label.systemKey === "unemailable" || label.name.toLowerCase() === "unemailable") ?? null;
@@ -4618,7 +4619,7 @@ function InboxPage({
               </div>
               {isLoading ? (
                 <InboxLoadingProgress completed={messageLoadProgress.completed} total={messageLoadProgress.total} />
-              ) : filteredMessages.length === 0 ? (
+              ) : animatedMessages.length === 0 ? (
                 <p className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
                   {isInboxSearchActive
                     ? "No emails matched that search."
@@ -4631,8 +4632,9 @@ function InboxPage({
                       Commitments
                     </div>
                   ) : null}
-                  {committedMessages.map((message) => (
+                  {committedMessages.map(({ isExiting, message }) => (
                     <InboxMessageRow
+                      isExiting={isExiting}
                       isEditMode={isMobileEditMode}
                       isDeleting={deletingMessageKeys.includes(getInboxMessageKey(message))}
                       isSelected={selectedMessageKeys.includes(getInboxMessageKey(message))}
@@ -4648,8 +4650,9 @@ function InboxPage({
                       Other emails
                     </div>
                   ) : null}
-                  {regularMessages.map((message) => (
+                  {regularMessages.map(({ isExiting, message }) => (
                     <InboxMessageRow
+                      isExiting={isExiting}
                       isEditMode={isMobileEditMode}
                       isDeleting={deletingMessageKeys.includes(getInboxMessageKey(message))}
                       isSelected={selectedMessageKeys.includes(getInboxMessageKey(message))}
@@ -6134,6 +6137,7 @@ function InboxMobileLabelPicker({
 }
 
 function InboxMessageRow({
+  isExiting,
   isEditMode,
   isDeleting,
   isSelected,
@@ -6142,6 +6146,7 @@ function InboxMessageRow({
   onOpen,
   onToggle,
 }: {
+  isExiting: boolean;
   isEditMode: boolean;
   isDeleting: boolean;
   isSelected: boolean;
@@ -6217,8 +6222,9 @@ function InboxMessageRow({
   return (
     <div
       aria-busy={isDeleting}
+      data-exiting={isExiting ? "true" : "false"}
       className={cn(
-        "relative select-none border-b border-zinc-200 bg-white/45 transition last:border-b-0 hover:bg-white/80 md:bg-transparent",
+        "inbox-message-row relative select-none overflow-hidden border-b border-zinc-200 bg-white/45 transition last:border-b-0 hover:bg-white/80 md:bg-transparent",
         isDeleting ? "pointer-events-none opacity-60" : null,
       )}
     >
@@ -6354,6 +6360,78 @@ function InboxAutomationIndicator({ count }: { count: number }) {
       </span>
     </Tooltip>
   );
+}
+
+type AnimatedInboxMessageRow = {
+  isExiting: boolean;
+  key: string;
+  message: InboxMessage;
+};
+
+function useAnimatedInboxMessages(messages: InboxMessage[]) {
+  const [rows, setRows] = useState<AnimatedInboxMessageRow[]>(() =>
+    messages.map((message) => ({
+      isExiting: false,
+      key: getInboxMessageKey(message),
+      message,
+    })),
+  );
+  const exitTimersRef = useRef<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    const incomingByKey = new Map(messages.map((message) => [getInboxMessageKey(message), message]));
+    const seenKeys = new Set<string>();
+
+    setRows((currentRows) => {
+      const nextRows = currentRows.map((row) => {
+        const incomingMessage = incomingByKey.get(row.key);
+        if (incomingMessage) {
+          seenKeys.add(row.key);
+          const timer = exitTimersRef.current.get(row.key);
+          if (timer) {
+            window.clearTimeout(timer);
+            exitTimersRef.current.delete(row.key);
+          }
+          return {
+            ...row,
+            isExiting: false,
+            message: incomingMessage,
+          };
+        }
+
+        if (!row.isExiting && !exitTimersRef.current.has(row.key)) {
+          const timer = window.setTimeout(() => {
+            exitTimersRef.current.delete(row.key);
+            setRows((latestRows) => latestRows.filter((latestRow) => latestRow.key !== row.key));
+          }, 230);
+          exitTimersRef.current.set(row.key, timer);
+        }
+
+        return {
+          ...row,
+          isExiting: true,
+        };
+      });
+
+      for (const message of messages) {
+        const key = getInboxMessageKey(message);
+        if (!seenKeys.has(key)) {
+          nextRows.push({ isExiting: false, key, message });
+        }
+      }
+
+      return nextRows;
+    });
+  }, [messages]);
+
+  useEffect(() => () => {
+    for (const timer of exitTimersRef.current.values()) {
+      window.clearTimeout(timer);
+    }
+    exitTimersRef.current.clear();
+  }, []);
+
+  return rows;
 }
 
 function GlassCheckbox({

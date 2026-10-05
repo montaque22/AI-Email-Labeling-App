@@ -164,6 +164,18 @@ select,
   bottom: 11rem;
 }
 
+.inbox-message-row {
+  max-height: 11rem;
+  animation: inbox-message-row-enter 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  transform-origin: center top;
+  will-change: opacity, transform, max-height;
+}
+
+.inbox-message-row[data-exiting="true"] {
+  pointer-events: none;
+  animation: inbox-message-row-exit 220ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
 @media (min-width: 768px) {
   .inbox-floating-actions,
   .inbox-floating-compose {
@@ -181,6 +193,41 @@ select,
 
   .emailable-background-tasks-visible .inbox-floating-ai {
     bottom: 12rem;
+  }
+}
+
+@keyframes inbox-message-row-enter {
+  from {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(6px) scale(0.995);
+  }
+
+  to {
+    max-height: 11rem;
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes inbox-message-row-exit {
+  from {
+    max-height: 11rem;
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  to {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-5px) scale(0.985);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inbox-message-row,
+  .inbox-message-row[data-exiting="true"] {
+    animation: none;
   }
 }
 

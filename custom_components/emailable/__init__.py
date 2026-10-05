@@ -9,13 +9,14 @@ from homeassistant.helpers import aiohttp_client
 from .api import EmailableApiClient
 from .const import CONF_API_KEY, CONF_BASE_URL, DOMAIN
 
-PLATFORMS: list[str] = []
+PLATFORMS: list[str] = ["sensor"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = aiohttp_client.async_get_clientsession(hass)
     client = EmailableApiClient(session, entry.data[CONF_BASE_URL], entry.data[CONF_API_KEY])
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = client
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def get_prompts(call: ServiceCall) -> None:
         response = await client.get_prompts()
@@ -33,19 +34,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         response = await client.query_email_rules(dict(call.data))
         hass.bus.async_fire(f"{DOMAIN}_response", {"action": "query_email_rules", "response": response})
 
+    async def send_email(call: ServiceCall) -> None:
+        payload = dict(call.data)
+        account_entity = payload.pop("accountEntity", "")
+        if account_entity and not payload.get("accountEmail"):
+            state = hass.states.get(account_entity)
+            if state:
+                payload["accountEmail"] = state.attributes.get("email") or state.state
+        response = await client.send_email(payload)
+        hass.bus.async_fire(f"{DOMAIN}_response", {"action": "send_email", "response": response})
+
     hass.services.async_register(DOMAIN, "get_prompts", get_prompts)
     hass.services.async_register(DOMAIN, "create_draft_reply", create_draft_reply, schema=CREATE_DRAFT_REPLY_SCHEMA)
     hass.services.async_register(DOMAIN, "add_labels_on_email", add_labels_on_email, schema=ADD_LABELS_ON_EMAIL_SCHEMA)
     hass.services.async_register(DOMAIN, "query_email_rules", query_email_rules, schema=QUERY_EMAIL_RULES_SCHEMA)
+    hass.services.async_register(DOMAIN, "send_email", send_email, schema=SEND_EMAIL_SCHEMA)
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not unload_ok:
+        return False
+
     hass.data[DOMAIN].pop(entry.entry_id, None)
 
     if not hass.data[DOMAIN]:
-        for service in ["get_prompts", "create_draft_reply", "add_labels_on_email", "query_email_rules"]:
+        for service in ["get_prompts", "create_draft_reply", "add_labels_on_email", "query_email_rules", "send_email"]:
             hass.services.async_remove(DOMAIN, service)
 
     return True
@@ -78,5 +94,18 @@ QUERY_EMAIL_RULES_SCHEMA = vol.Schema(
     {
         vol.Required("query"): dict,
         vol.Optional("limit"): vol.Coerce(int),
+    }
+)
+
+SEND_EMAIL_SCHEMA = vol.Schema(
+    {
+        vol.Optional("accountEntity", default=""): str,
+        vol.Optional("accountEmail", default=""): str,
+        vol.Required("to"): vol.Any(str, [str]),
+        vol.Optional("cc", default=""): vol.Any(str, [str]),
+        vol.Optional("bcc", default=""): vol.Any(str, [str]),
+        vol.Required("subject"): str,
+        vol.Required("body"): str,
+        vol.Optional("bodyFormat", default="plain_text"): vol.In(["plain_text", "markdown", "html"]),
     }
 )

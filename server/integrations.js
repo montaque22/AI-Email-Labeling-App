@@ -19,6 +19,7 @@ import {
   searchImapInboxMessages,
   searchImapEmailContexts,
   searchRecentImapEmailContexts,
+  sendImapComposeMessage,
   moveImapMessageToFolders,
 } from "./imap-provider.js";
 import { ensureLabelSyncedToAccount } from "./label-sync.js";
@@ -772,6 +773,27 @@ export function registerIntegrationRoutes(app) {
     }
   });
 
+  app.get("/api/integrations/email-accounts", requireApiKey, async (req, res) => {
+    try {
+      const accounts = await getConnectedEmailAccounts(req.integrationUser.id);
+      const result = {
+        accounts: accounts.map((account) => ({
+          id: account.id,
+          email: account.email,
+          provider: account.provider,
+          displayName: account.displayName || account.email,
+        })),
+      };
+      await logEndpointCall(req.integrationUser.id, "GET /api/integrations/email-accounts", {}, "success", {
+        count: result.accounts.length,
+      });
+      res.json(result);
+    } catch (error) {
+      await logEndpointCall(req.integrationUser.id, "GET /api/integrations/email-accounts", {}, "error", { error: error.message });
+      handleError(res, error);
+    }
+  });
+
   app.post("/api/integrations/email-rules/query", requireApiKey, async (req, res) => {
     const query = buildEmailRuleQuery(req.body?.query ?? req.body);
 
@@ -861,6 +883,24 @@ export function registerIntegrationRoutes(app) {
       res.status(201).json(draftResponse);
     } catch (error) {
       await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/drafts/reply", req.body, "error", { error: error.message });
+      handleProviderError(res, error);
+    }
+  });
+
+  app.post("/api/integrations/email/send", requireApiKey, async (req, res) => {
+    const input = parseSendEmailInput(req.body);
+
+    if (!input.ok) {
+      res.status(400).json({ error: input.error });
+      return;
+    }
+
+    try {
+      const result = await sendIntegrationEmail(req.integrationUser.id, input.email);
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/send", req.body, "success", result);
+      res.status(201).json(result);
+    } catch (error) {
+      await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/send", req.body, "error", { error: error.message });
       handleProviderError(res, error);
     }
   });
@@ -2395,6 +2435,320 @@ export function parseDraftInput(body) {
   }
 
   return { ok: true, accountEmail, emailId, to, subject, bodyText, bodyHtml, replyAll };
+}
+
+function parseSendEmailInput(body) {
+  const accountEmail = firstNonEmptyString(body?.accountEmail, body?.fromAccount, body?.from_account).toLowerCase();
+  const to = normalizeRecipientInput(body?.to);
+  const cc = normalizeRecipientInput(body?.cc);
+  const bcc = normalizeRecipientInput(body?.bcc);
+  const subject = firstNonEmptyString(body?.subject);
+  const bodyFormat = normalizeBodyFormat(body?.bodyFormat ?? body?.body_format);
+  const rawBody = typeof body?.body === "string"
+    ? body.body
+    : typeof body?.message === "string"
+      ? body.message
+      : "";
+  const suppliedBodyText = typeof body?.bodyText === "string" ? body.bodyText : "";
+  const suppliedBodyHtml = typeof body?.bodyHtml === "string" ? body.bodyHtml : "";
+  const replyToEmailId = firstNonEmptyString(body?.replyToEmailId, body?.reply_to_email_id);
+  const threadId = firstNonEmptyString(body?.threadId, body?.thread_id);
+
+  if (!accountEmail) {
+    return { ok: false, error: "accountEmail is required" };
+  }
+  if (!to) {
+    return { ok: false, error: "to is required" };
+  }
+  if (!subject) {
+    return { ok: false, error: "subject is required" };
+  }
+
+  const renderedBody = renderEmailBodyForFormat({
+    body: rawBody,
+    bodyFormat,
+    bodyHtml: suppliedBodyHtml,
+    bodyText: suppliedBodyText,
+  });
+
+  if (!renderedBody.bodyText.trim() && !renderedBody.bodyHtml.trim()) {
+    return { ok: false, error: "body is required" };
+  }
+
+  return {
+    ok: true,
+    email: {
+      accountEmail,
+      bcc,
+      bodyFormat,
+      bodyHtml: renderedBody.bodyHtml,
+      bodyText: renderedBody.bodyText,
+      cc,
+      replyToEmailId,
+      subject,
+      threadId,
+      to,
+    },
+  };
+}
+
+async function sendIntegrationEmail(userId, input) {
+  const account = await getUserEmailAccount(userId, input.accountEmail);
+  if (!account) {
+    const error = new Error("Email account not found for this API key");
+    error.status = 404;
+    throw error;
+  }
+
+  let sent;
+  if (account.provider === "gmail") {
+    const accessToken = await getValidEmailAccountAccessToken(account);
+    sent = await sendGmailIntegrationEmail({ accessToken, account, input });
+  } else if (isImapBackedProvider(account.provider)) {
+    const accessToken = await getImapAccessToken(account);
+    sent = await sendImapComposeMessage({ account, input: { ...input, attachments: [] }, accessToken });
+  } else {
+    const error = new Error(`${account.provider} sending is not implemented yet`);
+    error.status = 501;
+    throw error;
+  }
+
+  const messageId = sent?.id ?? crypto.randomUUID();
+  await upsertEmailIndexEntry(userId, {
+    emailAccountId: account.id,
+    accountEmail: account.email,
+    provider: account.provider,
+    emailId: messageId,
+    threadId: sent?.threadId ?? input.threadId ?? messageId,
+    mailbox: "sent",
+    direction: "sent",
+    fromEmail: account.email,
+    fromName: account.metadata?.displayName || account.email,
+    toEmails: input.to,
+    subject: input.subject,
+    snippet: input.bodyText.slice(0, 300),
+    labels: ["Sent"],
+    receivedAt: new Date(),
+    isRead: true,
+    hasAttachments: false,
+    respondingToEmailId: input.replyToEmailId || null,
+    metadata: {
+      bodyFormat: input.bodyFormat,
+      sendType: input.replyToEmailId ? "reply" : "sent",
+      source: "integration",
+    },
+  });
+
+  await emitWebhookEvent(userId, "email.sent", {
+    accountEmail: account.email,
+    body: { html: input.bodyHtml, text: input.bodyText },
+    from: account.email,
+    messageId,
+    provider: account.provider,
+    subject: input.subject,
+    threadId: sent?.threadId ?? null,
+    to: splitCommaAddressList(input.to),
+  });
+  await logSystemEvent(userId, {
+    category: "email",
+    eventName: "email.sent",
+    status: "success",
+    message: `Email sent from ${account.email}.`,
+    payload: {
+      accountEmail: account.email,
+      provider: account.provider,
+      messageId,
+      subject: input.subject,
+      to: splitCommaAddressList(input.to),
+    },
+  });
+
+  return {
+    accountEmail: account.email,
+    messageId,
+    provider: account.provider,
+    subject: input.subject,
+    threadId: sent?.threadId ?? null,
+    to: splitCommaAddressList(input.to),
+  };
+}
+
+async function sendGmailIntegrationEmail({ accessToken, account, input }) {
+  const original = input.replyToEmailId ? await fetchGmailMessageMetadata(accessToken, input.replyToEmailId) : null;
+  const raw = buildGmailIntegrationMessage(account.email, input, original);
+  const response = await providerFetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", accessToken, {
+    method: "POST",
+    body: JSON.stringify({
+      raw,
+      ...(original?.threadId ? { threadId: original.threadId } : input.threadId ? { threadId: input.threadId } : {}),
+    }),
+  });
+
+  return response.json();
+}
+
+function buildGmailIntegrationMessage(from, input, original = null) {
+  const originalHeaders = original ? getGmailHeaders(original) : {};
+  const originalMessageId = originalHeaders["message-id"] || "";
+  const references = [originalHeaders.references, originalMessageId].filter(Boolean).join(" ");
+  const headers = [
+    `From: ${from}`,
+    `To: ${input.to}`,
+    input.cc ? `Cc: ${input.cc}` : null,
+    input.bcc ? `Bcc: ${input.bcc}` : null,
+    `Subject: ${input.subject}`,
+    originalMessageId ? `In-Reply-To: ${originalMessageId}` : null,
+    references ? `References: ${references}` : null,
+    "MIME-Version: 1.0",
+  ].filter(Boolean);
+
+  if (input.bodyHtml.trim()) {
+    const boundary = `emailable-${crypto.randomUUID()}`;
+    return base64UrlEncode([
+      ...headers,
+      `Content-Type: multipart/alternative; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      input.bodyText,
+      `--${boundary}`,
+      "Content-Type: text/html; charset=UTF-8",
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      input.bodyHtml,
+      `--${boundary}--`,
+      "",
+    ].join("\r\n"));
+  }
+
+  return base64UrlEncode([
+    ...headers,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    input.bodyText,
+  ].join("\r\n"));
+}
+
+function renderEmailBodyForFormat({ body, bodyFormat, bodyHtml, bodyText }) {
+  if (bodyHtml.trim()) {
+    return { bodyHtml, bodyText: bodyText.trim() ? bodyText : htmlToPlainText(bodyHtml) };
+  }
+
+  const source = bodyText.trim() ? bodyText : body;
+  if (bodyFormat === "html") {
+    return { bodyHtml: source, bodyText: htmlToPlainText(source) };
+  }
+  if (bodyFormat === "markdown") {
+    return { bodyHtml: markdownToEmailHtml(source), bodyText: source };
+  }
+  return { bodyHtml: plainTextToEmailHtml(source), bodyText: source };
+}
+
+function normalizeBodyFormat(value) {
+  const format = String(value || "plain_text").trim().toLowerCase().replace("-", "_");
+  return ["plain_text", "markdown", "html"].includes(format) ? format : "plain_text";
+}
+
+function normalizeRecipientInput(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean).join(", ");
+  }
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function splitCommaAddressList(value) {
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function plainTextToEmailHtml(text) {
+  return String(text || "")
+    .split(/\n{2,}/)
+    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`)
+    .join("\n");
+}
+
+function markdownToEmailHtml(markdown) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let listOpen = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const listMatch = trimmed.match(/^[-*]\s+(.+)$/);
+    if (listMatch) {
+      if (!listOpen) {
+        html.push("<ul>");
+        listOpen = true;
+      }
+      html.push(`<li>${formatInlineMarkdown(listMatch[1])}</li>`);
+      continue;
+    }
+
+    if (listOpen) {
+      html.push("</ul>");
+      listOpen = false;
+    }
+
+    if (!trimmed) {
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      html.push(`<h${level}>${formatInlineMarkdown(heading[2])}</h${level}>`);
+    } else {
+      html.push(`<p>${formatInlineMarkdown(trimmed)}</p>`);
+    }
+  }
+
+  if (listOpen) {
+    html.push("</ul>");
+  }
+
+  return html.join("\n");
+}
+
+function formatInlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2">$1</a>');
+}
+
+function htmlToPlainText(html) {
+  return String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .trim();
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 async function resolveAppLabelsByName(userId, labelsApplied) {

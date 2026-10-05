@@ -277,6 +277,7 @@ export async function sendImapComposeMessage({ account, input, accessToken = "" 
       bcc: parseAddressList(input.bcc || ""),
       subject: input.subject || "",
       text: input.bodyText || "",
+      html: input.bodyHtml || undefined,
       attachments: normalizeComposeAttachments(input.attachments).map((attachment) => ({
         filename: attachment.filename,
         contentType: attachment.type,
@@ -720,8 +721,8 @@ function buildDraftMessage(from, input, original) {
 function buildComposeMessage(from, input) {
   return buildMimeMessage({
     attachments: input.attachments,
-    body: input.bodyText || "",
-    contentType: "text/plain",
+    body: input.bodyHtml || input.bodyText || "",
+    contentType: input.bodyHtml ? "text/html" : "text/plain",
     from,
     subject: input.subject || "",
     to: input.to,

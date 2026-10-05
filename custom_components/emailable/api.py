@@ -12,6 +12,9 @@ class EmailableApiClient:
     async def get_prompts(self) -> dict:
         return await self._request("GET", "/api/integrations/core-content")
 
+    async def get_email_accounts(self) -> dict:
+        return await self._request("GET", "/api/integrations/email-accounts")
+
     async def create_draft_reply(self, payload: dict) -> dict:
         return await self._request("POST", "/api/integrations/email/drafts/reply", json=payload)
 
@@ -20,6 +23,9 @@ class EmailableApiClient:
 
     async def query_email_rules(self, payload: dict) -> dict:
         return await self._request("POST", "/api/integrations/email-rules/query", json=payload)
+
+    async def send_email(self, payload: dict) -> dict:
+        return await self._request("POST", "/api/integrations/email/send", json=payload)
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
         headers = kwargs.pop("headers", {})

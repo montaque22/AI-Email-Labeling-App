@@ -85,3 +85,71 @@ query_email_rules:
           min: 1
           max: 200
           mode: box
+
+send_email:
+  name: Send email
+  description: Send a new email from a connected Emailable account. Body content can be plain text, markdown, or HTML.
+  fields:
+    accountEntity:
+      name: From account entity
+      description: Choose an Emailable email account entity. This is the easiest option when the integration has loaded account sensors.
+      required: false
+      selector:
+        entity:
+          integration: emailable
+          domain: sensor
+    accountEmail:
+      name: From account
+      description: Optional manual fallback. Use the connected account email address exactly as it appears in Emailable.
+      required: false
+      example: "user@example.com"
+      selector:
+        text:
+          type: email
+    to:
+      name: To
+      description: One recipient, a comma-separated list, or a YAML list of recipient email addresses.
+      required: true
+      example: "person@example.com"
+      selector:
+        text:
+    cc:
+      name: CC
+      description: Optional CC recipients as a comma-separated string or YAML list.
+      required: false
+      selector:
+        text:
+    bcc:
+      name: BCC
+      description: Optional BCC recipients as a comma-separated string or YAML list.
+      required: false
+      selector:
+        text:
+    subject:
+      name: Subject
+      description: Email subject line.
+      required: true
+      selector:
+        text:
+    bodyFormat:
+      name: Body format
+      description: Choose how Emailable should render the body before sending.
+      required: false
+      default: plain_text
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Plain text
+              value: plain_text
+            - label: Markdown
+              value: markdown
+            - label: HTML
+              value: html
+    body:
+      name: Body
+      description: Email body. Markdown is converted to HTML while keeping a plain-text fallback.
+      required: true
+      selector:
+        text:
+          multiline: true
