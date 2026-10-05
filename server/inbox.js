@@ -439,9 +439,10 @@ async function listSpecialMailboxMessages(userId, query, options) {
 }
 
 async function listInboxMessages(userId, query) {
-  const label = await getInboxLabel(userId, query.labelId);
+  const isAllLabels = query.labelId === "__all__";
+  const label = isAllLabels ? null : await getInboxLabel(userId, query.labelId);
 
-  if (!label) {
+  if (!isAllLabels && !label) {
     const error = new Error("Label not found");
     error.status = 404;
     throw error;
@@ -450,7 +451,7 @@ async function listInboxMessages(userId, query) {
   const result = await listEmailIndexEntries(userId, {
     accountIds: query.accountIds,
     direction: "inbox",
-    labelName: label.name,
+    labelName: label?.name,
     archivedOnly: Boolean(query.archivedOnly),
     pageToken: query.pageToken,
     search: query.search,
@@ -459,7 +460,9 @@ async function listInboxMessages(userId, query) {
   });
 
   return {
-    label: { id: label.id, name: label.name, description: label.description },
+    label: label
+      ? { id: label.id, name: label.name, description: label.description }
+      : { id: "__all__", name: "All", description: "All indexed inbox messages." },
     messages: await attachRuleStatus(userId, result.messages),
     nextPageToken: result.nextPageToken,
     skippedAccounts: [],

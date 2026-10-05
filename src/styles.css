@@ -136,11 +136,52 @@ select,
 }
 
 .inbox-floating-actions {
+  bottom: 1.25rem;
   animation: inbox-floating-actions-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  transition: bottom 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .inbox-floating-actions[data-state="closed"] {
   animation: inbox-floating-actions-out 180ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.inbox-floating-compose {
+  bottom: 1.25rem;
+  transition: bottom 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.inbox-floating-ai {
+  bottom: 6.25rem;
+  transition: bottom 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.emailable-background-tasks-visible .inbox-floating-actions,
+.emailable-background-tasks-visible .inbox-floating-compose {
+  bottom: 6rem;
+}
+
+.emailable-background-tasks-visible .inbox-floating-ai {
+  bottom: 11rem;
+}
+
+@media (min-width: 768px) {
+  .inbox-floating-actions,
+  .inbox-floating-compose {
+    bottom: 2rem;
+  }
+
+  .inbox-floating-ai {
+    bottom: 7rem;
+  }
+
+  .emailable-background-tasks-visible .inbox-floating-actions,
+  .emailable-background-tasks-visible .inbox-floating-compose {
+    bottom: 7rem;
+  }
+
+  .emailable-background-tasks-visible .inbox-floating-ai {
+    bottom: 12rem;
+  }
 }
 
 @keyframes inbox-floating-actions-in {

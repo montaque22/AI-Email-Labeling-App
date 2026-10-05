@@ -1280,6 +1280,13 @@ function BackgroundTaskDrawer({ user }: { user: AuthUser | null }) {
     }
   }, [visibleTasks.length]);
 
+  useEffect(() => {
+    document.body.classList.toggle("emailable-background-tasks-visible", Boolean(user && visibleTasks.length > 0));
+    return () => {
+      document.body.classList.remove("emailable-background-tasks-visible");
+    };
+  }, [user, visibleTasks.length]);
+
   if (!user || visibleTasks.length === 0) {
     return null;
   }
@@ -3113,6 +3120,59 @@ function InboxPage({
 
     try {
       const endpoint = isSearchActive ? "/api/inbox/search" : inboxMode === "drafts" ? "/api/inbox/drafts" : inboxMode === "sent" ? "/api/inbox/sent" : "/api/inbox/messages";
+      const usesIndexedPagination = inboxMode !== "drafts";
+      if (usesIndexedPagination) {
+        if (reset) {
+          setMessageLoadProgress({ completed: 0, total: 1 });
+        }
+        const params = buildInboxMessageParams({
+          accountIds: activeAccountIds,
+          inboxMode,
+          labelId: isSearchActive || inboxMode === "sent" ? "" : selectedLabelId,
+          pageToken: pageTokenToUse,
+          search: isSearchActive ? activeSearch : sentSearch,
+          sort,
+        });
+        const response = await fetchNoStore(`${endpoint}?${params.toString()}`);
+        const data = await response.json();
+
+        if (messageRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error ?? `Could not load ${getInboxModeDescription(inboxMode)}.`);
+        }
+
+        const loadedMessages = (data.messages ?? []) as InboxMessage[];
+        const removedKeys = removedMessageKeysRef.current;
+        const visibleLoadedMessages = removedKeys.size > 0
+          ? loadedMessages.filter((message) => !removedKeys.has(getInboxMessageKey(message)))
+          : loadedMessages;
+
+        setMessages((current) => {
+          const baseMessages = reset
+            ? []
+            : removedKeys.size > 0
+              ? current.filter((message) => !removedKeys.has(getInboxMessageKey(message)))
+              : current;
+          return sortInboxMessagesForClient(
+            mergeInboxMessages(baseMessages, visibleLoadedMessages),
+            sort,
+          );
+        });
+        setNextPageToken(data.nextPageToken ?? null);
+        if (reset) {
+          setSelectedMessageKeys([]);
+          setMobilePullDistance(0);
+          mobilePullActiveRef.current = false;
+          mobilePullReadyHapticRef.current = false;
+          mobilePullStartYRef.current = null;
+          void refreshPwaUnreadBadge();
+        }
+        return;
+      }
+
       const isAllLabels = !isSearchActive && isLabelFilteredInboxMode(inboxMode) && selectedLabelId === INBOX_ALL_LABEL_ID;
       const currentPageState = reset ? {} : decodeInboxPageToken(pageTokenToUse);
       const targets = reset
@@ -4268,7 +4328,7 @@ function InboxPage({
 
       {!isMobileEditMode ? <Button
         aria-label="Compose email"
-        className="fixed bottom-24 right-5 z-40 h-14 w-14 rounded-full border-white/70 bg-white/70 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85 md:bottom-28"
+        className="inbox-floating-compose fixed right-5 z-40 h-14 w-14 rounded-full border-white/70 bg-white/70 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85"
         onClick={() => {
           openComposeDraft(null);
         }}
@@ -4281,7 +4341,7 @@ function InboxPage({
       {isByoAiActive && !isMobileEditMode ? (
         <Button
           aria-label="Open AI helper"
-          className="fixed bottom-44 right-5 z-[120] flex h-14 w-14 rounded-full border-white/70 bg-white/70 text-zinc-900 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85 md:bottom-48"
+          className="inbox-floating-ai fixed right-5 z-[120] flex h-14 w-14 rounded-full border-white/70 bg-white/70 text-zinc-900 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85"
           onClick={() => setIsAiHelperOpen(true)}
           size="icon"
           type="button"
@@ -4291,7 +4351,7 @@ function InboxPage({
         </Button>
       ) : null}
       {isBulkActionBarRendered ? (
-        <div className="inbox-floating-actions fixed bottom-24 left-1/2 z-40 flex items-center gap-1 rounded-full border border-white/70 bg-white/70 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:bottom-28" data-state={hasSelectedMessages ? "open" : "closed"}>
+        <div className="inbox-floating-actions fixed left-1/2 z-40 flex items-center gap-1 rounded-full border border-white/70 bg-white/70 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl" data-state={hasSelectedMessages ? "open" : "closed"}>
           <span className="select-none whitespace-nowrap px-3 text-sm font-medium text-zinc-600" aria-live="polite">
             {selectedMessages.length} selected
           </span>
