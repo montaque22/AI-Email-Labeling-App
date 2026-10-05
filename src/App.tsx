@@ -855,11 +855,12 @@ type BackgroundTask = {
   type: string;
   title: string;
   message: string;
-  status: "running" | "success" | "error";
+  status: "running" | "success" | "warning" | "error";
   total: number;
   completed: number;
   failed: number;
-  errors: { message: string }[];
+  errors: { message: string; description?: string }[];
+  description?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -1267,9 +1268,10 @@ function BackgroundTaskDrawer({ user }: { user: AuthUser | null }) {
     };
   }, [user?.email]);
 
-  const visibleTasks = tasks.filter((task) => task.status === "running" || task.status === "success" || task.status === "error");
+  const visibleTasks = tasks.filter((task) => task.status === "running" || task.status === "success" || task.status === "warning" || task.status === "error");
   const runningCount = visibleTasks.filter((task) => task.status === "running").length;
   const errorCount = visibleTasks.filter((task) => task.status === "error").length;
+  const warningCount = visibleTasks.filter((task) => task.status === "warning").length;
   const successCount = visibleTasks.filter((task) => task.status === "success").length;
 
   useEffect(() => {
@@ -1306,10 +1308,15 @@ function BackgroundTaskDrawer({ user }: { user: AuthUser | null }) {
           onClick={() => setIsOpen(true)}
           className="relative rounded-full border border-white/70 bg-white/85 px-4 py-2 text-sm font-medium text-zinc-800 shadow-lg backdrop-blur-xl transition hover:bg-white"
         >
-          {runningCount > 0 ? "Background tasks" : errorCount > 0 ? "Task needs attention" : "Task complete"}
-          {errorCount > 0 ? (
-            <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-red-600 px-1 text-[11px] font-semibold text-white">
-              {errorCount}
+          {runningCount > 0 ? "Background tasks" : errorCount > 0 || warningCount > 0 ? "Task needs attention" : "Task complete"}
+          {errorCount + warningCount > 0 ? (
+            <span
+              className={cn(
+                "absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full px-1 text-[11px] font-semibold text-white",
+                errorCount > 0 ? "bg-red-600" : "bg-amber-500",
+              )}
+            >
+              {errorCount + warningCount}
             </span>
           ) : null}
         </button>
@@ -1327,6 +1334,7 @@ function BackgroundTaskDrawer({ user }: { user: AuthUser | null }) {
               <p className="text-xs text-zinc-500">
                 {runningCount > 0 ? `${runningCount} running` : `${successCount} complete`}
                 {errorCount > 0 ? `, ${errorCount} error${errorCount === 1 ? "" : "s"}` : ""}
+                {warningCount > 0 ? `, ${warningCount} warning${warningCount === 1 ? "" : "s"}` : ""}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -1363,22 +1371,28 @@ function BackgroundTaskRow({ task }: { task: BackgroundTask }) {
   const done = Math.max(0, Number(task.completed ?? 0) + Number(task.failed ?? 0));
   const total = Math.max(0, Number(task.total ?? 0));
   const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : task.status === "running" ? 20 : 100;
-  const statusLabel = task.status === "running" ? "Running" : task.status === "error" ? "Error" : "Complete";
+  const statusLabel = task.status === "running" ? "Running" : task.status === "error" ? "Error" : task.status === "warning" ? "Warning" : "Complete";
+  const detailMessage = task.status === "error" || task.status === "warning"
+    ? task.errors?.[0]?.message || task.message
+    : task.message;
+  const description = task.description || task.errors?.[0]?.description || "";
 
   return (
     <div className="rounded-xl border border-white/70 bg-white/65 p-3 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-zinc-900">{task.title}</p>
-          <p className={cn("mt-1 text-xs", task.status === "error" ? "text-red-700" : "text-zinc-500")}>
-            {task.status === "error" && task.errors?.[0]?.message ? task.errors[0].message : task.message}
+          <p className={cn("mt-1 text-xs", task.status === "error" ? "text-red-700" : task.status === "warning" ? "text-amber-700" : "text-zinc-500")}>
+            {detailMessage}
           </p>
+          {description ? <p className="mt-2 text-xs leading-relaxed text-zinc-600">{description}</p> : null}
         </div>
         <span
           className={cn(
             "shrink-0 rounded-full px-2 py-1 text-[11px] font-medium",
             task.status === "running" && "bg-blue-50 text-blue-700",
             task.status === "success" && "bg-emerald-50 text-emerald-700",
+            task.status === "warning" && "bg-amber-50 text-amber-700",
             task.status === "error" && "bg-red-50 text-red-700",
           )}
         >
@@ -1389,7 +1403,7 @@ function BackgroundTaskRow({ task }: { task: BackgroundTask }) {
         <div
           className={cn(
             "h-full rounded-full transition-all",
-            task.status === "error" ? "bg-red-500" : task.status === "success" ? "bg-emerald-500" : "bg-blue-500",
+            task.status === "error" ? "bg-red-500" : task.status === "warning" ? "bg-amber-500" : task.status === "success" ? "bg-emerald-500" : "bg-blue-500",
           )}
           style={{ width: `${percent}%` }}
         />

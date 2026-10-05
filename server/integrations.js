@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { getRenderedCoreContent } from "./ai-prompts.js";
-import { completeBackgroundTask, createBackgroundTask, failBackgroundTask, updateBackgroundTask } from "./background-tasks.js";
+import { completeBackgroundTask, createBackgroundTask, failBackgroundTask, updateBackgroundTask, warnBackgroundTask } from "./background-tasks.js";
 import { ensureUnemailableSystemLabel, UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
 import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
@@ -2918,10 +2918,14 @@ function startReviewedRuleProviderApply(userId, { rule, reviewedRule, labelName,
         message: `Applied "${labelName}" to the provider email.`,
       });
     } catch (error) {
+      const providerMessageMissing = isProviderMessageNotFoundError(error);
+      const providerMissingDescription =
+        "This usually means the email was deleted or moved out of the connected account after Emailable created the pending rule. The reviewed rule is still saved and can still help future emails, but there was no provider email left to relabel.";
       const providerApply = {
         ok: false,
-        status: "error",
+        status: providerMessageMissing ? "warning" : "error",
         error: error.message || "Could not apply the selected label to the provider email.",
+        description: providerMessageMissing ? providerMissingDescription : "",
         lookupFailures: Array.isArray(error.lookupFailures) ? error.lookupFailures : [],
         failedAt: new Date().toISOString(),
       };
@@ -2929,10 +2933,11 @@ function startReviewedRuleProviderApply(userId, { rule, reviewedRule, labelName,
       await logSystemEvent(userId, {
         category: "email",
         eventName: "email_rule.review_apply_failed",
-        status: isProviderMessageNotFoundError(error) ? "warning" : "error",
+        status: providerMessageMissing ? "warning" : "error",
         message: "Rule was reviewed, but Emailable could not apply the selected label to the provider message.",
         payload: {
           accountEmail: rule.accountEmail ?? "",
+          description: providerApply.description,
           emailId: rule.emailId,
           error: providerApply.error,
           labelName,
@@ -2941,6 +2946,15 @@ function startReviewedRuleProviderApply(userId, { rule, reviewedRule, labelName,
           subject: rule.subject,
         },
       });
+      if (providerMessageMissing) {
+        updateBackgroundTask(userId, task.id, { completed: 1 });
+        warnBackgroundTask(userId, task.id, error, {
+          message: `Provider email was not found for "${labelName}".`,
+          description: providerMissingDescription,
+        });
+        return;
+      }
+
       updateBackgroundTask(userId, task.id, { failed: 1 });
       failBackgroundTask(userId, task.id, error, { message: `Could not apply "${labelName}" to the provider email.` });
     }

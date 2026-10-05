@@ -32,6 +32,7 @@ function serializeTask(task) {
     completed: task.completed,
     failed: task.failed,
     errors: task.errors,
+    description: task.description,
     result: task.result,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
@@ -51,6 +52,7 @@ export function createBackgroundTask(userId, { type, title, message = "", total 
     completed: 0,
     failed: 0,
     errors: [],
+    description: "",
     result: null,
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -89,6 +91,16 @@ export function failBackgroundTask(userId, taskId, error, { message = "Backgroun
     status: "error",
     message,
     errors: [{ message: errorMessage }],
+  });
+}
+
+export function warnBackgroundTask(userId, taskId, warning, { message = "Background task needs attention.", description = "" } = {}) {
+  const warningMessage = warning instanceof Error ? warning.message : String(warning || "Warning");
+  return updateBackgroundTask(userId, taskId, {
+    status: "warning",
+    message,
+    description,
+    errors: [{ message: warningMessage, description }],
   });
 }
 
