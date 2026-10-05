@@ -2084,7 +2084,7 @@ function AuthenticatedLayout({
 
   return (
     <div className="min-h-screen bg-transparent text-zinc-950">
-      <aside className={cn("fixed inset-y-0 left-0 hidden border-r border-white/60 bg-white/55 shadow-sm backdrop-blur-2xl transition-all md:flex md:flex-col", sidebarCollapsed ? "w-20" : "w-64")}>
+      <aside className={cn("fixed inset-y-0 left-0 hidden overflow-hidden border-r border-white/60 bg-white/55 shadow-sm backdrop-blur-2xl transition-all md:flex md:flex-col", sidebarCollapsed ? "w-20" : "w-64")}>
         <div className={cn("flex h-16 items-center border-b border-zinc-200 px-4", sidebarCollapsed ? "justify-start" : "justify-between gap-3")}>
           {!sidebarCollapsed ? (
           <div className="flex min-w-0 items-center gap-3">
@@ -2106,7 +2106,7 @@ function AuthenticatedLayout({
             </Button>
           )}
         </div>
-        <nav className={cn("flex-1 space-y-1 py-4", sidebarCollapsed ? "px-2" : "px-3")}>
+        <nav className={cn("min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain py-4", sidebarCollapsed ? "px-2" : "px-3")}>
           {renderNavSection("Email", emailNavItems, onNavigate, sidebarCollapsed)}
           <div className="my-3 border-t border-white/70" />
           {renderNavSection("Configurations", configurationNavItems, onNavigate, sidebarCollapsed)}
