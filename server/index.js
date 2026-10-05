@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { toNodeHandler } from "better-auth/node";
 import { auth, googleOAuthEnabled } from "./auth.js";
 import { ensureAiPromptsTable, registerAiPromptRoutes } from "./ai-prompts.js";
+import { registerBackgroundTaskRoutes } from "./background-tasks.js";
 import { ensureByoAiTables, registerByoAiRoutes } from "./byoai.js";
 import { ensureCalendarSubscriptionTables, registerCalendarSubscriptionRoutes } from "./calendar-subscriptions.js";
 import { dbPool } from "./db.js";
@@ -155,6 +156,7 @@ app.get("/api/db/health", async (_req, res) => {
 
 registerLabelRoutes(app);
 registerSettingsRoutes(app);
+registerBackgroundTaskRoutes(app);
 registerEmailAccountRoutes(app);
 registerInboxRoutes(app);
 registerIntegrationRoutes(app);
