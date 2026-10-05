@@ -4458,6 +4458,7 @@ function InboxPage({
           onArchiveMessages={archiveSelectedMessages}
           onDeleteMessages={deleteSelectedMessages}
           onOpenComposeDraft={openComposeDraft}
+          onOpenMessage={(message) => void openMessage(message)}
           privacyMode={privacyMode}
           selectedMessages={selectedMessages}
         />
@@ -4633,6 +4634,7 @@ function InboxAiHelperPanel({
   onArchiveMessages,
   onDeleteMessages,
   onOpenComposeDraft,
+  onOpenMessage,
   privacyMode,
   selectedMessages,
 }: {
@@ -4644,6 +4646,7 @@ function InboxAiHelperPanel({
   onArchiveMessages: (messages: InboxMessage[]) => Promise<void>;
   onDeleteMessages: (messages: InboxMessage[]) => Promise<void>;
   onOpenComposeDraft: (draft: Partial<InboxComposeDraft> | null) => void;
+  onOpenMessage: (message: InboxMessage) => Promise<void> | void;
   privacyMode: boolean;
   selectedMessages: InboxMessage[];
 }) {
@@ -4999,6 +5002,25 @@ function InboxAiHelperPanel({
     return latest?.affectedEmails?.map(affectedEmailToInboxMessage) ?? [];
   }
 
+  function shouldOpenLatestAffectedEmail(prompt: string) {
+    const normalized = prompt.toLowerCase().trim();
+    return isAffirmativeResponse(prompt) || /\b(open|show|view|read|see|content|full email|details?)\b/.test(normalized);
+  }
+
+  function getAffectedEmailSectionTitle(message: InboxAiChatMessage) {
+    if (message.pendingBulkAction === "delete") {
+      return "Emails to delete";
+    }
+    if (message.pendingBulkAction === "archive") {
+      return "Emails to archive";
+    }
+    return message.affectedEmails?.length === 1 ? "Email preview" : "Email previews";
+  }
+
+  function openAffectedEmail(email: NonNullable<InboxAiChatMessage["affectedEmails"]>[number]) {
+    void onOpenMessage(affectedEmailToInboxMessage(email));
+  }
+
   async function findBulkActionTargets(prompt: string) {
     const normalized = prompt.toLowerCase();
     const referencesSelected = /\b(selected|these|them|this|current)\b/.test(normalized);
@@ -5190,6 +5212,18 @@ function InboxAiHelperPanel({
       return;
     }
 
+    const latestAffectedMessages = getLatestAffectedMessagesFromChat();
+    if (latestAffectedMessages.length === 1 && shouldOpenLatestAffectedEmail(prompt)) {
+      const target = latestAffectedMessages[0];
+      void onOpenMessage(target);
+      addMessage({
+        affectedEmails: [summarizeAffectedEmail(target)],
+        role: "assistant",
+        text: `Opened "${target.subject || "the email"}". If it does not appear, click the email preview below.`,
+      });
+      return;
+    }
+
     const bulkAction = inferBulkEmailAction(prompt);
     if (bulkAction) {
       await prepareBulkEmailAction(prompt, bulkAction);
@@ -5374,13 +5408,19 @@ function InboxAiHelperPanel({
               {message.affectedEmails?.length ? (
                 <div className="mt-3 space-y-2">
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                    {message.pendingBulkAction === "delete" ? "Emails to delete" : "Emails to archive"}
+                    {getAffectedEmailSectionTitle(message)}
                   </p>
                   <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
                     {message.affectedEmails.map((email) => (
-                      <div
-                        className="rounded-lg border border-white/70 bg-white/70 px-3 py-2 text-xs text-zinc-600 shadow-sm"
+                      <button
+                        aria-label={`Open ${email.subject || "email"} from ${email.from || email.sender || "unknown sender"}`}
+                        className="block w-full rounded-lg border border-white/70 bg-white/70 px-3 py-2 text-left text-xs text-zinc-600 shadow-sm transition hover:border-blue-200 hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-300/70"
                         key={email.key}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openAffectedEmail(email);
+                        }}
+                        type="button"
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
@@ -5391,7 +5431,10 @@ function InboxAiHelperPanel({
                           </div>
                           <span className="shrink-0 text-[11px] text-zinc-400">{formatInboxListDate(email.date)}</span>
                         </div>
-                        <p className="mt-1 truncate text-zinc-500">{formatEmailForPrivacy(email.accountEmail, privacyMode)}</p>
+                        <div className="mt-1 flex items-center justify-between gap-2">
+                          <p className="min-w-0 truncate text-zinc-500">{formatEmailForPrivacy(email.accountEmail, privacyMode)}</p>
+                          <span className="shrink-0 text-[11px] font-medium text-blue-600">Open</span>
+                        </div>
                         {email.labels.length > 0 ? (
                           <div className="mt-2 flex flex-wrap gap-1">
                             {email.labels.slice(0, 3).map((label) => (
@@ -5406,7 +5449,7 @@ function InboxAiHelperPanel({
                             ) : null}
                           </div>
                         ) : null}
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </div>

@@ -2186,6 +2186,10 @@ function summarizeProviderLookupError(error) {
   return error.message || "lookup_failed";
 }
 
+function isProviderMessageNotFoundError(error) {
+  return error?.status === 404 && /email was not found|message not found|not found/i.test(String(error.message || ""));
+}
+
 function assertGmailAccountHasRequiredScopes(account) {
   const scopes = Array.isArray(account.scopes) ? account.scopes : [];
   if (!scopes.includes(GMAIL_MODIFY_SCOPE)) {
@@ -2836,28 +2840,66 @@ async function reviewOneRuleForBulk(userId, { emailId, targetLabel, labelResolve
 }
 
 async function markEmailRuleReviewed(userId, { rule, labelName, labelReasons, source, labelResolver = null }) {
-  const applied = await applySingleLabelToEmail(userId, {
-    emailId: rule.emailId,
-    subject: rule.subject,
-    labelName,
-    removeLabelNames: rule.labelsApplied ?? [],
-    source,
-    accountEmail: rule.accountEmail ?? "",
-    labelResolver,
-  });
+  let applied = null;
+  let providerApply = { ok: true };
+
+  try {
+    applied = await applySingleLabelToEmail(userId, {
+      emailId: rule.emailId,
+      subject: rule.subject,
+      labelName,
+      removeLabelNames: rule.labelsApplied ?? [],
+      source,
+      accountEmail: rule.accountEmail ?? "",
+      labelResolver,
+    });
+  } catch (error) {
+    if (!isProviderMessageNotFoundError(error)) {
+      throw error;
+    }
+
+    providerApply = {
+      ok: false,
+      error: error.message || "Email was not found in connected email accounts.",
+      lookupFailures: Array.isArray(error.lookupFailures) ? error.lookupFailures : [],
+    };
+    await logSystemEvent(userId, {
+      category: "email",
+      eventName: "email_rule.review_apply_failed",
+      status: "warning",
+      message: "Rule was reviewed, but Emailable could not find the provider message to apply the selected label.",
+      payload: {
+        accountEmail: rule.accountEmail ?? "",
+        emailId: rule.emailId,
+        labelName,
+        lookupFailures: providerApply.lookupFailures,
+        source,
+        subject: rule.subject,
+      },
+    });
+  }
+
   const normalizedReasons = normalizeLabelReasons([labelName], labelReasons ?? {});
+  const appliedAccountEmail = applied?.accountEmail || rule.accountEmail || "";
+  const providerApplyMetadata = providerApply.ok
+    ? { ok: true }
+    : {
+        ok: false,
+        error: providerApply.error,
+        lookupFailures: providerApply.lookupFailures,
+      };
   const result = await dbPool.query(
     `
       update email_rules
       set labels_applied = $3,
           is_pending = false,
           confidence = 1,
-          metadata = (metadata - 'reason' - 'userQuestion' - 'ruleSuggestion' - 'recommendedAction') || jsonb_build_object('labelReasons', $4::jsonb, 'accountEmail', $5::text),
+          metadata = (metadata - 'reason' - 'userQuestion' - 'ruleSuggestion' - 'recommendedAction') || jsonb_build_object('labelReasons', $4::jsonb, 'accountEmail', $5::text, 'providerApply', $6::jsonb),
           updated_at = now()
       where user_id = $1 and email_id = $2
       returning ${EMAIL_RULE_SELECT}
     `,
-    [userId, rule.emailId, [labelName], JSON.stringify(normalizedReasons), applied.accountEmail],
+    [userId, rule.emailId, [labelName], JSON.stringify(normalizedReasons), appliedAccountEmail, JSON.stringify(providerApplyMetadata)],
   );
 
   if (!result.rows[0]) {
