@@ -546,64 +546,86 @@ export async function searchRecentImapEmailContexts(
   }, accessToken);
 }
 
+// Shared lookup step for every "find this message by id" caller. Runs inside an
+// already-open session so a caller that needs both the match and the full context
+// pays for one IMAP connection and one search instead of two.
+async function findImapMessageMatchInSession(client, metadata, emailId, subject) {
+  const mailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
+  const found = await findImapMessage(client, mailbox, emailId);
+  if (!found) {
+    return null;
+  }
+
+  if (subject && normalizeSubject(found.subject) !== normalizeSubject(subject)) {
+    return null;
+  }
+
+  return { subject: found.subject, message: found };
+}
+
 export async function findImapMessageAccountMatch(account, emailId, subject, accessToken = "") {
+  return withImapClient(
+    account,
+    (client, metadata) => findImapMessageMatchInSession(client, metadata, emailId, subject),
+    accessToken,
+  );
+}
+
+// One connection, one search: returns both the account match and the full email
+// context for callers that would otherwise run the lookup twice.
+export async function findImapMessageWithContext(account, emailId, subject = "", accessToken = "") {
   return withImapClient(account, async (client, metadata) => {
-    const mailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
-    const found = await findImapMessage(client, mailbox, emailId);
-    if (!found) {
+    const match = await findImapMessageMatchInSession(client, metadata, emailId, subject);
+    if (!match) {
       return null;
     }
 
-    if (subject && normalizeSubject(found.subject) !== normalizeSubject(subject)) {
-      return null;
-    }
-
-    return { subject: found.subject, message: found };
+    const email = await buildImapEmailContextInSession(client, account, match.message);
+    return { match, email };
   }, accessToken);
 }
 
 export async function fetchImapEmailContextById(account, emailId, subject = "", accessToken = "") {
   return withImapClient(account, async (client, metadata) => {
-    const mailbox = metadata.defaultMailbox || DEFAULT_IMAP_MAILBOX;
-    const found = await findImapMessage(client, mailbox, emailId);
-    if (!found) {
+    const match = await findImapMessageMatchInSession(client, metadata, emailId, subject);
+    if (!match) {
       return null;
     }
 
-    if (subject && normalizeSubject(found.subject) !== normalizeSubject(subject)) {
-      return null;
-    }
-
-    await client.mailboxOpen(found.mailbox);
-    const message = await client.fetchOne(String(found.uid), {
-      uid: true,
-      envelope: true,
-      flags: true,
-      bodyStructure: true,
-      internalDate: true,
-      source: true,
-    }, { uid: true });
-    if (!message) {
-      return null;
-    }
-
-    const bodyText = extractTextFromRawMessage(message.source?.toString() ?? "");
-    return {
-      emailId: String(message.uid),
-      threadId: String(message.uid),
-      accountEmail: account.email,
-      provider: account.provider,
-      fromEmail: (message.envelope?.from ?? []).map(formatImapAddress).filter(Boolean).join(", "),
-      fromName: (message.envelope?.from ?? []).map((address) => address?.name).filter(Boolean).join(", "),
-      to: (message.envelope?.to ?? []).map(formatImapAddress).filter(Boolean).join(", "),
-      subject: message.envelope?.subject ?? "",
-      snippet: bodyText.slice(0, 300),
-      bodyText,
-      receivedAt: (message.internalDate ?? message.envelope?.date ?? new Date()).toISOString(),
-      isRead: hasImapFlag(message.flags, "\\Seen"),
-      hasAttachments: collectImapAttachments(message.bodyStructure).length > 0,
-    };
+    return buildImapEmailContextInSession(client, account, match.message);
   }, accessToken);
+}
+
+async function buildImapEmailContextInSession(client, account, found) {
+  await client.mailboxOpen(found.mailbox);
+  const message = await client.fetchOne(String(found.uid), {
+    uid: true,
+    envelope: true,
+    flags: true,
+    bodyStructure: true,
+    internalDate: true,
+    source: true,
+  }, { uid: true });
+  if (!message) {
+    return null;
+  }
+
+  const bodyText = extractTextFromRawMessage(message.source?.toString() ?? "");
+  return {
+    emailId: String(message.uid),
+    threadId: String(message.uid),
+    accountEmail: account.email,
+    provider: account.provider,
+    fromEmail: (message.envelope?.from ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+    fromName: (message.envelope?.from ?? []).map((address) => address?.name).filter(Boolean).join(", "),
+    to: (message.envelope?.to ?? []).map(formatImapAddress).filter(Boolean).join(", "),
+    subject: message.envelope?.subject ?? "",
+    snippet: bodyText.slice(0, 300),
+    bodyText,
+    receivedAt: (message.internalDate ?? message.envelope?.date ?? new Date()).toISOString(),
+    isRead: hasImapFlag(message.flags, "\\Seen"),
+    hasAttachments: collectImapAttachments(message.bodyStructure).length > 0,
+  };
 }
 
 async function ensureImapMailbox(client, name) {
