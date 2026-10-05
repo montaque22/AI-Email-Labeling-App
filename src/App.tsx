@@ -223,6 +223,9 @@ type BulkRuleReviewResult = {
   rules: EmailRule[];
   skipped: { emailId: string; reason: string }[];
   failed: { emailId: string; error: string }[];
+  // Rules the server ran out of time for. Distinct from failed: nothing was tried, so
+  // re-running the same selection is safe and is the expected next step.
+  notAttempted?: { emailId: string; reason: string }[];
 };
 
 type RuleListPayload = {
@@ -10269,7 +10272,7 @@ function RuleReviewPage({
       applyReviewedRulesToList(reviewedRules);
       closeBulkLabelPicker();
       setBulkMessage({
-        tone: (data.failed ?? []).length > 0 ? "warning" : "success",
+        tone: (data.failed ?? []).length > 0 || (data.notAttempted ?? []).length > 0 ? "warning" : "success",
         text: summarizeBulkRuleReview(data, labelName),
       });
 
@@ -10286,7 +10289,11 @@ function RuleReviewPage({
         await refreshRuleListOnly();
       }
     } catch {
-      setError("Could not review the selected rules.");
+      // The connection dropped, so we never learned how far the server got. The server
+      // reports its own partial results in the success path; here the only honest thing to
+      // say is that the outcome is unknown and the list should be re-read.
+      setError("Lost the connection while reviewing. Some rules may already be reviewed - refresh the list before trying again.");
+      await refreshRuleListOnly();
     } finally {
       setIsSaving(false);
       setBulkAction(null);
@@ -15494,6 +15501,12 @@ function summarizeBulkRuleReview(result: BulkRuleReviewResult, labelName?: strin
   if (failed.length > 0) {
     const errors = [...new Set(failed.map((entry) => entry.error))];
     parts.push(`Failed ${failed.length}: ${errors.join(" ")}`);
+  }
+
+  const notAttempted = result.notAttempted ?? [];
+
+  if (notAttempted.length > 0) {
+    parts.push(`${notAttempted.length} not attempted before the time limit. They are still selected, so you can run this again.`);
   }
 
   return parts.join(" ");

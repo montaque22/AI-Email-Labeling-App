@@ -124,6 +124,13 @@ Use these events to refresh cached label lists or keep another classification sy
 
 Emailable waits up to eight seconds for the receiving server. A response with a successful HTTP status records a successful delivery. A non-success status, network error, or timeout records a failed delivery under **Metrics > Logs > Webhook Events**.
 
+Label and rule events are sent in the background, after the action that produced them has already been saved. Emailable does not hold the user's request open while the receiver responds, so a slow or unreachable webhook URL cannot make the app itself slow. This matters most for bulk actions: reviewing fifty rules sends fifty events without any of them adding to how long the review takes.
+
+A consequence worth knowing when you build a receiver:
+
+- Events sent in the background can arrive slightly after the change is already visible in Emailable, and events from one bulk action can arrive in any order relative to each other.
+- An event's delivery result still appears under **Metrics > Logs > Webhook Events**, so a silent receiver is still diagnosable there.
+
 The receiver should validate the request, store or queue the event quickly, and return a successful response. Long-running work should happen after the receiver acknowledges the webhook.
 
 ## Important notes
