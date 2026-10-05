@@ -39,4 +39,6 @@ The result is a workflow that can be automated while remaining visible, editable
 
 If you already have Emailable running and want the easiest path to unlock the main features, continue to [Easy Setup](documentation/easy-setup).
 
+If you want Home Assistant to use an existing Emailable server without repeating setup, continue to [Home Assistant Client](documentation/home-assistant-client).
+
 If you want to control the deployment, database, Docker, Coolify, or Home Assistant setup yourself, continue to [DIY Installation](documentation/installation).

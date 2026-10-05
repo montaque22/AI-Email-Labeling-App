@@ -14438,7 +14438,7 @@ function EndpointsPage() {
   const [apiKeys, setApiKeys] = useState<IntegrationApiKey[]>([]);
   const [aiConfig, setAiConfig] = useState<ByoAiConfig | null>(null);
   const [newToken, setNewToken] = useState<string | null>(null);
-  const [keyName, setKeyName] = useState("n8n");
+  const [keyName, setKeyName] = useState("Home Assistant");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isTogglingAi, setIsTogglingAi] = useState(false);
@@ -14529,7 +14529,7 @@ function EndpointsPage() {
       }
 
       setNewToken(data.token);
-      setKeyName("n8n");
+      setKeyName("Home Assistant");
       await loadApiKeys();
     } catch {
       setError("Could not create API key.");
@@ -14568,10 +14568,19 @@ function EndpointsPage() {
         <CardHeader>
           <CardTitle>Endpoints</CardTitle>
           <CardDescription>
-            Use a bearer API key from n8n. Each key is scoped to the signed-in user's email accounts and labels.
+            Create bearer API keys for Home Assistant, n8n, scripts, and other clients. Each key is scoped to the signed-in user's Emailable data.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
+          <div className="rounded-lg border border-blue-100 bg-blue-50/70 p-4 text-sm text-blue-950">
+            <p className="font-medium">Home Assistant HACS setup</p>
+            <p className="mt-1 text-blue-900">
+              Install the Emailable integration from HACS, then use this app&apos;s URL as the server URL and create an API key below.
+              Home Assistant will call this Emailable server, so you do not need to repeat account, label, AI, or MCP setup.
+            </p>
+            <code className="mt-2 block overflow-x-auto rounded-md bg-white/70 p-3 text-xs text-blue-950">{window.location.origin}</code>
+          </div>
+
           <div className="grid gap-3 md:grid-cols-[minmax(0,260px)_auto]">
             <input
               className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
@@ -14635,7 +14644,7 @@ function EndpointsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>n8n API Docs</CardTitle>
+          <CardTitle>Integration API Docs</CardTitle>
           <CardDescription>Send the API key as Authorization: Bearer &lt;token&gt;.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

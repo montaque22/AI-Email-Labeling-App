@@ -26,5 +26,6 @@ For updates, breaking changes, and helpful documentation around this project, jo
 - [Documentation home](documentation/00-home.md)
 - [DIY installation guide](documentation/10-installation.md)
 - [Easy setup guide](documentation/10a-easy-setup.md)
+- [Home Assistant client guide](documentation/10b-home-assistant-client.md)
 
 After starting Emailable, authenticated users can also open Documentation from the bottom of the application sidebar.

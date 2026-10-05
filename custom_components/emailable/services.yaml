@@ -88,7 +88,7 @@ query_email_rules:
 
 send_email:
   name: Send email
-  description: Send a new email from a connected Emailable account. Body content can be plain text, markdown, or HTML.
+  description: Send a new email through the connected Emailable server. Body content can be plain text, markdown, or HTML.
   fields:
     accountEntity:
       name: From account entity

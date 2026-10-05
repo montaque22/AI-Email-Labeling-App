@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.88
+
+- Clarified the HACS integration as a remote Emailable client for VPS, Docker, Coolify, add-on, or other reachable Emailable servers.
+- Added setup-time validation for the Emailable server URL and API key in the Home Assistant integration.
+- Added Home Assistant Client documentation for using one primary Emailable server without repeating setup.
+- Added Settings > Endpoints guidance for creating a Home Assistant API key.
+
 ## 0.1.86
 
 - Added Easy Setup documentation for users who want Emailable to handle labeling and AI workflows.

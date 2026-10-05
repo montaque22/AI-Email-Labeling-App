@@ -208,20 +208,32 @@ For each release:
 
 ## HACS integration and Home Assistant actions
 
-The repository can also be added to HACS as a custom Integration repository. This installs `custom_components/emailable` and exposes Home Assistant actions that call an Emailable app instance.
+The repository can also be added to HACS as a custom Integration repository. This installs `custom_components/emailable` and turns Home Assistant into a client for an Emailable server.
+
+The Emailable server can be:
+
+- Your primary VPS, Docker, or Coolify deployment.
+- A local Emailable Home Assistant add-on.
+- Any other Emailable app instance reachable from Home Assistant.
 
 1. Install HACS.
 2. Open HACS > Integrations.
 3. Open Custom repositories.
 4. Add this GitHub repository URL as an Integration.
 5. Install Emailable and restart Home Assistant.
-6. Add the Emailable integration from Settings > Devices & services.
-7. Provide the Emailable base URL and API key.
+6. In your Emailable app, open **Settings > Endpoints**.
+7. Create an API key named `Home Assistant`.
+8. Add the Emailable integration from **Settings > Devices & services**.
+9. Provide the Emailable server URL and API key.
 
-The add-on and HACS integration are separate:
+The add-on and HACS integration have different jobs:
 
-- The add-on runs the Emailable application.
-- The HACS integration adds Home Assistant actions that call Emailable.
+- The add-on runs a full Emailable application locally.
+- The HACS integration adds Home Assistant actions and entities that call an Emailable server.
+
+If you already run Emailable on a VPS, point HACS at that VPS URL. You do not need to install the add-on or repeat email account, label, AI, or MCP setup.
+
+Read [Home Assistant Client](documentation/home-assistant-client) for the recommended remote-client workflow.
 
 ## MCP server
 

@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Emailable",
+        "description": "Connect Home Assistant to an Emailable server. This can be your primary VPS, Docker, Coolify, or local add-on instance. Create an API key in Emailable under Settings > Endpoints and paste it here.",
+        "data": {
+          "base_url": "Emailable server URL",
+          "api_key": "Integration API key"
+        },
+        "data_description": {
+          "base_url": "The root URL of the Emailable app, for example https://emailable.example.com or http://homeassistant.local:3000.",
+          "api_key": "A bearer API key created from the Emailable app. This lets Home Assistant call actions without duplicating Emailable setup."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to Emailable with that URL and API key. Check that the URL is reachable from Home Assistant and that the key was copied correctly."
+    }
+  }
+}

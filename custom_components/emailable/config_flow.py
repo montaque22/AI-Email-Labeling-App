@@ -3,7 +3,9 @@ from __future__ import annotations
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.helpers import aiohttp_client
 
+from .api import EmailableApiClient
 from .const import CONF_API_KEY, CONF_BASE_URL, DEFAULT_BASE_URL, DOMAIN
 
 
@@ -14,7 +16,17 @@ class EmailableConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            return self.async_create_entry(title="Emailable", data=user_input)
+            base_url = user_input[CONF_BASE_URL].rstrip("/")
+            api_key = user_input[CONF_API_KEY].strip()
+
+            try:
+                session = aiohttp_client.async_get_clientsession(self.hass)
+                client = EmailableApiClient(session, base_url, api_key)
+                await client.get_prompts()
+            except Exception:
+                errors["base"] = "cannot_connect"
+            else:
+                return self.async_create_entry(title=f"Emailable ({base_url})", data={CONF_BASE_URL: base_url, CONF_API_KEY: api_key})
 
         schema = vol.Schema(
             {
