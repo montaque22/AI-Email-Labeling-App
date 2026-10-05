@@ -1,4 +1,5 @@
 import { generateAiLabel, isAiActiveForUser } from "./byoai.js";
+import { completeBackgroundTask, createBackgroundTask, failBackgroundTask, updateBackgroundTask } from "./background-tasks.js";
 import { dbPool } from "./db.js";
 import { searchPollingCandidates } from "./integrations.js";
 import { requireSession } from "./session.js";
@@ -42,6 +43,26 @@ function updatePollingProcessingJob(userId, updates) {
   };
   activePollingJobs.set(userId, next);
   return next;
+}
+
+function updatePollingBackgroundTask(userId, taskId, updates) {
+  if (!taskId) {
+    return;
+  }
+
+  const mappedUpdates = { ...updates };
+  if (Object.prototype.hasOwnProperty.call(updates, "processed")) {
+    mappedUpdates.completed = updates.processed;
+    delete mappedUpdates.processed;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "status")) {
+    if (updates.status === "complete") {
+      mappedUpdates.status = "success";
+    } else {
+      mappedUpdates.status = updates.status;
+    }
+  }
+  updateBackgroundTask(userId, taskId, mappedUpdates);
 }
 
 function clearPollingProcessingJobLater(userId) {
@@ -142,10 +163,26 @@ export function registerPollingRoutes(app) {
       }
 
       activePollingUsers.add(req.user.id);
-      try {
+      const task = createBackgroundTask(req.user.id, {
+        type: "polling",
+        title: "Inbox sync",
+        message: "Checking connected accounts for new email...",
+      });
+      res.status(202).json({ job: task });
+
+      void (async () => {
         try {
-          const result = await pollUser({ userId: req.user.id, ...claimed.rows[0] }, "manual");
-          res.json(result);
+          const result = await pollUser({ userId: req.user.id, ...claimed.rows[0] }, "manual", { backgroundTaskId: task.id });
+          if (result.failed > 0 && result.processed === 0) {
+            failBackgroundTask(req.user.id, task.id, new Error(`${result.failed} email${result.failed === 1 ? "" : "s"} failed to process.`), {
+              message: `Inbox sync failed. ${result.failed} failed.`,
+            });
+          } else {
+            completeBackgroundTask(req.user.id, task.id, {
+              message: `Inbox sync complete. ${result.processed} processed, ${result.failed} failed.`,
+              result,
+            });
+          }
         } catch (error) {
           await logSystemEvent(req.user.id, {
             category: "email",
@@ -154,11 +191,11 @@ export function registerPollingRoutes(app) {
             message: `Manual polling failed: ${error.message}`,
             payload: { trigger: "manual", error: error.message },
           });
-          throw error;
+          failBackgroundTask(req.user.id, task.id, error, { message: `Inbox sync failed: ${error.message}` });
+        } finally {
+          activePollingUsers.delete(req.user.id);
         }
-      } finally {
-        activePollingUsers.delete(req.user.id);
-      }
+      })();
     } catch (error) {
       handlePollingError(res, error);
     }
@@ -266,12 +303,17 @@ async function pollDueUsers() {
   }
 }
 
-async function pollUser(settings, trigger) {
+async function pollUser(settings, trigger, options = {}) {
+  const backgroundTaskId = options.backgroundTaskId || "";
   activePollingJobs.set(settings.userId, createPollingProcessingJob(trigger));
 
   if (!await isAiActiveForUser(settings.userId)) {
     await dbPool.query("update user_settings set polling_enabled = false where user_id = $1", [settings.userId]);
     updatePollingProcessingJob(settings.userId, {
+      status: "complete",
+      message: "Polling stopped because AI is not active.",
+    });
+    updatePollingBackgroundTask(settings.userId, backgroundTaskId, {
       status: "complete",
       message: "Polling stopped because AI is not active.",
     });
@@ -293,6 +335,12 @@ async function pollUser(settings, trigger) {
     }
 
     updatePollingProcessingJob(settings.userId, {
+      total: uniqueCandidates.length,
+      message: uniqueCandidates.length
+        ? `Polling found ${uniqueCandidates.length} new email${uniqueCandidates.length === 1 ? "" : "s"} to process...`
+        : "Polling found no new email.",
+    });
+    updatePollingBackgroundTask(settings.userId, backgroundTaskId, {
       total: uniqueCandidates.length,
       message: uniqueCandidates.length
         ? `Polling found ${uniqueCandidates.length} new email${uniqueCandidates.length === 1 ? "" : "s"} to process...`
@@ -322,6 +370,7 @@ async function pollUser(settings, trigger) {
         });
         processed += 1;
         updatePollingProcessingJob(settings.userId, { processed });
+        updatePollingBackgroundTask(settings.userId, backgroundTaskId, { processed });
       } catch (error) {
         console.warn(`Polling could not process ${candidate.account.email}/${candidate.email.emailId}:`, error.message);
         failures.push({
@@ -330,6 +379,7 @@ async function pollUser(settings, trigger) {
           error: error.message,
         });
         updatePollingProcessingJob(settings.userId, { failed: failures.length });
+        updatePollingBackgroundTask(settings.userId, backgroundTaskId, { failed: failures.length });
       }
     }
 
@@ -353,10 +403,20 @@ async function pollUser(settings, trigger) {
       failed: failures.length,
       message: `Polling complete. ${processed} processed, ${failures.length} failed.`,
     });
+    updatePollingBackgroundTask(settings.userId, backgroundTaskId, {
+      status: failures.length > 0 && processed === 0 ? "error" : "complete",
+      processed,
+      failed: failures.length,
+      message: `Polling complete. ${processed} processed, ${failures.length} failed.`,
+    });
     clearPollingProcessingJobLater(settings.userId);
     return result;
   } catch (error) {
     updatePollingProcessingJob(settings.userId, {
+      status: "error",
+      message: `Polling failed: ${error.message}`,
+    });
+    updatePollingBackgroundTask(settings.userId, backgroundTaskId, {
       status: "error",
       message: `Polling failed: ${error.message}`,
     });

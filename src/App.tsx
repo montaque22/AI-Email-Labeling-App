@@ -850,6 +850,20 @@ type InboxProcessingJob = {
   message: string;
 };
 
+type BackgroundTask = {
+  id: string;
+  type: string;
+  title: string;
+  message: string;
+  status: "running" | "success" | "error";
+  total: number;
+  completed: number;
+  failed: number;
+  errors: { message: string }[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 type InboxAiActionPlan = {
   toolClientId: string;
   toolName: string;
@@ -1190,8 +1204,201 @@ export function App() {
       ) : (
         <HomePage onAuthSuccess={() => session.refetch()} />
       )}
+      <BackgroundTaskDrawer user={user} />
       <PwaUpdatePrompt {...pwaUpdate} />
     </>
+  );
+}
+
+function BackgroundTaskDrawer({ user }: { user: AuthUser | null }) {
+  const [tasks, setTasks] = useState<BackgroundTask[]>([]);
+  const [isOpen, setIsOpen] = useState(false);
+  const [isDismissing, setIsDismissing] = useState(false);
+  const lastCompletedTaskIdsRef = useRef(new Set<string>());
+
+  async function loadTasks() {
+    if (!user) {
+      setTasks([]);
+      return;
+    }
+
+    try {
+      const response = await fetchNoStore("/api/background-tasks");
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) {
+        const nextTasks = Array.isArray(data.tasks) ? data.tasks as BackgroundTask[] : [];
+        setTasks(nextTasks);
+        for (const task of nextTasks) {
+          if (task.status === "running") {
+            continue;
+          }
+          if (lastCompletedTaskIdsRef.current.has(task.id)) {
+            continue;
+          }
+          lastCompletedTaskIdsRef.current.add(task.id);
+          if (task.type === "polling") {
+            void refreshPwaUnreadBadge();
+            window.dispatchEvent(new Event("emailable:polling-complete"));
+          }
+        }
+      }
+    } catch {
+      // Background task polling is best effort.
+    }
+  }
+
+  useEffect(() => {
+    if (!user) {
+      setTasks([]);
+      return;
+    }
+
+    void loadTasks();
+    const intervalId = window.setInterval(() => {
+      void loadTasks();
+    }, 2500);
+    const handleRefresh = () => {
+      void loadTasks();
+    };
+    window.addEventListener("emailable:background-tasks-refresh", handleRefresh);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("emailable:background-tasks-refresh", handleRefresh);
+    };
+  }, [user?.email]);
+
+  const visibleTasks = tasks.filter((task) => task.status === "running" || task.status === "success" || task.status === "error");
+  const runningCount = visibleTasks.filter((task) => task.status === "running").length;
+  const errorCount = visibleTasks.filter((task) => task.status === "error").length;
+  const successCount = visibleTasks.filter((task) => task.status === "success").length;
+
+  useEffect(() => {
+    if (visibleTasks.length === 0) {
+      setIsOpen(false);
+    }
+  }, [visibleTasks.length]);
+
+  if (!user || visibleTasks.length === 0) {
+    return null;
+  }
+
+  async function dismissAll() {
+    setIsDismissing(true);
+    try {
+      const response = await fetch("/api/background-tasks", {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) {
+        setTasks(Array.isArray(data.tasks) ? data.tasks : []);
+      }
+    } finally {
+      setIsDismissing(false);
+    }
+  }
+
+  return (
+    <div className="fixed bottom-5 right-5 z-[9000] flex max-w-[calc(100vw-2rem)] flex-col items-end gap-2">
+      {!isOpen ? (
+        <button
+          type="button"
+          onClick={() => setIsOpen(true)}
+          className="relative rounded-full border border-white/70 bg-white/85 px-4 py-2 text-sm font-medium text-zinc-800 shadow-lg backdrop-blur-xl transition hover:bg-white"
+        >
+          {runningCount > 0 ? "Background tasks" : errorCount > 0 ? "Task needs attention" : "Task complete"}
+          {errorCount > 0 ? (
+            <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-red-600 px-1 text-[11px] font-semibold text-white">
+              {errorCount}
+            </span>
+          ) : null}
+        </button>
+      ) : (
+        <LiquidGlassCard
+          borderRadius="16px"
+          blurIntensity="sm"
+          glowIntensity="sm"
+          shadowIntensity="sm"
+          className="w-[min(420px,calc(100vw-2rem))] bg-white/70 p-0 text-zinc-900"
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-white/60 px-4 py-3">
+            <div>
+              <h3 className="text-sm font-semibold">Background tasks</h3>
+              <p className="text-xs text-zinc-500">
+                {runningCount > 0 ? `${runningCount} running` : `${successCount} complete`}
+                {errorCount > 0 ? `, ${errorCount} error${errorCount === 1 ? "" : "s"}` : ""}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                disabled={isDismissing || visibleTasks.every((task) => task.status === "running")}
+                onClick={dismissAll}
+                size="sm"
+                variant="outline"
+              >
+                Dismiss all
+              </Button>
+              <button
+                aria-label="Close background tasks"
+                className="rounded-full p-1 text-zinc-500 transition hover:bg-white/70 hover:text-zinc-900"
+                onClick={() => setIsOpen(false)}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+          <div className="max-h-80 space-y-3 overflow-y-auto px-4 py-3">
+            {visibleTasks.map((task) => (
+              <BackgroundTaskRow key={task.id} task={task} />
+            ))}
+          </div>
+        </LiquidGlassCard>
+      )}
+    </div>
+  );
+}
+
+function BackgroundTaskRow({ task }: { task: BackgroundTask }) {
+  const done = Math.max(0, Number(task.completed ?? 0) + Number(task.failed ?? 0));
+  const total = Math.max(0, Number(task.total ?? 0));
+  const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : task.status === "running" ? 20 : 100;
+  const statusLabel = task.status === "running" ? "Running" : task.status === "error" ? "Error" : "Complete";
+
+  return (
+    <div className="rounded-xl border border-white/70 bg-white/65 p-3 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-zinc-900">{task.title}</p>
+          <p className={cn("mt-1 text-xs", task.status === "error" ? "text-red-700" : "text-zinc-500")}>
+            {task.status === "error" && task.errors?.[0]?.message ? task.errors[0].message : task.message}
+          </p>
+        </div>
+        <span
+          className={cn(
+            "shrink-0 rounded-full px-2 py-1 text-[11px] font-medium",
+            task.status === "running" && "bg-blue-50 text-blue-700",
+            task.status === "success" && "bg-emerald-50 text-emerald-700",
+            task.status === "error" && "bg-red-50 text-red-700",
+          )}
+        >
+          {statusLabel}
+        </span>
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-200/80">
+        <div
+          className={cn(
+            "h-full rounded-full transition-all",
+            task.status === "error" ? "bg-red-500" : task.status === "success" ? "bg-emerald-500" : "bg-blue-500",
+          )}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <div className="mt-2 flex justify-between text-[11px] text-zinc-500">
+        <span>{total > 0 ? `${done}/${total}` : task.status === "running" ? "Preparing" : "Done"}</span>
+        {task.failed > 0 ? <span>{task.failed} failed</span> : null}
+      </div>
+    </div>
   );
 }
 
@@ -2750,6 +2957,10 @@ function InboxPage({
       const job = (data.job ?? null) as InboxProcessingJob | null;
       setInboxProcessingJob(job);
 
+      if (job?.type === "polling") {
+        return;
+      }
+
       if (job?.status === "running") {
         activeProcessingToastJobRef.current = job.id;
         setIsUnemailableReprocessing(job.type === "reprocess_unemailable");
@@ -3191,7 +3402,6 @@ function InboxPage({
 
     setIsInboxSyncing(true);
     setError(null);
-    showInboxToast("Syncing inbox. Emailable is checking all connected accounts...", "success", { persistent: true });
 
     try {
       const response = await fetchNoStore("/api/email-accounts/polling/run", {
@@ -3203,11 +3413,7 @@ function InboxPage({
         throw new Error(data.error ?? "Could not sync inbox.");
       }
 
-      const processed = Number(data.processed ?? 0);
-      const failed = Number(data.failed ?? 0);
-      showInboxToast(`Inbox sync complete. ${processed} processed, ${failed} failed.`, failed > 0 ? "error" : "success");
-      await refreshInboxData();
-      void loadInboxProcessingStatus();
+      window.dispatchEvent(new Event("emailable:background-tasks-refresh"));
     } catch (error) {
       showInboxToast(error instanceof Error ? error.message : "Could not sync inbox.", "error");
     } finally {
@@ -13337,7 +13543,8 @@ function EmailAccountsPage({ isHomeAssistant, privacyMode }: { isHomeAssistant: 
         setPollingError(data.error ?? "Could not run polling.");
         return;
       }
-      setPollingNotice(`Polling finished: ${data.processed} processed, ${data.failed} failed.`);
+      setPollingNotice("Polling started. Track progress in the background tasks drawer.");
+      window.dispatchEvent(new Event("emailable:background-tasks-refresh"));
       void refreshPwaUnreadBadge();
       await loadPollingSettings();
     } catch {

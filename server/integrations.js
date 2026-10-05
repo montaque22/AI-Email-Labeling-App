@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { getRenderedCoreContent } from "./ai-prompts.js";
+import { completeBackgroundTask, createBackgroundTask, failBackgroundTask, updateBackgroundTask } from "./background-tasks.js";
 import { ensureUnemailableSystemLabel, UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
 import { resolveRequestUser } from "./session.js";
 import { dbPool } from "./db.js";
@@ -2840,54 +2841,12 @@ async function reviewOneRuleForBulk(userId, { emailId, targetLabel, labelResolve
 }
 
 async function markEmailRuleReviewed(userId, { rule, labelName, labelReasons, source, labelResolver = null }) {
-  let applied = null;
-  let providerApply = { ok: true };
-
-  try {
-    applied = await applySingleLabelToEmail(userId, {
-      emailId: rule.emailId,
-      subject: rule.subject,
-      labelName,
-      removeLabelNames: rule.labelsApplied ?? [],
-      source,
-      accountEmail: rule.accountEmail ?? "",
-      labelResolver,
-    });
-  } catch (error) {
-    if (!isProviderMessageNotFoundError(error)) {
-      throw error;
-    }
-
-    providerApply = {
-      ok: false,
-      error: error.message || "Email was not found in connected email accounts.",
-      lookupFailures: Array.isArray(error.lookupFailures) ? error.lookupFailures : [],
-    };
-    await logSystemEvent(userId, {
-      category: "email",
-      eventName: "email_rule.review_apply_failed",
-      status: "warning",
-      message: "Rule was reviewed, but Emailable could not find the provider message to apply the selected label.",
-      payload: {
-        accountEmail: rule.accountEmail ?? "",
-        emailId: rule.emailId,
-        labelName,
-        lookupFailures: providerApply.lookupFailures,
-        source,
-        subject: rule.subject,
-      },
-    });
-  }
-
   const normalizedReasons = normalizeLabelReasons([labelName], labelReasons ?? {});
-  const appliedAccountEmail = applied?.accountEmail || rule.accountEmail || "";
-  const providerApplyMetadata = providerApply.ok
-    ? { ok: true }
-    : {
-        ok: false,
-        error: providerApply.error,
-        lookupFailures: providerApply.lookupFailures,
-      };
+  const queuedProviderApplyMetadata = {
+    ok: null,
+    status: "queued",
+    queuedAt: new Date().toISOString(),
+  };
   const result = await dbPool.query(
     `
       update email_rules
@@ -2899,7 +2858,7 @@ async function markEmailRuleReviewed(userId, { rule, labelName, labelReasons, so
       where user_id = $1 and email_id = $2
       returning ${EMAIL_RULE_SELECT}
     `,
-    [userId, rule.emailId, [labelName], JSON.stringify(normalizedReasons), appliedAccountEmail, JSON.stringify(providerApplyMetadata)],
+    [userId, rule.emailId, [labelName], JSON.stringify(normalizedReasons), rule.accountEmail || "", JSON.stringify(queuedProviderApplyMetadata)],
   );
 
   if (!result.rows[0]) {
@@ -2919,7 +2878,85 @@ async function markEmailRuleReviewed(userId, { rule, labelName, labelReasons, so
     },
   });
 
+  startReviewedRuleProviderApply(userId, {
+    rule,
+    reviewedRule,
+    labelName,
+    source,
+    labelResolver,
+  });
+
   return reviewedRule;
+}
+
+function startReviewedRuleProviderApply(userId, { rule, reviewedRule, labelName, source, labelResolver = null }) {
+  const task = createBackgroundTask(userId, {
+    type: "rule_review_apply",
+    title: "Applying reviewed rule",
+    message: `Applying "${labelName}" to the provider email...`,
+    total: 1,
+  });
+
+  void (async () => {
+    try {
+      const applied = await applySingleLabelToEmail(userId, {
+        emailId: rule.emailId,
+        subject: rule.subject,
+        labelName,
+        removeLabelNames: rule.labelsApplied ?? [],
+        source,
+        accountEmail: rule.accountEmail ?? "",
+        labelResolver,
+      });
+      await updateReviewedRuleProviderApplyMetadata(userId, rule.emailId, {
+        ok: true,
+        status: "complete",
+        appliedAt: new Date().toISOString(),
+      }, applied?.accountEmail || reviewedRule.accountEmail || rule.accountEmail || "");
+      updateBackgroundTask(userId, task.id, { completed: 1 });
+      completeBackgroundTask(userId, task.id, {
+        message: `Applied "${labelName}" to the provider email.`,
+      });
+    } catch (error) {
+      const providerApply = {
+        ok: false,
+        status: "error",
+        error: error.message || "Could not apply the selected label to the provider email.",
+        lookupFailures: Array.isArray(error.lookupFailures) ? error.lookupFailures : [],
+        failedAt: new Date().toISOString(),
+      };
+      await updateReviewedRuleProviderApplyMetadata(userId, rule.emailId, providerApply, reviewedRule.accountEmail || rule.accountEmail || "");
+      await logSystemEvent(userId, {
+        category: "email",
+        eventName: "email_rule.review_apply_failed",
+        status: isProviderMessageNotFoundError(error) ? "warning" : "error",
+        message: "Rule was reviewed, but Emailable could not apply the selected label to the provider message.",
+        payload: {
+          accountEmail: rule.accountEmail ?? "",
+          emailId: rule.emailId,
+          error: providerApply.error,
+          labelName,
+          lookupFailures: providerApply.lookupFailures,
+          source,
+          subject: rule.subject,
+        },
+      });
+      updateBackgroundTask(userId, task.id, { failed: 1 });
+      failBackgroundTask(userId, task.id, error, { message: `Could not apply "${labelName}" to the provider email.` });
+    }
+  })();
+}
+
+async function updateReviewedRuleProviderApplyMetadata(userId, emailId, providerApply, accountEmail) {
+  await dbPool.query(
+    `
+      update email_rules
+      set metadata = metadata || jsonb_build_object('providerApply', $3::jsonb, 'accountEmail', $4::text),
+          updated_at = now()
+      where user_id = $1 and email_id = $2
+    `,
+    [userId, emailId, JSON.stringify(providerApply), accountEmail],
+  );
 }
 
 async function getEmailRuleByEmailId(userId, emailId) {
