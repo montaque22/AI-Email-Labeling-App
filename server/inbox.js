@@ -354,7 +354,7 @@ async function listInboxSentMessages(userId, query) {
     pageToken: query.pageToken,
     search: query.search,
     sort: query.sort,
-    limit: INBOX_PAGE_SIZE,
+    limit: query.limit,
   });
   return { ...result, skippedAccounts: [] };
 }
@@ -367,7 +367,7 @@ async function searchInboxMessages(userId, query) {
     pageToken: query.pageToken,
     search: query.search,
     sort: query.sort,
-    limit: INBOX_PAGE_SIZE,
+    limit: query.limit,
   });
   return { ...result, messages: await attachRuleStatus(userId, result.messages), skippedAccounts: [] };
 }
@@ -456,7 +456,7 @@ async function listInboxMessages(userId, query) {
     pageToken: query.pageToken,
     search: query.search,
     sort: query.sort,
-    limit: INBOX_PAGE_SIZE,
+    limit: query.limit,
   });
 
   return {
@@ -1731,6 +1731,7 @@ function parseInboxListQuery(query) {
       archivedOnly: query.archived === "true",
       accountIds: parseCsv(query.accounts),
       pageToken: typeof query.pageToken === "string" ? query.pageToken : "",
+      limit: parseInboxLimit(query.limit),
       search: typeof query.search === "string" ? query.search.trim() : "",
       sort: ["newest", "oldest", "sender", "subject"].includes(query.sort) ? query.sort : "newest",
     },
@@ -1743,10 +1744,16 @@ function parseMailboxListQuery(query) {
     query: {
       accountIds: parseCsv(query.accounts),
       pageToken: typeof query.pageToken === "string" ? query.pageToken : "",
+      limit: parseInboxLimit(query.limit),
       search: typeof query.search === "string" ? query.search.trim() : "",
       sort: ["newest", "oldest", "sender", "subject"].includes(query.sort) ? query.sort : "newest",
     },
   };
+}
+
+function parseInboxLimit(value) {
+  const parsed = Number.parseInt(typeof value === "string" ? value : "", 10);
+  return Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), INBOX_PAGE_SIZE) : INBOX_PAGE_SIZE;
 }
 
 function parseInboxDetailQuery(query) {

@@ -3012,14 +3012,28 @@ function InboxPage({
     }
   }
 
-  async function refreshInboxAfterMessageMutation(pageTokenOverride?: string | null) {
+  async function refreshInboxAfterMessageMutation(pageTokenOverride?: string | null, limitOverride?: number) {
     await Promise.all([
-      pageTokenOverride ? loadMessages({ reset: false, pageTokenOverride }) : Promise.resolve(),
+      pageTokenOverride ? loadMessages({ reset: false, pageTokenOverride, limitOverride }) : Promise.resolve(),
       isLabelFilteredInboxMode(inboxMode) && selectedAccountIds.length > 0 && labels.length > 0
         ? loadLabelCounts()
         : Promise.resolve(),
       refreshPwaUnreadBadge(),
     ]);
+  }
+
+  async function refreshInboxAfterDeleteMutation(visibleAfterDelete: number, pageTokenOverride: string | null, deletedCount: number) {
+    const missingVisibleCount = Math.max(0, INBOX_CLIENT_PAGE_SIZE - visibleAfterDelete);
+    const knownRemainingTotal = typeof knownInboxTotal === "number"
+      ? Math.max(0, knownInboxTotal - deletedCount)
+      : null;
+    const canUseFallbackToken = !pageTokenOverride && knownRemainingTotal !== null && knownRemainingTotal > visibleAfterDelete;
+    const topUpPageToken = pageTokenOverride ?? (canUseFallbackToken ? String(visibleAfterDelete) : null);
+
+    await refreshInboxAfterMessageMutation(
+      missingVisibleCount > 0 ? topUpPageToken : null,
+      missingVisibleCount > 0 ? missingVisibleCount : undefined,
+    );
   }
 
   function canStartMobilePullRefresh(target: EventTarget | null) {
@@ -3091,7 +3105,7 @@ function InboxPage({
     mobilePullStartYRef.current = null;
   }
 
-  async function loadMessages({ reset, pageTokenOverride }: { reset: boolean; pageTokenOverride?: string | null }) {
+  async function loadMessages({ reset, pageTokenOverride, limitOverride }: { reset: boolean; pageTokenOverride?: string | null; limitOverride?: number }) {
     const activeSearch = committedInboxSearch.trim();
     const isSearchActive = activeSearch.length > 0;
     const activeAccountIds = isSearchActive ? accounts.map((account) => account.id) : selectedAccountIds;
@@ -3131,6 +3145,7 @@ function InboxPage({
           accountIds: activeAccountIds,
           inboxMode,
           labelId: isSearchActive || inboxMode === "sent" ? "" : selectedLabelId,
+          limit: limitOverride,
           pageToken: pageTokenToUse,
           search: isSearchActive ? activeSearch : sentSearch,
           sort,
@@ -3221,6 +3236,7 @@ function InboxPage({
           accountIds: [target.accountId],
           inboxMode,
           labelId: target.labelId,
+          limit: limitOverride,
           pageToken: target.providerPageToken
             ? encodeInboxPageToken({ [target.accountId]: target.providerPageToken })
             : null,
@@ -4019,8 +4035,7 @@ function InboxPage({
         showInboxToast(`${successfulDeletes.length} message${successfulDeletes.length === 1 ? "" : "s"} deleted.`);
         setIsMobileEditMode(false);
         const visibleAfterDelete = Math.max(0, messages.length - successfulDeletes.length);
-        const topUpPageToken = adjustedNextPageToken ?? String(visibleAfterDelete);
-        await refreshInboxAfterMessageMutation(visibleAfterDelete < INBOX_CLIENT_PAGE_SIZE ? topUpPageToken : null);
+        await refreshInboxAfterDeleteMutation(visibleAfterDelete, adjustedNextPageToken, successfulDeletes.length);
       }
       if (data.failed?.length) {
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be deleted.`);
@@ -16767,6 +16782,7 @@ function buildInboxMessageParams({
   accountIds,
   inboxMode,
   labelId,
+  limit,
   pageToken,
   search,
   sort,
@@ -16774,6 +16790,7 @@ function buildInboxMessageParams({
   accountIds: string[];
   inboxMode: InboxMode;
   labelId: string;
+  limit?: number;
   pageToken?: string | null;
   search: string;
   sort: InboxSort;
@@ -16794,6 +16811,9 @@ function buildInboxMessageParams({
   }
   if (pageToken) {
     params.set("pageToken", pageToken);
+  }
+  if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+    params.set("limit", String(Math.ceil(limit)));
   }
   return params;
 }
