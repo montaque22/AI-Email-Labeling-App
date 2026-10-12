@@ -9,10 +9,11 @@ import { registerBackgroundTaskRoutes } from "./background-tasks.js";
 import { ensureByoAiTables, registerByoAiRoutes } from "./byoai.js";
 import { ensureCalendarSubscriptionTables, registerCalendarSubscriptionRoutes } from "./calendar-subscriptions.js";
 import { dbPool } from "./db.js";
+import { installProcessSafetyNet } from "./detached-tasks.js";
 import { ensureEmailAccountsTable, registerEmailAccountRoutes } from "./email-accounts.js";
 import { ensureEmailIndexTable } from "./email-index.js";
 import { registerInboxRoutes } from "./inbox.js";
-import { ensureIntegrationTables, registerIntegrationRoutes } from "./integrations.js";
+import { ensureIntegrationTables, reconcileInterruptedProviderApplies, registerIntegrationRoutes } from "./integrations.js";
 import { ensureLabelsTable, registerLabelRoutes } from "./labels.js";
 import { ensureMcpTables, registerMcpRoutes } from "./mcp-server.js";
 import { ensurePollingSettings, registerPollingRoutes, startPollingWorker } from "./polling.js";
@@ -26,6 +27,10 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
 const indexHtmlPath = path.join(distDir, "index.html");
+
+// Installed before anything else can schedule async work, so there is no window where a
+// stray rejection still reaches Node's default crash-on-unhandled-rejection behaviour.
+installProcessSafetyNet();
 
 const app = express();
 const port = resolveServerPort(process.env.PORT);
@@ -250,6 +255,17 @@ async function startServer() {
     await ensureTasksTable();
   } catch (error) {
     console.error("Failed to initialize database tables:", error);
+  }
+
+  // After the tables exist and before the server can queue any provider applies of its own,
+  // so the only "queued" rows it can see are orphans from a previous process.
+  try {
+    const reconciled = await reconcileInterruptedProviderApplies();
+    if (reconciled > 0) {
+      console.warn(`Marked ${reconciled} reviewed rule(s) as provider-apply interrupted after restart.`);
+    }
+  } catch (error) {
+    console.error("Failed to reconcile interrupted provider applies:", error);
   }
 
   app.listen(port, () => {

@@ -1,6 +1,7 @@
 import { generateAiLabel, isAiActiveForUser } from "./byoai.js";
 import { completeBackgroundTask, createBackgroundTask, failBackgroundTask, updateBackgroundTask } from "./background-tasks.js";
 import { dbPool } from "./db.js";
+import { runDetachedTask, runGuardedStep } from "./detached-tasks.js";
 import { searchPollingCandidates } from "./integrations.js";
 import { requireSession } from "./session.js";
 import { logSystemEvent } from "./system-logs.js";
@@ -170,7 +171,7 @@ export function registerPollingRoutes(app) {
       });
       res.status(202).json({ job: task });
 
-      void (async () => {
+      runDetachedTask("email.manual_poll", async () => {
         try {
           const result = await pollUser({ userId: req.user.id, ...claimed.rows[0] }, "manual", { backgroundTaskId: task.id });
           if (result.failed > 0 && result.processed === 0) {
@@ -184,18 +185,21 @@ export function registerPollingRoutes(app) {
             });
           }
         } catch (error) {
-          await logSystemEvent(req.user.id, {
-            category: "email",
-            eventName: "email.polling_failed",
-            status: "error",
-            message: `Manual polling failed: ${error.message}`,
-            payload: { trigger: "manual", error: error.message },
-          });
+          // Guarded on its own: the drawer must still be told the sync failed even if the
+          // log write is what went wrong, and nothing here may reject out of the catch.
+          await runGuardedStep("email.manual_poll.log", () =>
+            logSystemEvent(req.user.id, {
+              category: "email",
+              eventName: "email.polling_failed",
+              status: "error",
+              message: `Manual polling failed: ${error.message}`,
+              payload: { trigger: "manual", error: error.message },
+            }));
           failBackgroundTask(req.user.id, task.id, error, { message: `Inbox sync failed: ${error.message}` });
         } finally {
           activePollingUsers.delete(req.user.id);
         }
-      })();
+      });
     } catch (error) {
       handlePollingError(res, error);
     }

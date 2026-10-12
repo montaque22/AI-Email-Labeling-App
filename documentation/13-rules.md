@@ -65,6 +65,21 @@ After a successful review, Emailable:
 
 The reason is optional, but adding one gives future AI requests better evidence about why the label applies. The Reviewed button visually encourages a reason while still allowing the user to continue without one.
 
+### When the provider label does not get applied
+
+Marking a rule reviewed saves it immediately, then applies the label to the provider email in the background. The two can disagree: the provider can reject the change, the original email can already be gone, or Emailable can restart before the background work finishes.
+
+When that happens the rule carries an extra badge next to **Reviewed**, and the rule's detail view explains it:
+
+| Badge | Meaning | What to do |
+| --- | --- | --- |
+| **Label pending** | The provider label has been queued but not applied yet. | Wait. It normally clears within seconds. |
+| **Label not applied** | Emailable restarted before the provider label was applied. | Open the rule and select **Reviewed** again to retry. |
+| **Provider email missing** | The original email was deleted or moved out of the connected account. | Nothing to do. The rule is still saved and still guides future emails. |
+| **Label failed** | The provider rejected the change. | Check the account connection, then review the rule again. |
+
+A rule with no badge was applied to the provider email successfully.
+
 ## How rules improve future labeling
 
 Before AI labels an email, Emailable searches the user's existing rules for similar sender and subject information. Both reviewed and pending rules can provide evidence.
