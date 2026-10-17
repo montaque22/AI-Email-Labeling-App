@@ -856,6 +856,16 @@ type InboxAiChatMessage = {
   }>;
 };
 
+type InboxAiBulkActionProposal = {
+  action: "archive" | "delete";
+  expectedCount: number;
+  from: string;
+  label: string;
+  scopeSummary: string;
+  state: string;
+  subject: string;
+};
+
 const INBOX_AI_HELPER_SESSION_KEY = "emailable.inbox.aiHelper.history";
 const INBOX_AI_HELPER_SESSION_ID_KEY = "emailable.inbox.aiHelper.sessionId";
 const INBOX_AI_HELPER_SESSION_CREATED_KEY = "emailable.inbox.aiHelper.createdAt";
@@ -4919,36 +4929,6 @@ function InboxAiHelperPanel({
     }));
   }
 
-  function inferSearchScope(query: string, bulkAction: "archive" | "delete" | null = null): { cleanedQuery: string; labelId: string; mode: InboxMode | "search"; stateSpecific: boolean } {
-    const normalized = query.toLowerCase();
-    const label = labels.find((item) => normalized.includes(item.name.toLowerCase()));
-    const explicitlyRequestsArchivedMail = /\barchived\b/.test(normalized) || (bulkAction !== "archive" && /\barchive\b/.test(normalized));
-    const mode: InboxMode | "search" = explicitlyRequestsArchivedMail
-      ? "archive"
-      : /\b(draft|drafts)\b/.test(normalized)
-        ? "drafts"
-        : /\b(sent|sent mail|sent emails|replies|reply|replied)\b/.test(normalized)
-          ? "sent"
-          : label
-            ? "inbox"
-            : "search";
-    const labelNamePattern = label?.name
-      ? new RegExp(label.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi")
-      : null;
-    const cleanedQuery = query
-      .replace(/\b(what|which|show|find|search|look|for|do|i|have|in|my|the|all|every|please|emails?|messages?|mail|delete|deleting|remove|removing|trash|archive|archiving|archived|drafts?|sent|inbox|labelled|labeled|tagged|categorized|category|label|labels|folder|folders|under|with)\b/gi, " ")
-      .replace(labelNamePattern ?? /$^/, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    return {
-      cleanedQuery,
-      labelId: label?.id || INBOX_ALL_LABEL_ID,
-      mode,
-      stateSpecific: mode !== "search",
-    };
-  }
-
   async function fetchAllIndexedPages(endpoint: string, initialParams: URLSearchParams) {
     const found: InboxMessage[] = [];
     let pageToken: string | null = "";
@@ -4963,69 +4943,6 @@ function InboxAiHelperPanel({
       pageToken = data.nextPageToken ?? null;
     } while (pageToken);
     return found;
-  }
-
-  async function searchIndexedMail(query: string, bulkAction: "archive" | "delete" | null = null) {
-    if (accounts.length === 0 || !query.trim()) {
-      return [];
-    }
-
-    const scope = inferSearchScope(query, bulkAction);
-    const accountIds = accounts.map((account) => account.id);
-    const search = scope.cleanedQuery;
-
-    if (scope.mode === "drafts" || scope.mode === "sent") {
-      const params = buildInboxMessageParams({
-        accountIds,
-        inboxMode: scope.mode,
-        labelId: "",
-        pageToken: null,
-        search,
-        sort: "newest",
-      });
-      return fetchAllIndexedPages(`/api/inbox/${scope.mode}`, params);
-    }
-
-    if (scope.mode === "archive" || scope.mode === "inbox") {
-      const targetLabels = scope.labelId === INBOX_ALL_LABEL_ID ? labels : labels.filter((label) => label.id === scope.labelId);
-      const results = await Promise.all(targetLabels.map(async (label) => {
-        const params = buildInboxMessageParams({
-          accountIds,
-          inboxMode: scope.mode === "archive" ? "archive" : "inbox",
-          labelId: label.id,
-          pageToken: null,
-          search,
-          sort: "newest",
-        });
-        return fetchAllIndexedPages("/api/inbox/messages", params);
-      }));
-      return sortInboxMessagesForClient(mergeInboxMessages([], results.flat()), "newest");
-    }
-
-    const params = buildInboxMessageParams({
-      accountIds,
-      inboxMode: "inbox",
-      labelId: "",
-      pageToken: null,
-      search,
-      sort: "newest",
-    });
-    return fetchAllIndexedPages("/api/inbox/search", params);
-  }
-
-  function inferBulkEmailAction(prompt: string): "archive" | "delete" | null {
-    const normalized = prompt.toLowerCase();
-    const isAdvisoryQuestion = /\b(can|could|should|would)\s+(i|we)\b|\b(is|are)\s+there\b|\bwhat\s+(can|should|do)\b|\banything\b.*\b(delete|archive|keep|look at|review)\b/.test(normalized);
-    if (isAdvisoryQuestion) {
-      return null;
-    }
-    if (/\b(delete|trash|remove)\b/.test(normalized) && /\b(email|emails|message|messages|mail|selected|these|them|visible|shown)\b/.test(normalized)) {
-      return "delete";
-    }
-    if (/\b(archive|hide from inbox)\b/.test(normalized) && /\b(email|emails|message|messages|mail|selected|these|them|visible|shown)\b/.test(normalized)) {
-      return "archive";
-    }
-    return null;
   }
 
   function isAffirmativeResponse(prompt: string) {
@@ -5096,85 +5013,6 @@ function InboxAiHelperPanel({
 
   function openAffectedEmail(email: NonNullable<InboxAiChatMessage["affectedEmails"]>[number]) {
     void onOpenMessage(affectedEmailToInboxMessage(email));
-  }
-
-  async function findBulkActionTargets(prompt: string, action: "archive" | "delete") {
-    const normalized = prompt.toLowerCase();
-    const referencesSelected = /\b(selected|these|them|this|current)\b/.test(normalized);
-    if (selectedMessages.length > 0 && referencesSelected) {
-      return selectedMessages;
-    }
-    const latestAffectedMessages = getLatestAffectedMessagesFromChat();
-    if (latestAffectedMessages.length > 0 && /\b(them|those|these|listed|that list|the list|previous)\b/.test(normalized)) {
-      const affectedLabelNames = [...new Set(latestAffectedMessages.flatMap((message) => message.labels))];
-      if (affectedLabelNames.length === 1) {
-        const completeLabelResults = await searchIndexedMail(`all emails label ${affectedLabelNames[0]}`);
-        if (completeLabelResults.length > 0) return completeLabelResults;
-      }
-      const previousSearchPrompt = [...messages].reverse().find((message) =>
-        message.role === "user" && !inferBulkEmailAction(message.text) && /\b(find|show|search|all|label|emails?|messages?)\b/i.test(message.text),
-      )?.text;
-      if (previousSearchPrompt) {
-        const completeIndexedResults = await searchIndexedMail(previousSearchPrompt);
-        if (completeIndexedResults.length > 0) return completeIndexedResults;
-      }
-      return latestAffectedMessages;
-    }
-
-    const referencesVisible = /\b(visible|shown|loaded|on screen|all of these|all these)\b/.test(normalized);
-    if (referencesVisible && contextMessages.length > 0) {
-      return contextMessages;
-    }
-
-    const searchResults = await searchIndexedMail(prompt, action);
-    if (searchResults.length > 0) {
-      return searchResults;
-    }
-
-    if (selectedMessages.length > 0) {
-      return selectedMessages;
-    }
-
-    return [];
-  }
-
-  async function prepareBulkEmailAction(prompt: string, action: "archive" | "delete") {
-    setIsThinking(true);
-    try {
-      const targets = await findBulkActionTargets(prompt, action);
-      if (targets.length === 0) {
-        addMessage({
-          role: "assistant",
-          text: `I could not find any emails to ${action}. Select emails first, say "visible emails", or describe the sender, subject, label, or mailbox to search.`,
-        });
-        return;
-      }
-      const blockedByCommitment = targets.filter((message) => Boolean(message.commitment));
-      if (blockedByCommitment.length > 0) {
-        addMessage({
-          affectedEmails: blockedByCommitment.map(summarizeAffectedEmail),
-          pendingBulkAction: action,
-          role: "assistant",
-          text: `${blockedByCommitment.length} matching email${blockedByCommitment.length === 1 ? " has" : "s have"} an active commitment. Complete or renege the commitment before ${action === "archive" ? "archiving" : "deleting"} ${blockedByCommitment.length === 1 ? "it" : "them"}.`,
-        });
-        return;
-      }
-
-      setPendingBulkAction({ action, messages: targets });
-      addMessage({
-        affectedEmails: targets.length <= 7 ? targets.map(summarizeAffectedEmail) : undefined,
-        pendingBulkAction: action,
-        role: "assistant",
-        text: `I found ${targets.length} email${targets.length === 1 ? "" : "s"} to ${action}. Reply "confirm" to ${action} ${targets.length === 1 ? "it" : "them"}, or "cancel" to stop.`,
-      });
-    } catch (error) {
-      addMessage({
-        role: "assistant",
-        text: error instanceof Error ? error.message : `I could not prepare emails to ${action}.`,
-      });
-    } finally {
-      setIsThinking(false);
-    }
   }
 
   async function handlePendingBulkActionResponse(prompt: string) {
@@ -5294,7 +5132,27 @@ function InboxAiHelperPanel({
             threadId: email.threadId ?? email.id ?? email.emailId ?? "",
           }))
       : [];
-    return { affectedEmails, message: String(data.message ?? "").trim() };
+    const proposedBulkAction = data.proposedBulkAction && ["archive", "delete"].includes(data.proposedBulkAction.action)
+      ? data.proposedBulkAction as InboxAiBulkActionProposal
+      : null;
+    return { affectedEmails, message: String(data.message ?? "").trim(), proposedBulkAction };
+  }
+
+  async function resolveAgentBulkActionProposal(proposal: InboxAiBulkActionProposal, fallbackEmails: InboxMessage[]) {
+    if (proposal.label) {
+      const label = labels.find((item) => item.name.toLowerCase() === proposal.label.toLowerCase());
+      if (!label) throw new Error(`The label “${proposal.label}” no longer exists.`);
+      const params = buildInboxMessageParams({
+        accountIds: accounts.map((account) => account.id),
+        inboxMode: proposal.state.toLowerCase().includes("archiv") ? "archive" : "inbox",
+        labelId: label.id,
+        pageToken: null,
+        search: proposal.subject || proposal.from,
+        sort: "newest",
+      });
+      return fetchAllIndexedPages("/api/inbox/messages", params);
+    }
+    return fallbackEmails;
   }
 
   async function handleUserPrompt(prompt: string, conversationHistory: InboxAiChatMessage[]) {
@@ -5313,12 +5171,6 @@ function InboxAiHelperPanel({
         role: "assistant",
         text: `Opened "${target.subject || "the email"}". If it does not appear, click the email preview below.`,
       });
-      return;
-    }
-
-    const bulkAction = inferBulkEmailAction(prompt);
-    if (bulkAction) {
-      await prepareBulkEmailAction(prompt, bulkAction);
       return;
     }
 
@@ -5417,6 +5269,26 @@ function InboxAiHelperPanel({
     setIsThinking(true);
     try {
       const answer = await askAiHelper(prompt, conversationHistory);
+      if (answer.proposedBulkAction) {
+        const fallbackEmails = answer.affectedEmails.map(affectedEmailToInboxMessage);
+        const targets = await resolveAgentBulkActionProposal(answer.proposedBulkAction, fallbackEmails);
+        if (targets.length === 0) throw new Error(`I could not resolve any emails in ${answer.proposedBulkAction.scopeSummary}.`);
+        if (targets.length !== answer.proposedBulkAction.expectedCount) {
+          throw new Error(`The database changed while I was preparing this action: the agent found ${answer.proposedBulkAction.expectedCount.toLocaleString()}, but confirmation resolved ${targets.length.toLocaleString()}. Please ask me to try again so I do not act on the wrong scope.`);
+        }
+        const blockedByCommitment = targets.filter((message) => Boolean(message.commitment));
+        if (blockedByCommitment.length > 0) {
+          throw new Error(`${blockedByCommitment.length.toLocaleString()} matching email${blockedByCommitment.length === 1 ? " has" : "s have"} an active commitment. Complete or renege ${blockedByCommitment.length === 1 ? "it" : "them"} before continuing.`);
+        }
+        setPendingBulkAction({ action: answer.proposedBulkAction.action, messages: targets });
+        addMessage({
+          affectedEmails: targets.length <= 7 ? targets.map(summarizeAffectedEmail) : undefined,
+          pendingBulkAction: answer.proposedBulkAction.action,
+          role: "assistant",
+          text: `I found ${targets.length.toLocaleString()} email${targets.length === 1 ? "" : "s"} in ${answer.proposedBulkAction.scopeSummary}. Reply “confirm” to ${answer.proposedBulkAction.action} them, or “cancel” to stop.`,
+        });
+        return;
+      }
       addMessage({
         affectedEmails: answer.affectedEmails,
         role: "assistant",

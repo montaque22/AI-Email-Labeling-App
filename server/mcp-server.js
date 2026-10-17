@@ -56,6 +56,11 @@ export const SYSTEM_MCP_TOOL_DEFINITIONS = [
     description: "Search Emailable's indexed email database by id, subject, sender, account, label, archive/draft/sent/inbox state, read/unread status, and timestamps. Provider-wide connected-account search is optional.",
   },
   {
+    name: "propose_email_bulk_action",
+    title: "Propose Email Bulk Action",
+    description: "Prepare an email delete or archive action for explicit user confirmation without executing it.",
+  },
+  {
     name: "searchTasks",
     title: "Search Tasks",
     description: "Fuzzy search the user's incomplete Emailable tasks by title.",
@@ -314,6 +319,24 @@ function createMcpServer(userId) {
     async (input) => {
       return loggedMcpToolResult(userId, "find_email", input, "internal:find-email", () => findEmailTool(userId, input));
     },
+  );
+
+  server.registerTool(
+    "propose_email_bulk_action",
+    {
+      title: "Propose Email Bulk Action",
+      description: "Prepare a delete or archive proposal for user confirmation without executing it.",
+      inputSchema: {
+        action: z.enum(["archive", "delete"]),
+        label: z.string().optional(),
+        state: z.string().optional(),
+        from: z.string().optional(),
+        subject: z.string().optional(),
+        expectedCount: z.number().int().min(1),
+        scopeSummary: z.string().min(1).max(500),
+      },
+    },
+    async (input) => loggedMcpToolResult(userId, "propose_email_bulk_action", input, "internal:email-bulk-proposal", async () => ({ proposal: input })),
   );
 
   server.registerTool(

@@ -221,6 +221,24 @@ const SYSTEM_MCP_TOOLS = [
     },
   },
   {
+    name: "propose_email_bulk_action",
+    description: "Prepare, but do not execute, an email delete or archive action for UI confirmation. Call this only when the user explicitly instructs you to delete or archive email. First use find_email to resolve and count the exact database scope. Never call this for advisory questions such as whether emails are safe to delete.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["archive", "delete"] },
+        label: { type: "string", description: "Exact label name when the requested scope uses a label." },
+        state: { type: "string", description: "Mailbox state such as inbox or archived." },
+        from: { type: "string", description: "Sender filter explicitly requested by the user." },
+        subject: { type: "string", description: "Subject filter explicitly requested by the user." },
+        expectedCount: { type: "number", minimum: 1 },
+        scopeSummary: { type: "string", description: "Concise faithful description of the full requested scope." },
+      },
+      required: ["action", "expectedCount", "scopeSummary"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "searchTasks",
     description: "Fuzzy search the user's incomplete Emailable tasks by title.",
     inputSchema: {
@@ -1568,6 +1586,7 @@ async function generateAiHelperChat(userId, request) {
       "For every email search, analysis, count, comparison, summary, recommendation, or action-targeting request, query the indexed database with find_email before reasoning about the answer. The database is the authoritative default scope. Search connected providers only when the indexed database has no matches or the user explicitly requests remote/provider search.",
       "Pay close attention to quantifiers, labels, accounts, states, date ranges, exclusions, and words such as all, only, every, any, except, before, and after. Preserve the user's requested scope exactly. Do not silently narrow 'all General emails' to visible General emails, recent emails, one account, a sample, or the first page.",
       "Think through the full request before answering. Restate the interpreted scope briefly when it is broad or destructive, report the database total, and clearly disclose if any requested portion was not examined.",
+      "When the user explicitly commands you to delete or archive email, first search the complete indexed scope with find_email, then call propose_email_bulk_action with the exact structured scope and database count. That proposal never executes the action; the UI will require confirmation. Do not merely describe how the user could do it.",
       "Tasks visible on screen or selected by the user are active context and should be considered first.",
       "For task requests, use task tools to find, open, summarize, group, delete, defer, edit, and close/complete tasks. Use listTasks for broad summaries, searchTasks for fuzzy title lookup, getTask for a specific id, deleteTask for deletion, editTask for edits, and generateNudgeSteps or simplifyNudgeStep for next-step help.",
       "When creating a task from an email, always include sourceEmailId with the exact Email ID from the active email context or from the find_email result that the task is based on.",
@@ -1625,6 +1644,7 @@ async function generateAiHelperChat(userId, request) {
   const message = cleanAiTextResponse(aiResponse);
   const affectedEmails = extractAffectedEmailsFromAiHelperToolResults(toolResults);
   const affectedTasks = extractAffectedTasksFromAiHelperToolResults(toolResults);
+  const proposedBulkAction = extractProposedBulkActionFromAiHelperToolResults(toolResults);
   updateAiHelperSessionMemory(userId, request.sessionId, [
     ...previousHistory,
     { role: "user", text: request.prompt },
@@ -1638,6 +1658,21 @@ async function generateAiHelperChat(userId, request) {
     message,
     affectedEmails: affectedEmails.length > 0 ? affectedEmails : [],
     affectedTasks: affectedTasks.length > 0 ? affectedTasks : [],
+    proposedBulkAction,
+  };
+}
+
+function extractProposedBulkActionFromAiHelperToolResults(toolResults = []) {
+  const entry = [...toolResults].reverse().find((result) => result?.toolName === "propose_email_bulk_action");
+  if (!entry?.input || !["archive", "delete"].includes(entry.input.action)) return null;
+  return {
+    action: entry.input.action,
+    expectedCount: Math.max(1, Number(entry.input.expectedCount) || 1),
+    from: typeof entry.input.from === "string" ? entry.input.from : "",
+    label: typeof entry.input.label === "string" ? entry.input.label : "",
+    scopeSummary: typeof entry.input.scopeSummary === "string" ? entry.input.scopeSummary : "matching emails",
+    state: typeof entry.input.state === "string" ? entry.input.state : "",
+    subject: typeof entry.input.subject === "string" ? entry.input.subject : "",
   };
 }
 
