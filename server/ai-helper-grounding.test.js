@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groundAiHelperEmailSearchMessage } from "./byoai.js";
+import { constrainAiHelperEmailSearchInput, groundAiHelperEmailSearchMessage } from "./byoai.js";
 
 function findEmailResult({ offset, returned, totalMatches = 379 }) {
   return {
@@ -18,6 +18,44 @@ function findEmailResult({ offset, returned, totalMatches = 379 }) {
 }
 
 describe("AI Helper email count grounding", () => {
+  it("removes account and inbox filters inferred from screen context", () => {
+    expect(constrainAiHelperEmailSearchInput({
+      label: "General",
+      state: "inbox",
+      to: "michael.g.montaque@gmail.com",
+      limit: 100,
+    }, { prompt: "Check through my General emails. Is there anything I should look at before I delete them all?" }))
+      .toEqual({ label: "General", limit: 100 });
+  });
+
+  it("preserves account and state filters when the user requests them", () => {
+    expect(constrainAiHelperEmailSearchInput({
+      label: "General",
+      state: "inbox",
+      to: "michael.g.montaque@gmail.com",
+      limit: 100,
+    }, { prompt: "Check General emails in the inbox for michael.g.montaque@gmail.com" }))
+      .toEqual({
+        label: "General",
+        state: "inbox",
+        to: "michael.g.montaque@gmail.com",
+        limit: 100,
+      });
+  });
+
+  it("preserves inherited scope for a short follow-up", () => {
+    expect(constrainAiHelperEmailSearchInput({
+      label: "General",
+      state: "inbox",
+      to: "michael.g.montaque@gmail.com",
+    }, { allowInheritedScope: true, prompt: "delete them" }))
+      .toEqual({
+        label: "General",
+        state: "inbox",
+        to: "michael.g.montaque@gmail.com",
+      });
+  });
+
   it("uses totalMatches instead of the final page size", () => {
     const toolResults = [
       findEmailResult({ offset: 0, returned: 100 }),

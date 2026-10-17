@@ -1638,7 +1638,9 @@ async function generateAiHelperChat(userId, request) {
     mcpClients: await buildAiHelperMcpClients(userId),
     onToolResult: (result) => toolResults.push(result),
     toolExecutionContext: {
+      allowInheritedEmailScope: memory.affectedEmails.length > 0 && isAiHelperScopeFollowUp(request.prompt),
       defaultTaskSourceEmailId,
+      emailSearchPrompt: request.prompt,
     },
   });
 
@@ -2574,15 +2576,18 @@ function normalizeSdkMessages(messages = []) {
 function buildSdkTools(clients, onToolResult, executionContext = {}) {
   const tools = {};
   const usedNames = new Set();
-  const addTool = ({ name, description, inputSchema, execute }) => {
+  const addTool = ({ name, description, inputSchema, execute, useSystemDefaults = false }) => {
     const sdkName = uniqueSdkToolName(name, usedNames);
     tools[sdkName] = tool({
       description,
       inputSchema: jsonSchema(inputSchema ?? { type: "object", properties: {}, additionalProperties: true }),
       execute: async (input) => {
-        const result = await execute(input);
+        const normalizedInput = useSystemDefaults
+          ? applySystemToolExecutionDefaults(name, input ?? {}, executionContext)
+          : input ?? {};
+        const result = await execute(normalizedInput);
         if (typeof onToolResult === "function") {
-          onToolResult({ input, result, toolName: name });
+          onToolResult({ input: normalizedInput, result, toolName: name });
         }
         return result;
       },
@@ -2597,10 +2602,8 @@ function buildSdkTools(clients, onToolResult, executionContext = {}) {
           name: systemTool.name,
           description: systemTool.description,
           inputSchema: systemTool.inputSchema,
-          execute: async (input) => {
-            const normalizedInput = applySystemToolExecutionDefaults(systemTool.name, input ?? {}, executionContext);
-            return callSystemMcpTool(systemTool.name, normalizedInput, client.bearerToken);
-          },
+          execute: async (input) => callSystemMcpTool(systemTool.name, input, client.bearerToken),
+          useSystemDefaults: true,
         });
       }
       continue;
@@ -2621,7 +2624,16 @@ function buildSdkTools(clients, onToolResult, executionContext = {}) {
 }
 
 function applySystemToolExecutionDefaults(toolName, input, executionContext = {}) {
-  if (toolName !== "createTask" || !input || typeof input !== "object" || Array.isArray(input)) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return input;
+  }
+  if (toolName === "find_email") {
+    return constrainAiHelperEmailSearchInput(input, {
+      allowInheritedScope: executionContext.allowInheritedEmailScope,
+      prompt: executionContext.emailSearchPrompt,
+    });
+  }
+  if (toolName !== "createTask") {
     return input;
   }
   if (typeof input.sourceEmailId === "string" && input.sourceEmailId.trim()) {
@@ -2631,6 +2643,47 @@ function applySystemToolExecutionDefaults(toolName, input, executionContext = {}
     ? executionContext.defaultTaskSourceEmailId.trim()
     : "";
   return sourceEmailId ? { ...input, sourceEmailId } : input;
+}
+
+export function constrainAiHelperEmailSearchInput(input, { allowInheritedScope = false, prompt = "" } = {}) {
+  const constrained = { ...input };
+  if (allowInheritedScope) {
+    return constrained;
+  }
+  const normalizedPrompt = normalizeScopeText(prompt);
+
+  if (typeof constrained.to === "string" && constrained.to.trim()) {
+    const requestedAccount = normalizeScopeText(constrained.to);
+    if (!requestedAccount || !normalizedPrompt.includes(requestedAccount)) {
+      delete constrained.to;
+    }
+  }
+
+  if (typeof constrained.state === "string" && constrained.state.trim()) {
+    const requestedState = normalizeScopeText(constrained.state);
+    const stateTerms = requestedState === "archive" || requestedState === "archived"
+      ? ["archive", "archived"]
+      : requestedState === "draft" || requestedState === "drafts"
+        ? ["draft", "drafts"]
+        : [requestedState];
+    if (!stateTerms.some((term) => normalizedPrompt.includes(term))) {
+      delete constrained.state;
+    }
+  }
+
+  return constrained;
+}
+
+function normalizeScopeText(value) {
+  return String(value || "").trim().toLocaleLowerCase("en-US");
+}
+
+function isAiHelperScopeFollowUp(prompt) {
+  const words = normalizeScopeText(prompt).split(/\s+/).filter(Boolean);
+  if (words.length > 8) {
+    return false;
+  }
+  return words.some((word) => ["it", "that", "them", "these", "those", "they", "yes", "confirm", "continue"].includes(word));
 }
 
 function uniqueSdkToolName(name, usedNames) {
