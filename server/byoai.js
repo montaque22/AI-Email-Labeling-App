@@ -28,6 +28,11 @@ import { UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import { upsertEmailAutomationResult } from "./email-index.js";
+import {
+  buildAiHelperSystemPrompt,
+  constrainAiHelperEmailSearchInput,
+  isAiHelperScopeFollowUp,
+} from "./ai-helper-agent.js";
 
 const SECRET = process.env.BETTER_AUTH_SECRET || "local-byoai-secret";
 const clientEncryptionKeyPair = crypto.generateKeyPairSync("rsa", {
@@ -216,6 +221,19 @@ const SYSTEM_MCP_TOOLS = [
         limit: { type: "number", minimum: 1, maximum: 100, description: "Page size. Use 100 for an exhaustive review. This does not control totalMatches, which always reports the complete database count." },
         offset: { type: "number", description: "Zero-based indexed result offset. Use with limit to scan every matching email in batches." },
         searchConnectedAccounts: { type: "boolean", description: "When true, search connected email providers if the indexed database does not contain enough information. Use for deep searches across archive, trash, drafts, sent mail, or older/unindexed messages." },
+        filterEvidence: {
+          type: "object",
+          description: "For each restrictive filter, quote the exact user phrase that supports it. Omit for an unfiltered all-mail search.",
+          properties: {
+            emailId: { type: "string" },
+            subject: { type: "string" },
+            from: { type: "string" },
+            to: { type: "string" },
+            state: { type: "string" },
+            label: { type: "string" },
+          },
+          additionalProperties: false,
+        },
       },
       additionalProperties: false,
     },
@@ -1573,38 +1591,7 @@ async function generateAiHelperChat(userId, request) {
     lastAssistantQuestion,
   });
   const aiResponse = await callBestAvailableAi(userId, {
-    systemPrompt: [
-      "You are Emailable's AI Helper, an email and task assistant acting as an agent for the app user.",
-      "You can answer questions about email, help compose or reply to emails, manage Emailable tasks, and use available tools whenever they are the reliable way to answer.",
-      "Act as a flexible agent, not a command classifier. Decide whether the user is asking for advice, analysis, information, a draft, or an action. Questions such as 'can I delete them all?' are requests for a verdict, not authorization to delete.",
-      "You have access to every enabled tool attached to the user's account. Choose and combine tools yourself; do not tell the user to manually select emails when a search tool can identify them.",
-      "Keep conversational continuity. Interpret short follow-ups such as yes, sure, no, that one, do it, or continue as direct answers to your immediately previous question unless the user clearly changed topics.",
-      "When you list or identify emails and then ask whether the user wants to act on them, assume short follow-ups like delete them, archive them, yes, or do it refer to that same listed set.",
-      "When you list or identify tasks and then ask whether the user wants to act on them, assume short follow-ups like delete them, defer them, close them, complete them, yes, or do it refer to that same listed set.",
-      "Emails visible on screen or selected by the user are supplemental context only. Never use the visible list to narrow, redefine, estimate, or answer an email request unless the user explicitly says visible, selected, on screen, or this page.",
-      "For every email search, analysis, count, comparison, summary, recommendation, or action-targeting request, query the indexed database with find_email before reasoning about the answer. The database is the authoritative default scope. Search connected providers only when the indexed database has no matches or the user explicitly requests remote/provider search.",
-      "Pay close attention to quantifiers, labels, accounts, states, date ranges, exclusions, and words such as all, only, every, any, except, before, and after. Preserve the user's requested scope exactly. Do not silently narrow 'all General emails' to visible General emails, recent emails, one account, a sample, or the first page.",
-      "Think through the full request before answering. Restate the interpreted scope briefly when it is broad or destructive, report the database total, and clearly disclose if any requested portion was not examined.",
-      "For find_email results, totalMatches is the authoritative count for the complete database scope. returned is only the current page. Never add page lengths, count preview cards, or substitute reviewed results for totalMatches. The application will attach the authoritative database total to your final response, so do not independently restate an overall match count. If the user asks to look through all matches, use limit 100, follow nextOffset until it is null, and reconcile the scan against totalMatches before claiming completion.",
-      "Before sending any numeric email claim, check it against the latest find_email totalMatches for the same filter. If the tool evidence conflicts or pagination is incomplete, continue searching or explicitly say the review is incomplete; never guess or present a partial number as the total.",
-      "When the user explicitly commands you to delete or archive email, first search the indexed scope with find_email, then call propose_email_bulk_action with the exact structured filters. Do not provide or estimate the action count; the application will resolve the proposal against the database and use that authoritative count. The proposal never executes the action; the UI will require confirmation. Do not merely describe how the user could do it.",
-      "Tasks visible on screen or selected by the user are active context and should be considered first.",
-      "For task requests, use task tools to find, open, summarize, group, delete, defer, edit, and close/complete tasks. Use listTasks for broad summaries, searchTasks for fuzzy title lookup, getTask for a specific id, deleteTask for deletion, editTask for edits, and generateNudgeSteps or simplifyNudgeStep for next-step help.",
-      "When creating a task from an email, always include sourceEmailId with the exact Email ID from the active email context or from the find_email result that the task is based on.",
-      "When the user asks to open a task, identify the task clearly and include its id/title in your response; the UI will show an Open button for affected tasks.",
-      "You must understand email state. Inbox, sent, drafts, archive, labels, read/unread, and rules are meaningfully different states.",
-      "Do not answer state/count questions from visible context alone unless the user explicitly asks about only visible emails. For archived mail, sent mail, drafts, labels, read/unread status, or rule counts, use tools to query indexed/database-backed data.",
-      "Infer the right tool and fields from the user's wording. For example, archive or archived means search indexed email state/archive; drafts means draft state; sent means sent state; label names mean label filters; pending/reviewed rules mean query_email_rules.",
-      "When searching for emails, first use indexed/database-backed information through find_email.",
-      "When the user asks to scan, review, triage, or analyze a label, query find_email with the exact label and searchConnectedAccounts false. Use totalMatches and paginate with offset until you have reviewed the complete set or have enough evidence for a clearly qualified verdict. Separate messages worth reviewing from likely safe bulk cleanup, explain why, and never perform deletion merely because the user asked whether deletion is advisable.",
-      "If the user explicitly requests database-only or indexed-only analysis, never search connected providers in that turn.",
-      "If indexed/database results are missing, too shallow, or do not include the body/replies needed to answer, call find_email again with searchConnectedAccounts true. Do this automatically; do not ask the user for permission first.",
-      "A single user message may contain multiple commands. Complete each independent command in order, making multiple tool calls when needed, and summarize each result. Never silently drop later commands.",
-      "For broad searches, include likely states explicitly. Search inbox, archive/archived, trash, drafts, and sent when the user's wording suggests those locations or when the first search does not find enough information.",
-      "When a user asks about an email with replies or details inside the body, prefer tool results that include bodyText/threadBodyText over snippets. If only snippets are available, broaden the search.",
-      "If solving the task would require more than 10 tool calls, stop and explain what is making it hard and what detail would help narrow the search.",
-      "Be concise and practical. If you need a user decision before taking the next step, ask one clear question.",
-    ].join("\n"),
+    systemPrompt: buildAiHelperSystemPrompt(),
     messages: [
       ...previousHistory.map((message) => ({
         role: message.role,
@@ -1718,7 +1705,7 @@ function describeEmailSearchScope(input) {
   if (input.to) filters.push(`account ${input.to}`);
   if (input.subject) filters.push(`subject “${input.subject}”`);
   if (input.emailId) filters.push(`email id ${input.emailId}`);
-  return filters.length > 0 ? filters.join(" and ") : "the requested filters";
+  return filters.length > 0 ? filters.join(" and ") : "all indexed mail";
 }
 
 function replaceContradictoryOverallEmailCounts(message, totalMatches) {
@@ -2645,46 +2632,6 @@ function applySystemToolExecutionDefaults(toolName, input, executionContext = {}
   return sourceEmailId ? { ...input, sourceEmailId } : input;
 }
 
-export function constrainAiHelperEmailSearchInput(input, { allowInheritedScope = false, prompt = "" } = {}) {
-  const constrained = { ...input };
-  if (allowInheritedScope) {
-    return constrained;
-  }
-  const normalizedPrompt = normalizeScopeText(prompt);
-
-  if (typeof constrained.to === "string" && constrained.to.trim()) {
-    const requestedAccount = normalizeScopeText(constrained.to);
-    if (!requestedAccount || !normalizedPrompt.includes(requestedAccount)) {
-      delete constrained.to;
-    }
-  }
-
-  if (typeof constrained.state === "string" && constrained.state.trim()) {
-    const requestedState = normalizeScopeText(constrained.state);
-    const stateTerms = requestedState === "archive" || requestedState === "archived"
-      ? ["archive", "archived"]
-      : requestedState === "draft" || requestedState === "drafts"
-        ? ["draft", "drafts"]
-        : [requestedState];
-    if (!stateTerms.some((term) => normalizedPrompt.includes(term))) {
-      delete constrained.state;
-    }
-  }
-
-  return constrained;
-}
-
-function normalizeScopeText(value) {
-  return String(value || "").trim().toLocaleLowerCase("en-US");
-}
-
-function isAiHelperScopeFollowUp(prompt) {
-  const words = normalizeScopeText(prompt).split(/\s+/).filter(Boolean);
-  if (words.length > 8) {
-    return false;
-  }
-  return words.some((word) => ["it", "that", "them", "these", "those", "they", "yes", "confirm", "continue"].includes(word));
-}
 
 function uniqueSdkToolName(name, usedNames) {
   const base = String(name || "tool")

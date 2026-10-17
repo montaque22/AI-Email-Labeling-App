@@ -1492,13 +1492,9 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
   const offset = Math.max(Number.parseInt(payload.offset, 10) || 0, 0);
   const searchConnectedAccounts = Boolean(payload.searchConnectedAccounts);
 
-  if (!emailId && !subject && !from && !to && !state && !label) {
-    return { returned: 0, results: [], source: "indexed_database", totalMatches: 0 };
-  }
-
   const indexedMatches = await findIndexedEmailsForMcp(userId, { emailId, subject, from, to, state, label, limit, offset });
   if (indexedMatches.totalMatches > 0 || !searchConnectedAccounts) {
-    return searchConnectedAccounts ? await enrichIndexedEmailMatches(userId, indexedMatches, { subject, from, limit }) : indexedMatches;
+    return indexedMatches;
   }
 
   if (emailId) {
@@ -1711,48 +1707,6 @@ function indexedEmailToMcpResult(email) {
     labels: email.labels,
     state: email.archived ? "archive" : email.direction || email.mailbox || "indexed",
     isRead: email.isRead,
-  };
-}
-
-async function enrichIndexedEmailMatches(userId, indexedMatches, { subject = "", from = "", limit = 20 } = {}) {
-  const results = [];
-  const enrichmentLimit = Math.min(Math.max(Number(limit) || 20, 1), 10);
-
-  for (const email of indexedMatches.results ?? []) {
-    if (results.length >= limit) {
-      break;
-    }
-    if (results.length >= enrichmentLimit) {
-      results.push(email);
-      continue;
-    }
-
-    try {
-      const match = await findConnectedEmailContextById(userId, {
-        accountEmail: email.accountEmail,
-        emailId: email.emailId,
-        subject: email.subject || subject,
-      });
-      if (from && !emailMatchesFrom(match.email, from)) {
-        results.push(email);
-        continue;
-      }
-      results.push({
-        ...email,
-        ...mcpEmailSearchResult(match),
-        source: "indexed_database_with_provider_detail",
-      });
-    } catch (error) {
-      results.push(email);
-    }
-  }
-
-  return {
-    ...indexedMatches,
-    results,
-    source: results.some((email) => email.source === "indexed_database_with_provider_detail")
-      ? "indexed_database_with_provider_detail"
-      : indexedMatches.source,
   };
 }
 
