@@ -858,7 +858,6 @@ type InboxAiChatMessage = {
 
 type InboxAiBulkActionProposal = {
   action: "archive" | "delete";
-  expectedCount: number;
   from: string;
   label: string;
   scopeSummary: string;
@@ -5273,9 +5272,6 @@ function InboxAiHelperPanel({
         const fallbackEmails = answer.affectedEmails.map(affectedEmailToInboxMessage);
         const targets = await resolveAgentBulkActionProposal(answer.proposedBulkAction, fallbackEmails);
         if (targets.length === 0) throw new Error(`I could not resolve any emails in ${answer.proposedBulkAction.scopeSummary}.`);
-        if (targets.length !== answer.proposedBulkAction.expectedCount) {
-          throw new Error(`The database changed while I was preparing this action: the agent found ${answer.proposedBulkAction.expectedCount.toLocaleString()}, but confirmation resolved ${targets.length.toLocaleString()}. Please ask me to try again so I do not act on the wrong scope.`);
-        }
         const blockedByCommitment = targets.filter((message) => Boolean(message.commitment));
         if (blockedByCommitment.length > 0) {
           throw new Error(`${blockedByCommitment.length.toLocaleString()} matching email${blockedByCommitment.length === 1 ? " has" : "s have"} an active commitment. Complete or renege ${blockedByCommitment.length === 1 ? "it" : "them"} before continuing.`);

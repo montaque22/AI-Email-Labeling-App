@@ -231,10 +231,9 @@ const SYSTEM_MCP_TOOLS = [
         state: { type: "string", description: "Mailbox state such as inbox or archived." },
         from: { type: "string", description: "Sender filter explicitly requested by the user." },
         subject: { type: "string", description: "Subject filter explicitly requested by the user." },
-        expectedCount: { type: "number", minimum: 1 },
         scopeSummary: { type: "string", description: "Concise faithful description of the full requested scope." },
       },
-      required: ["action", "expectedCount", "scopeSummary"],
+      required: ["action", "scopeSummary"],
       additionalProperties: false,
     },
   },
@@ -1588,7 +1587,7 @@ async function generateAiHelperChat(userId, request) {
       "Think through the full request before answering. Restate the interpreted scope briefly when it is broad or destructive, report the database total, and clearly disclose if any requested portion was not examined.",
       "For find_email results, totalMatches is the authoritative count for the complete database scope. returned is only the current page. Never add page lengths, count preview cards, or substitute reviewed results for totalMatches. If the user asks only how many, answer from totalMatches after verifying the filter. If the user asks to look through all matches, use limit 100, follow nextOffset until it is null, and reconcile the scan against totalMatches before claiming completion.",
       "Before sending any numeric email claim, check it against the latest find_email totalMatches for the same filter. If the tool evidence conflicts or pagination is incomplete, continue searching or explicitly say the review is incomplete; never guess or present a partial number as the total.",
-      "When the user explicitly commands you to delete or archive email, first search the complete indexed scope with find_email, then call propose_email_bulk_action with the exact structured scope and database count. That proposal never executes the action; the UI will require confirmation. Do not merely describe how the user could do it.",
+      "When the user explicitly commands you to delete or archive email, first search the indexed scope with find_email, then call propose_email_bulk_action with the exact structured filters. Do not provide or estimate the action count; the application will resolve the proposal against the database and use that authoritative count. The proposal never executes the action; the UI will require confirmation. Do not merely describe how the user could do it.",
       "Tasks visible on screen or selected by the user are active context and should be considered first.",
       "For task requests, use task tools to find, open, summarize, group, delete, defer, edit, and close/complete tasks. Use listTasks for broad summaries, searchTasks for fuzzy title lookup, getTask for a specific id, deleteTask for deletion, editTask for edits, and generateNudgeSteps or simplifyNudgeStep for next-step help.",
       "When creating a task from an email, always include sourceEmailId with the exact Email ID from the active email context or from the find_email result that the task is based on.",
@@ -1669,7 +1668,6 @@ function extractProposedBulkActionFromAiHelperToolResults(toolResults = []) {
   if (!entry?.input || !["archive", "delete"].includes(entry.input.action)) return null;
   return {
     action: entry.input.action,
-    expectedCount: Math.max(1, Number(entry.input.expectedCount) || 1),
     from: typeof entry.input.from === "string" ? entry.input.from : "",
     label: typeof entry.input.label === "string" ? entry.input.label : "",
     scopeSummary: typeof entry.input.scopeSummary === "string" ? entry.input.scopeSummary : "matching emails",

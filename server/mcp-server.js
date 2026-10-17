@@ -332,7 +332,6 @@ function createMcpServer(userId) {
         state: z.string().optional(),
         from: z.string().optional(),
         subject: z.string().optional(),
-        expectedCount: z.number().int().min(1),
         scopeSummary: z.string().min(1).max(500),
       },
     },
