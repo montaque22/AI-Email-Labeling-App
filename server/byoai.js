@@ -62,7 +62,7 @@ const AI_LABEL_MAX_CANDIDATES = 3;
 const AI_LABEL_NAME_MAX_LENGTH = 25;
 const AI_LABEL_REASON_MAX_LENGTH = 200;
 const AI_HELPER_HISTORY_LIMIT = 60;
-const AI_HELPER_MEMORY_TTL_MS = 60 * 60 * 1000;
+const AI_HELPER_MEMORY_TTL_MS = 24 * 60 * 60 * 1000;
 const CUSTOM_PROMPT_AUTOMATION_CONCURRENCY = 2;
 const aiHelperMemory = new Map();
 const DEFAULT_DRAFT_REPLY_SYSTEM_PROMPT = `You are an email reply assistant.
@@ -214,6 +214,7 @@ const SYSTEM_MCP_TOOLS = [
         state: { type: "string", description: "Optional mailbox/state filter such as inbox, sent, drafts, archive, archived, read, unread, or a label/folder name." },
         label: { type: "string", description: "Optional Emailable label/folder name to filter by." },
         limit: { type: "number", description: "Maximum indexed results to return. Use a small limit for examples and a larger limit for counting." },
+        offset: { type: "number", description: "Zero-based indexed result offset. Use with limit to scan every matching email in batches." },
         searchConnectedAccounts: { type: "boolean", description: "When true, search connected email providers if the indexed database does not contain enough information. Use for deep searches across archive, trash, drafts, sent mail, or older/unindexed messages." },
       },
       additionalProperties: false,
@@ -1554,6 +1555,8 @@ async function generateAiHelperChat(userId, request) {
     systemPrompt: [
       "You are Emailable's AI Helper, an email and task assistant acting as an agent for the app user.",
       "You can answer questions about email, help compose or reply to emails, manage Emailable tasks, and use available tools whenever they are the reliable way to answer.",
+      "Act as a flexible agent, not a command classifier. Decide whether the user is asking for advice, analysis, information, a draft, or an action. Questions such as 'can I delete them all?' are requests for a verdict, not authorization to delete.",
+      "You have access to every enabled tool attached to the user's account. Choose and combine tools yourself; do not tell the user to manually select emails when a search tool can identify them.",
       "Keep conversational continuity. Interpret short follow-ups such as yes, sure, no, that one, do it, or continue as direct answers to your immediately previous question unless the user clearly changed topics.",
       "When you list or identify emails and then ask whether the user wants to act on them, assume short follow-ups like delete them, archive them, yes, or do it refer to that same listed set.",
       "When you list or identify tasks and then ask whether the user wants to act on them, assume short follow-ups like delete them, defer them, close them, complete them, yes, or do it refer to that same listed set.",
@@ -1567,6 +1570,8 @@ async function generateAiHelperChat(userId, request) {
       "Do not answer state/count questions from visible context alone unless the user explicitly asks about only visible emails. For archived mail, sent mail, drafts, labels, read/unread status, or rule counts, use tools to query indexed/database-backed data.",
       "Infer the right tool and fields from the user's wording. For example, archive or archived means search indexed email state/archive; drafts means draft state; sent means sent state; label names mean label filters; pending/reviewed rules mean query_email_rules.",
       "When searching for emails, first use indexed/database-backed information through find_email.",
+      "When the user asks to scan, review, triage, or analyze a label, query find_email with the exact label and searchConnectedAccounts false. Use totalMatches and paginate with offset until you have reviewed the complete set or have enough evidence for a clearly qualified verdict. Separate messages worth reviewing from likely safe bulk cleanup, explain why, and never perform deletion merely because the user asked whether deletion is advisable.",
+      "If the user explicitly requests database-only or indexed-only analysis, never search connected providers in that turn.",
       "If indexed/database results are missing, too shallow, or do not include the body/replies needed to answer, call find_email again with searchConnectedAccounts true. Do this automatically; do not ask the user for permission first.",
       "A single user message may contain multiple commands. Complete each independent command in order, making multiple tool calls when needed, and summarize each result. Never silently drop later commands.",
       "For broad searches, include likely states explicitly. Search inbox, archive/archived, trash, drafts, and sent when the user's wording suggests those locations or when the first search does not find enough information.",
@@ -3605,7 +3610,7 @@ async function buildActivatedAiMcpClients(userId) {
 
 async function buildAiHelperMcpClients(userId) {
   const activeClients = await buildActivatedAiMcpClients(userId);
-  const taskToolNames = ["searchTasks", "createTask", "getTask", "editTask", "deleteTask", "completeTask", "listTasks", "generateNudgeSteps", "simplifyNudgeStep"];
+  const systemToolNames = SYSTEM_MCP_TOOLS.map((tool) => tool.name);
   const systemIndex = activeClients.findIndex((client) => client.isSystem);
   if (systemIndex === -1) {
     const internalToken = await getInternalMcpToken(userId);
@@ -3622,12 +3627,12 @@ async function buildAiHelperMcpClients(userId) {
         enabled: true,
         status: "connected",
         tools: SYSTEM_MCP_TOOLS,
-        selectedTools: taskToolNames,
+        selectedTools: systemToolNames,
       },
     ].filter((client) => isUsableRemoteMcpClient(client));
   }
 
-  const merged = new Set([...(activeClients[systemIndex].selectedTools ?? []), ...taskToolNames]);
+  const merged = new Set([...(activeClients[systemIndex].selectedTools ?? []), ...systemToolNames]);
   activeClients[systemIndex] = {
     ...activeClients[systemIndex],
     selectedTools: Array.from(merged),

@@ -307,6 +307,7 @@ function createMcpServer(userId) {
         state: z.string().optional().describe("Optional mailbox/state filter such as inbox, sent, drafts, archive, archived, read, unread, or a label/folder name."),
         label: z.string().optional().describe("Optional Emailable label/folder name to filter by."),
         limit: z.number().min(1).max(200).optional().describe("Maximum indexed results to return. Use a small limit for examples and a larger limit for counting."),
+        offset: z.number().int().min(0).optional().describe("Zero-based indexed result offset. Use with limit to scan all matches in batches."),
         searchConnectedAccounts: z.boolean().optional().describe("When true, search connected email providers if the indexed database does not contain enough information. Use for deep searches across archive, trash, drafts, sent mail, or older/unindexed messages."),
       },
     },

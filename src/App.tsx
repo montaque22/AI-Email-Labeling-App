@@ -5011,6 +5011,10 @@ function InboxAiHelperPanel({
 
   function inferBulkEmailAction(prompt: string): "archive" | "delete" | null {
     const normalized = prompt.toLowerCase();
+    const isAdvisoryQuestion = /\b(can|could|should|would)\s+(i|we)\b|\b(is|are)\s+there\b|\bwhat\s+(can|should|do)\b|\banything\b.*\b(delete|archive|keep|look at|review)\b/.test(normalized);
+    if (isAdvisoryQuestion) {
+      return null;
+    }
     if (/\b(delete|trash|remove)\b/.test(normalized) && /\b(email|emails|message|messages|mail|selected|these|them|visible|shown)\b/.test(normalized)) {
       return "delete";
     }
@@ -5098,6 +5102,11 @@ function InboxAiHelperPanel({
     }
     const latestAffectedMessages = getLatestAffectedMessagesFromChat();
     if (latestAffectedMessages.length > 0 && /\b(them|those|these|listed|that list|the list|previous)\b/.test(normalized)) {
+      const affectedLabelNames = [...new Set(latestAffectedMessages.flatMap((message) => message.labels))];
+      if (affectedLabelNames.length === 1) {
+        const completeLabelResults = await searchIndexedMail(`all emails label ${affectedLabelNames[0]}`);
+        if (completeLabelResults.length > 0) return completeLabelResults;
+      }
       const previousSearchPrompt = [...messages].reverse().find((message) =>
         message.role === "user" && !inferBulkEmailAction(message.text) && /\b(find|show|search|all|label|emails?|messages?)\b/i.test(message.text),
       )?.text;

@@ -1489,21 +1489,16 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
   const state = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
   const label = typeof payload.label === "string" ? payload.label.trim() : "";
   const limit = Math.min(Math.max(Number(payload.limit) || 20, 1), 200);
+  const offset = Math.max(Number.parseInt(payload.offset, 10) || 0, 0);
   const searchConnectedAccounts = Boolean(payload.searchConnectedAccounts);
 
   if (!emailId && !subject && !from && !to && !state && !label) {
     return { returned: 0, results: [], source: "indexed_database", totalMatches: 0 };
   }
 
-  const indexedMatches = await findIndexedEmailsForMcp(userId, { emailId, subject, from, to, state, label, limit });
+  const indexedMatches = await findIndexedEmailsForMcp(userId, { emailId, subject, from, to, state, label, limit, offset });
   if (indexedMatches.totalMatches > 0 || !searchConnectedAccounts) {
-    if (indexedMatches.totalMatches === 0 && shouldAutoSearchConnectedAccounts({ emailId, subject, from, state, label })) {
-      // Fall through to connected-provider search. This keeps the AI Helper from stopping
-      // at an empty index result when the message exists in archive/trash/drafts or has not
-      // been indexed yet.
-    } else {
-      return searchConnectedAccounts ? await enrichIndexedEmailMatches(userId, indexedMatches, { subject, from, limit }) : indexedMatches;
-    }
+    return searchConnectedAccounts ? await enrichIndexedEmailMatches(userId, indexedMatches, { subject, from, limit }) : indexedMatches;
   }
 
   if (emailId) {
@@ -1554,7 +1549,7 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
   return { returned: results.length, results, source: "connected_accounts", totalMatches: results.length };
 }
 
-async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, state, label, limit = 20 }) {
+async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, state, label, limit = 20, offset = 0 }) {
   const accounts = to
     ? (await getConnectedEmailAccounts(userId)).filter((account) => account.email.toLowerCase() === to)
     : await getConnectedEmailAccounts(userId);
@@ -1611,6 +1606,7 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
     search,
     sort: "newest",
     limit,
+    pageToken: String(offset),
   });
 
   const filtered = result.messages
@@ -1633,7 +1629,13 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
   const results = filtered
     .slice(0, limit)
     .map(indexedEmailToMcpResult);
-  return { returned: results.length, results, source: "indexed_database", totalMatches };
+  return {
+    returned: results.length,
+    results,
+    source: "indexed_database",
+    totalMatches,
+    nextOffset: offset + limit < totalMatches ? offset + limit : null,
+  };
 }
 
 async function countIndexedEmailsForMcp(userId, { accountIds, archivedOnly, direction, includeArchived, labelName, readFilter, search, trashOnly }) {
@@ -1796,17 +1798,6 @@ function emailStateLooksLikeTrash(email) {
   const mailbox = String(email.mailbox || email.state || "").toLowerCase();
   const labels = Array.isArray(email.labels) ? email.labels.map((item) => String(item).toLowerCase()) : [];
   return mailbox.includes("trash") || mailbox.includes("deleted") || labels.includes("trash") || labels.includes("deleted");
-}
-
-function shouldAutoSearchConnectedAccounts({ emailId = "", subject = "", from = "", state = "", label = "" } = {}) {
-  const normalizedState = String(state || "").toLowerCase();
-  return Boolean(
-    emailId ||
-    subject ||
-    from ||
-    label ||
-    ["archive", "archived", "trash", "deleted", "deleted items", "draft", "drafts", "sent"].includes(normalizedState),
-  );
 }
 
 function emailMatchesFrom(email, from) {
