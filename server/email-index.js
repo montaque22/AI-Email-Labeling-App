@@ -231,8 +231,9 @@ export async function deleteEmailIndexEntries(userId, messages) {
   }
 
   const deleted = [];
-  for (const message of messages) {
-    const result = await dbPool.query(
+  for (let offset = 0; offset < messages.length; offset += 20) {
+    const batch = messages.slice(offset, offset + 20);
+    const results = await Promise.all(batch.map((message) => dbPool.query(
       `
         delete from email_index
         where user_id = $1
@@ -243,8 +244,8 @@ export async function deleteEmailIndexEntries(userId, messages) {
         returning *
       `,
       [userId, message.accountId, message.emailId, message.mailbox || ""],
-    );
-    deleted.push(...result.rows.map(mapEmailIndexRow));
+    )));
+    deleted.push(...results.flatMap((result) => result.rows.map(mapEmailIndexRow)));
   }
   return deleted;
 }
@@ -255,8 +256,9 @@ export async function archiveEmailIndexEntries(userId, messages, { allowCommitte
   }
 
   const archived = [];
-  for (const message of messages) {
-    const result = await dbPool.query(
+  for (let offset = 0; offset < messages.length; offset += 20) {
+    const batch = messages.slice(offset, offset + 20);
+    const results = await Promise.all(batch.map((message) => dbPool.query(
       `
         update email_index
         set archived = true,
@@ -269,8 +271,8 @@ export async function archiveEmailIndexEntries(userId, messages, { allowCommitte
         returning *
       `,
       [userId, message.accountId, message.emailId, message.mailbox || ""],
-    );
-    archived.push(...result.rows.map(mapEmailIndexRow));
+    )));
+    archived.push(...results.flatMap((result) => result.rows.map(mapEmailIndexRow)));
   }
   return archived;
 }
@@ -403,6 +405,7 @@ export async function listEmailIndexEntries(userId, query) {
   const result = await dbPool.query(
     `
       select email_index.*,
+        count(*) over()::int as total_count,
         coalesce((
           select count(*)::int
           from email_automation_results
@@ -422,6 +425,7 @@ export async function listEmailIndexEntries(userId, query) {
   return {
     messages: rows.map(mapEmailIndexRow),
     nextPageToken: result.rows.length > limit ? String(offset + limit) : null,
+    totalCount: Number(result.rows[0]?.total_count ?? 0),
   };
 }
 

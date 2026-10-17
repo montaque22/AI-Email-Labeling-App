@@ -71,6 +71,7 @@ import { CalendarPage } from "./components/calendar/CalendarPage";
 import { TasksPage } from "./components/tasks/TasksPage";
 import { BackgroundTaskDrawer } from "./components/background-tasks/BackgroundTaskDrawer";
 import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/rules/RuleProviderApplyNotice";
+import { InboxSelectAllBanner } from "./components/inbox/InboxSelectAllBanner";
 import { authClient } from "./lib/auth-client";
 import { fetchNoStore } from "./lib/http";
 import { clearPwaUnreadBadge, refreshPwaUnreadBadge } from "./lib/pwa-badge";
@@ -2287,6 +2288,8 @@ function InboxPage({
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [composeInitial, setComposeInitial] = useState<Partial<InboxComposeDraft> | null>(null);
   const [selectedMessageKeys, setSelectedMessageKeys] = useState<string[]>([]);
+  const [isSelectingEntireList, setIsSelectingEntireList] = useState(false);
+  const [listTotalCount, setListTotalCount] = useState<number | null>(null);
   const [deletingMessageKeys, setDeletingMessageKeys] = useState<string[]>([]);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isBulkActionRunning, setIsBulkActionRunning] = useState(false);
@@ -2572,6 +2575,7 @@ function InboxPage({
       ? allLabelCount
       : labelCounts[selectedLabelId] ?? null
     : null;
+  const selectableTotal = listTotalCount ?? knownInboxTotal ?? filteredMessages.length;
   const fallbackLoadMoreToken = !nextPageToken && typeof knownInboxTotal === "number" && filteredMessages.length < knownInboxTotal
     ? buildFallbackInboxLoadMoreToken()
     : null;
@@ -2899,6 +2903,7 @@ function InboxPage({
           );
         });
         setNextPageToken(data.nextPageToken ?? null);
+        setListTotalCount(typeof data.totalCount === "number" ? data.totalCount : null);
         if (reset) {
           setSelectedMessageKeys([]);
           setMobilePullDistance(0);
@@ -3170,6 +3175,40 @@ function InboxPage({
 
       return [...new Set([...current, ...visibleKeys])];
     });
+  }
+
+  async function selectEntireList() {
+    if (isSelectingEntireList || selectableTotal <= messages.length || inboxMode === "drafts") return;
+    setIsSelectingEntireList(true);
+    try {
+      const endpoint = isInboxSearchActive ? "/api/inbox/search" : inboxMode === "sent" ? "/api/inbox/sent" : "/api/inbox/messages";
+      const allMessages: InboxMessage[] = [];
+      let pageToken: string | null = "0";
+      while (pageToken !== null && allMessages.length < selectableTotal) {
+        const params = buildInboxMessageParams({
+          accountIds: isInboxSearchActive ? accounts.map((account) => account.id) : selectedAccountIds,
+          inboxMode,
+          labelId: isInboxSearchActive || inboxMode === "sent" ? "" : selectedLabelId,
+          limit: INBOX_CLIENT_PAGE_SIZE,
+          pageToken,
+          search: isInboxSearchActive ? committedInboxSearch : sentSearch,
+          sort,
+        });
+        const response = await fetchNoStore(`${endpoint}?${params.toString()}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error ?? "Could not select the entire list.");
+        allMessages.push(...((data.messages ?? []) as InboxMessage[]));
+        pageToken = data.nextPageToken ?? null;
+      }
+      const uniqueMessages = sortInboxMessagesForClient(mergeInboxMessages([], allMessages), sort);
+      setMessages(uniqueMessages);
+      setSelectedMessageKeys(uniqueMessages.map(getInboxMessageKey));
+      setNextPageToken(null);
+    } catch (selectionError) {
+      showInboxToast(selectionError instanceof Error ? selectionError.message : "Could not select the entire list.", "error");
+    } finally {
+      setIsSelectingEntireList(false);
+    }
   }
 
   function showInboxToast(message: string, type: InboxToast["type"] = "success", options: Pick<InboxToast, "persistent"> = {}) {
@@ -3713,11 +3752,11 @@ function InboxPage({
 
   async function deleteSelectedMessages(messagesToDelete = selectedMessages) {
     if (messagesToDelete.length === 0) {
-      return;
+      return { failed: 0, succeeded: 0 };
     }
     if (messagesToDelete.some((message) => Boolean(message.commitment))) {
       showInboxToast("Complete or renege the commitment before deleting this email.", "error");
-      return;
+      return { failed: messagesToDelete.length, succeeded: 0 };
     }
 
     const requestedDeleteKeys = messagesToDelete.map(getInboxMessageKey);
@@ -3735,7 +3774,7 @@ function InboxPage({
       const data = await response.json();
       if (!response.ok) {
         setError(data.error ?? "Could not delete messages.");
-        return;
+        return { failed: messagesToDelete.length, succeeded: 0 };
       }
 
       const successfulDeletes = Array.isArray(data.results)
@@ -3761,8 +3800,10 @@ function InboxPage({
         setError(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be deleted.`);
         showInboxToast(`${data.failed.length} message${data.failed.length === 1 ? "" : "s"} could not be deleted.`, "error");
       }
+      return { failed: Number(data.failed?.length ?? 0), succeeded: successfulDeletes.length };
     } catch {
       setError("Could not delete messages.");
+      return { failed: messagesToDelete.length, succeeded: 0 };
     } finally {
       setDeletingMessageKeys([]);
       setIsBulkActionRunning(false);
@@ -3771,11 +3812,11 @@ function InboxPage({
 
   async function archiveSelectedMessages(messagesToArchive = selectedMessages) {
     if (messagesToArchive.length === 0) {
-      return;
+      return { failed: 0, succeeded: 0 };
     }
     if (messagesToArchive.some((message) => Boolean(message.commitment))) {
       showInboxToast("Complete or renege the commitment before archiving this email.", "error");
-      return;
+      return { failed: messagesToArchive.length, succeeded: 0 };
     }
 
     setIsBulkActionRunning(true);
@@ -3792,7 +3833,7 @@ function InboxPage({
       if (!response.ok) {
         setError(data.error ?? "Could not archive messages.");
         showInboxToast(data.error ?? "Could not archive messages.", "error");
-        return;
+        return { failed: messagesToArchive.length, succeeded: 0 };
       }
 
       const successfulArchives = Array.isArray(data.results)
@@ -3821,9 +3862,11 @@ function InboxPage({
       if (successfulArchives.length === selectedMessages.length) {
         setIsMobileEditMode(false);
       }
+      return { failed: Number(data.failed?.length ?? 0), succeeded: successfulArchives.length };
     } catch {
       setError("Could not archive messages.");
       showInboxToast("Could not archive messages.", "error");
+      return { failed: messagesToArchive.length, succeeded: 0 };
     } finally {
       setIsBulkActionRunning(false);
     }
@@ -4352,6 +4395,16 @@ function InboxPage({
                   <span />
                 )}
               </div>
+              {allVisibleSelected ? (
+                <InboxSelectAllBanner
+                  isBusy={isSelectingEntireList}
+                  isEntireListSelected={selectedMessages.length >= selectableTotal}
+                  loadedCount={filteredMessages.length}
+                  onClear={() => setSelectedMessageKeys([])}
+                  onSelectEntireList={() => void selectEntireList()}
+                  totalCount={selectableTotal}
+                />
+              ) : null}
               {isLoading ? (
                 <InboxLoadingProgress completed={messageLoadProgress.completed} total={messageLoadProgress.total} />
               ) : animatedMessages.length === 0 ? (
@@ -4649,8 +4702,8 @@ function InboxAiHelperPanel({
   inboxMode: InboxMode;
   labels: Label[];
   onClose: () => void;
-  onArchiveMessages: (messages: InboxMessage[]) => Promise<void>;
-  onDeleteMessages: (messages: InboxMessage[]) => Promise<void>;
+  onArchiveMessages: (messages: InboxMessage[]) => Promise<{ failed: number; succeeded: number }>;
+  onDeleteMessages: (messages: InboxMessage[]) => Promise<{ failed: number; succeeded: number }>;
   onOpenComposeDraft: (draft: Partial<InboxComposeDraft> | null) => void;
   onOpenMessage: (message: InboxMessage) => Promise<void> | void;
   privacyMode: boolean;
@@ -4892,6 +4945,22 @@ function InboxAiHelperPanel({
     };
   }
 
+  async function fetchAllIndexedPages(endpoint: string, initialParams: URLSearchParams) {
+    const found: InboxMessage[] = [];
+    let pageToken: string | null = "";
+    do {
+      const params = new URLSearchParams(initialParams);
+      if (pageToken) params.set("pageToken", pageToken);
+      else params.delete("pageToken");
+      const response = await fetchNoStore(`${endpoint}?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not search the indexed email database.");
+      found.push(...((data.messages ?? []) as InboxMessage[]));
+      pageToken = data.nextPageToken ?? null;
+    } while (pageToken);
+    return found;
+  }
+
   async function searchIndexedMail(query: string) {
     if (accounts.length === 0 || !query.trim()) {
       return [];
@@ -4910,9 +4979,7 @@ function InboxAiHelperPanel({
         search,
         sort: "newest",
       });
-      const response = await fetchNoStore(`/api/inbox/${scope.mode}?${params.toString()}`);
-      const data = await response.json();
-      return response.ok ? (data.messages ?? []).slice(0, 5) as InboxMessage[] : [];
+      return fetchAllIndexedPages(`/api/inbox/${scope.mode}`, params);
     }
 
     if (scope.mode === "archive" || scope.mode === "inbox") {
@@ -4926,11 +4993,9 @@ function InboxAiHelperPanel({
           search,
           sort: "newest",
         });
-        const response = await fetchNoStore(`/api/inbox/messages?${params.toString()}`);
-        const data = await response.json();
-        return response.ok ? (data.messages ?? []) as InboxMessage[] : [];
+        return fetchAllIndexedPages("/api/inbox/messages", params);
       }));
-      return sortInboxMessagesForClient(mergeInboxMessages([], results.flat()), "newest").slice(0, 5);
+      return sortInboxMessagesForClient(mergeInboxMessages([], results.flat()), "newest");
     }
 
     const params = buildInboxMessageParams({
@@ -4941,9 +5006,7 @@ function InboxAiHelperPanel({
       search,
       sort: "newest",
     });
-    const response = await fetchNoStore(`/api/inbox/search?${params.toString()}`);
-    const data = await response.json();
-    return response.ok ? (data.messages ?? []).slice(0, 5) as InboxMessage[] : [];
+    return fetchAllIndexedPages("/api/inbox/search", params);
   }
 
   function inferBulkEmailAction(prompt: string): "archive" | "delete" | null {
@@ -5035,6 +5098,13 @@ function InboxAiHelperPanel({
     }
     const latestAffectedMessages = getLatestAffectedMessagesFromChat();
     if (latestAffectedMessages.length > 0 && /\b(them|those|these|listed|that list|the list|previous)\b/.test(normalized)) {
+      const previousSearchPrompt = [...messages].reverse().find((message) =>
+        message.role === "user" && !inferBulkEmailAction(message.text) && /\b(find|show|search|all|label|emails?|messages?)\b/i.test(message.text),
+      )?.text;
+      if (previousSearchPrompt) {
+        const completeIndexedResults = await searchIndexedMail(previousSearchPrompt);
+        if (completeIndexedResults.length > 0) return completeIndexedResults;
+      }
       return latestAffectedMessages;
     }
 
@@ -5079,7 +5149,7 @@ function InboxAiHelperPanel({
 
       setPendingBulkAction({ action, messages: targets });
       addMessage({
-        affectedEmails: targets.map(summarizeAffectedEmail),
+        affectedEmails: targets.length <= 7 ? targets.map(summarizeAffectedEmail) : undefined,
         pendingBulkAction: action,
         role: "assistant",
         text: `I found ${targets.length} email${targets.length === 1 ? "" : "s"} to ${action}. Reply "confirm" to ${action} ${targets.length === 1 ? "it" : "them"}, or "cancel" to stop.`,
@@ -5115,12 +5185,15 @@ function InboxAiHelperPanel({
     setPendingBulkAction(null);
     setIsThinking(true);
     try {
-      if (action === "archive") {
-        await onArchiveMessages(targetMessages);
-      } else {
-        await onDeleteMessages(targetMessages);
-      }
-      addMessage({ role: "assistant", text: `${action === "archive" ? "Archived" : "Deleted"} ${targetMessages.length} email${targetMessages.length === 1 ? "" : "s"}.` });
+      const result = action === "archive"
+        ? await onArchiveMessages(targetMessages)
+        : await onDeleteMessages(targetMessages);
+      addMessage({
+        role: "assistant",
+        text: result.failed > 0
+          ? `${action === "archive" ? "Archived" : "Deleted"} ${result.succeeded} email${result.succeeded === 1 ? "" : "s"}; ${result.failed} failed.`
+          : `${action === "archive" ? "Archived" : "Deleted"} ${result.succeeded} email${result.succeeded === 1 ? "" : "s"}.`,
+      });
     } catch (error) {
       addMessage({
         role: "assistant",
@@ -5165,7 +5238,7 @@ function InboxAiHelperPanel({
           role: message.role,
           text: message.text,
         })),
-        contextDescription: selectedContextText,
+        contextDescription: `${selectedContextText}. Available labels: ${labels.map((label) => label.name).join(", ") || "none"}.`,
         contextMessages: activeContext.map((message) => ({
           accountEmail: message.accountEmail,
           date: message.date,
@@ -5961,6 +6034,7 @@ function InboxMessageRow({
       className={cn(
         "inbox-message-row relative select-none overflow-hidden border-b border-zinc-200 bg-white/45 transition last:border-b-0 hover:bg-white/80 md:bg-transparent",
         isDeleting ? "pointer-events-none opacity-60" : null,
+        isSelected ? "bg-blue-50/90 shadow-[inset_4px_0_0_rgb(37_99_235)] md:bg-blue-50/70" : null,
       )}
     >
       {isDeleting ? (
@@ -6016,6 +6090,7 @@ function InboxMessageRow({
             "relative grid w-full cursor-pointer touch-pan-y items-center bg-white/45 px-3 py-3 text-left transition duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] will-change-transform",
             pressState === "pressing" ? "scale-[0.975] bg-white/65 shadow-inner" : null,
             pressState === "popped" ? "scale-[1.025] bg-white/80 shadow-lg" : null,
+            isSelected ? "bg-blue-50/90 font-medium shadow-inner" : null,
           )}
           style={{
             gridTemplateColumns: isEditMode ? "3.25rem minmax(0, 1fr)" : "0rem minmax(0, 1fr)",

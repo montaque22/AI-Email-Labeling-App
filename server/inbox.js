@@ -1097,6 +1097,8 @@ async function deleteInboxMessages(userId, messages) {
 }
 
 async function archiveInboxMessages(userId, messages) {
+  const accounts = await getInboxAccounts(userId, []);
+  const accountsById = new Map(accounts.map((account) => [account.id, account]));
   const archivedRows = await archiveEmailIndexEntries(userId, messages);
   const archivedKeys = new Set(archivedRows.map((message) => `${message.accountId}:${message.id}:${message.mailbox ?? ""}`));
   const results = messages.map((message) => ({
@@ -1106,6 +1108,10 @@ async function archiveInboxMessages(userId, messages) {
   }));
   const archived = results.filter((result) => result.ok).length;
   const failed = results.filter((result) => !result.ok);
+  for (const result of results) {
+    const account = accountsById.get(result.accountId);
+    if (result.ok && account) queueProviderArchive(userId, account, result);
+  }
 
   await logSystemEvent(userId, {
     category: "email",
@@ -1120,6 +1126,49 @@ async function archiveInboxMessages(userId, messages) {
     failed,
     results,
   };
+}
+
+function queueProviderArchive(userId, account, message) {
+  void archiveProviderMessage(userId, account, message).catch((error) => {
+    console.warn(`Background provider archive failed for ${account.email} ${message.emailId}:`, error.message);
+    void logSystemEvent(userId, {
+      category: "email",
+      eventName: "email.provider_archive_failed",
+      status: "error",
+      message: `Provider archive failed for ${account.email}: ${error.message}`,
+      payload: { emailId: message.emailId, accountEmail: account.email, provider: account.provider, error: error.message },
+    }).catch(() => {});
+  });
+}
+
+async function archiveProviderMessage(userId, account, message) {
+  if (account.provider === "gmail") {
+    const accessToken = await getValidEmailAccountAccessToken(account);
+    await modifyGmailMessageLabels({
+      accessToken,
+      emailId: message.emailId,
+      addLabelIds: [],
+      removeLabelIds: ["INBOX"],
+    });
+  } else if (isImapBackedProvider(account.provider)) {
+    const accessToken = await getImapAccessToken(account);
+    await moveImapInboxMessageToFolder({
+      account,
+      accessToken,
+      emailId: message.emailId,
+      sourceMailbox: message.mailbox,
+      targetFolder: account.metadata?.archiveMailbox || "Archive",
+    });
+  } else {
+    throw new Error(`${account.provider} archive is not implemented yet`);
+  }
+
+  await emitWebhookEvent(userId, "email.archived", {
+    emailId: message.emailId,
+    accountEmail: account.email,
+    provider: account.provider,
+    source: "inbox",
+  });
 }
 
 async function setInboxMessageCommitments(userId, action) {
