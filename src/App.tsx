@@ -72,8 +72,17 @@ import { TasksPage } from "./components/tasks/TasksPage";
 import { BackgroundTaskDrawer } from "./components/background-tasks/BackgroundTaskDrawer";
 import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/rules/RuleProviderApplyNotice";
 import { InboxSelectAllBanner } from "./components/inbox/InboxSelectAllBanner";
+import { AiHelperSessionResetButton } from "./components/inbox/AiHelperSessionResetButton";
 import { authClient } from "./lib/auth-client";
 import { fetchNoStore } from "./lib/http";
+import {
+  INBOX_AI_HELPER_HISTORY_LIMIT,
+  INBOX_AI_HELPER_SESSION_CREATED_KEY,
+  INBOX_AI_HELPER_SESSION_ID_KEY,
+  INBOX_AI_HELPER_SESSION_KEY,
+  INBOX_AI_HELPER_SESSION_TTL_MS,
+  resetInboxAiHelperSession,
+} from "./lib/inbox-ai-helper-session";
 import { useLocalDevelopmentSession } from "./hooks/useLocalDevelopmentSession";
 import { clearPwaUnreadBadge, refreshPwaUnreadBadge } from "./lib/pwa-badge";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
@@ -866,11 +875,6 @@ type InboxAiBulkActionProposal = {
   subject: string;
 };
 
-const INBOX_AI_HELPER_SESSION_KEY = "emailable.inbox.aiHelper.history";
-const INBOX_AI_HELPER_SESSION_ID_KEY = "emailable.inbox.aiHelper.sessionId";
-const INBOX_AI_HELPER_SESSION_CREATED_KEY = "emailable.inbox.aiHelper.createdAt";
-const INBOX_AI_HELPER_SESSION_TTL_MS = 60 * 60 * 1000;
-const INBOX_AI_HELPER_HISTORY_LIMIT = 60;
 const INBOX_AI_HELPER_INTRO_MESSAGE: InboxAiChatMessage = {
   id: 1,
   role: "assistant",
@@ -4753,7 +4757,7 @@ function InboxAiHelperPanel({
     }
     return [INBOX_AI_HELPER_INTRO_MESSAGE];
   });
-  const [sessionId] = useState(() => {
+  const [sessionId, setSessionId] = useState(() => {
     const existing = window.sessionStorage.getItem(INBOX_AI_HELPER_SESSION_ID_KEY);
     if (existing) {
       return existing;
@@ -4783,6 +4787,15 @@ function InboxAiHelperPanel({
 
   function addMessage(message: Omit<InboxAiChatMessage, "id">) {
     setMessages((current) => [...current, { ...message, id: Date.now() + current.length }]);
+  }
+
+  function resetAgentSession() {
+    const nextSessionId = resetInboxAiHelperSession(window.sessionStorage);
+    setSessionId(nextSessionId);
+    setMessages([{ ...INBOX_AI_HELPER_INTRO_MESSAGE, id: Date.now() }]);
+    setInput("");
+    setWorkflow({ draft: {}, step: "idle" });
+    setPendingBulkAction(null);
   }
 
   useEffect(() => {
@@ -5355,9 +5368,12 @@ function InboxAiHelperPanel({
           <p className="text-sm font-semibold text-zinc-950">AI Helper</p>
           <p className="truncate text-xs text-zinc-500">{selectedContextText} in context</p>
         </div>
-        <Button aria-label="Close AI helper" onClick={closeWithAnimation} size="icon" type="button" variant="ghost">
-          <X className="h-4 w-4" />
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          <AiHelperSessionResetButton disabled={isThinking} onReset={resetAgentSession} />
+          <Button aria-label="Close AI helper" onClick={closeWithAnimation} size="icon" type="button" variant="ghost">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
