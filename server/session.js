@@ -1,9 +1,15 @@
 import { auth } from "./auth.js";
 import { dbPool } from "./db.js";
+import { resolveLocalDevelopmentUser } from "./local-development-session.js";
 
 const HOME_ASSISTANT_INGRESS_PROXY = "172.30.32.2";
 
 export async function resolveRequestUser(req) {
+  const localDevelopmentUser = await resolveLocalDevelopmentUser(req);
+  if (localDevelopmentUser) {
+    return localDevelopmentUser;
+  }
+
   const homeAssistantUser = await resolveHomeAssistantIngressUser(req);
   if (homeAssistantUser) {
     return homeAssistantUser;

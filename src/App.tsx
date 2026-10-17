@@ -74,6 +74,7 @@ import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/ru
 import { InboxSelectAllBanner } from "./components/inbox/InboxSelectAllBanner";
 import { authClient } from "./lib/auth-client";
 import { fetchNoStore } from "./lib/http";
+import { useLocalDevelopmentSession } from "./hooks/useLocalDevelopmentSession";
 import { clearPwaUnreadBadge, refreshPwaUnreadBadge } from "./lib/pwa-badge";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
@@ -954,12 +955,15 @@ const EMAIL_ACCOUNT_OAUTH_WINDOW_MS = 3 * 60 * 1000;
 
 export function App() {
   const session = authClient.useSession();
+  const localDevelopmentSession = useLocalDevelopmentSession();
   const [homeAssistantUser, setHomeAssistantUser] = useState<AuthUser | null>(null);
   const [isHomeAssistantSessionPending, setIsHomeAssistantSessionPending] = useState(true);
   const [activePage, setActivePage] = useState<Page>(() => initialPageFromLocation());
   const [ruleToOpen, setRuleToOpen] = useState<string | null>(null);
   const [ruleInitialFilter, setRuleInitialFilter] = useState<RulePendingFilter | null>(null);
-  const user = homeAssistantUser ?? (session.data?.user ? mapAuthUser(session.data.user) : null);
+  const user = localDevelopmentSession.user
+    ? mapAuthUser(localDevelopmentSession.user)
+    : homeAssistantUser ?? (session.data?.user ? mapAuthUser(session.data.user) : null);
   const pwaUpdate = usePwaUpdatePrompt();
   const publicLegalDocument = getPublicLegalDocument(window.location.pathname);
   const isPublicHomePage = isPublicHomePath(window.location.pathname);
@@ -1112,7 +1116,7 @@ export function App() {
     );
   }
 
-  if (session.isPending || isHomeAssistantSessionPending) {
+  if (session.isPending || isHomeAssistantSessionPending || localDevelopmentSession.isPending) {
     return <LoadingScreen />;
   }
 
@@ -1134,7 +1138,7 @@ export function App() {
           onOpenRuleReview={openRuleReview}
           onOpenPendingRuleReview={openPendingRuleReview}
           onSignOut={async () => {
-            if (homeAssistantUser) {
+            if (homeAssistantUser || localDevelopmentSession.user) {
               return;
             }
             await authClient.signOut();

@@ -15,6 +15,7 @@ import { ensureEmailIndexTable } from "./email-index.js";
 import { registerInboxRoutes } from "./inbox.js";
 import { ensureIntegrationTables, reconcileInterruptedProviderApplies, registerIntegrationRoutes } from "./integrations.js";
 import { ensureLabelsTable, registerLabelRoutes } from "./labels.js";
+import { isLocalDevelopmentSessionEnabled, resolveLocalDevelopmentUser } from "./local-development-session.js";
 import { ensureMcpTables, registerMcpRoutes } from "./mcp-server.js";
 import { ensurePollingSettings, registerPollingRoutes, startPollingWorker } from "./polling.js";
 import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
@@ -121,6 +122,25 @@ app.get("/api/home-assistant-session", async (req, res) => {
   } catch (error) {
     console.error("Home Assistant user provisioning failed:", error);
     res.status(500).json({ error: "Could not create the Home Assistant user" });
+  }
+});
+
+app.get("/api/local-development-session", async (req, res) => {
+  if (!isLocalDevelopmentSessionEnabled()) {
+    res.status(404).json({ error: "Local development authentication is disabled" });
+    return;
+  }
+
+  try {
+    const user = await resolveLocalDevelopmentUser(req);
+    if (!user) {
+      res.status(401).json({ error: "No local development user is available" });
+      return;
+    }
+    res.json({ user });
+  } catch (error) {
+    console.error("Local development user resolution failed:", error);
+    res.status(500).json({ error: "Could not resolve the local development user" });
   }
 });
 
@@ -276,4 +296,8 @@ async function startServer() {
   });
 }
 
-void startServer();
+if (process.env.NODE_ENV !== "test") {
+  void startServer();
+}
+
+export { app, startServer };
