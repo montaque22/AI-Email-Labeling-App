@@ -100,9 +100,14 @@ Useful local commands:
 
 ```bash
 npm run dev:server
+npm run dev:local
+npm run db:seed-local
+npm run db:reset-local
 npm run db:studio
 npm run build
 ```
+
+`db:seed-local` creates a deterministic localhost fixture with 506 indexed inbox messages across six accounts, including exactly 379 messages labeled `General`. `db:reset-local` removes and recreates only that fixture user so tests can always return to the same pristine data. Both commands refuse to run against a non-loopback database host or when `NODE_ENV=production`.
 
 ## Run with Docker
 

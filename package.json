@@ -12,6 +12,8 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "db:seed-local": "node --env-file-if-exists=.env.local scripts/seed-local-db.js",
+    "db:reset-local": "node --env-file-if-exists=.env.local scripts/reset-local-db.js",
     "start": "node --env-file-if-exists=.env.local --env-file-if-exists=.env server/index.js",
     "auth:migrate": "npx auth@latest migrate --config server/auth.js --yes",
     "db:pull": "prisma db pull",

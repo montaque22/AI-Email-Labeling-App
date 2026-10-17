@@ -1585,7 +1585,7 @@ async function generateAiHelperChat(userId, request) {
       "For every email search, analysis, count, comparison, summary, recommendation, or action-targeting request, query the indexed database with find_email before reasoning about the answer. The database is the authoritative default scope. Search connected providers only when the indexed database has no matches or the user explicitly requests remote/provider search.",
       "Pay close attention to quantifiers, labels, accounts, states, date ranges, exclusions, and words such as all, only, every, any, except, before, and after. Preserve the user's requested scope exactly. Do not silently narrow 'all General emails' to visible General emails, recent emails, one account, a sample, or the first page.",
       "Think through the full request before answering. Restate the interpreted scope briefly when it is broad or destructive, report the database total, and clearly disclose if any requested portion was not examined.",
-      "For find_email results, totalMatches is the authoritative count for the complete database scope. returned is only the current page. Never add page lengths, count preview cards, or substitute reviewed results for totalMatches. If the user asks only how many, answer from totalMatches after verifying the filter. If the user asks to look through all matches, use limit 100, follow nextOffset until it is null, and reconcile the scan against totalMatches before claiming completion.",
+      "For find_email results, totalMatches is the authoritative count for the complete database scope. returned is only the current page. Never add page lengths, count preview cards, or substitute reviewed results for totalMatches. The application will attach the authoritative database total to your final response, so do not independently restate an overall match count. If the user asks to look through all matches, use limit 100, follow nextOffset until it is null, and reconcile the scan against totalMatches before claiming completion.",
       "Before sending any numeric email claim, check it against the latest find_email totalMatches for the same filter. If the tool evidence conflicts or pagination is incomplete, continue searching or explicitly say the review is incomplete; never guess or present a partial number as the total.",
       "When the user explicitly commands you to delete or archive email, first search the indexed scope with find_email, then call propose_email_bulk_action with the exact structured filters. Do not provide or estimate the action count; the application will resolve the proposal against the database and use that authoritative count. The proposal never executes the action; the UI will require confirmation. Do not merely describe how the user could do it.",
       "Tasks visible on screen or selected by the user are active context and should be considered first.",
@@ -1642,7 +1642,7 @@ async function generateAiHelperChat(userId, request) {
     },
   });
 
-  const message = cleanAiTextResponse(aiResponse);
+  const message = groundAiHelperEmailSearchMessage(cleanAiTextResponse(aiResponse), toolResults);
   const affectedEmails = extractAffectedEmailsFromAiHelperToolResults(toolResults);
   const affectedTasks = extractAffectedTasksFromAiHelperToolResults(toolResults);
   const proposedBulkAction = extractProposedBulkActionFromAiHelperToolResults(toolResults);
@@ -1661,6 +1661,78 @@ async function generateAiHelperChat(userId, request) {
     affectedTasks: affectedTasks.length > 0 ? affectedTasks : [],
     proposedBulkAction,
   };
+}
+
+export function groundAiHelperEmailSearchMessage(message, toolResults = []) {
+  const searches = collectAuthoritativeEmailSearches(toolResults);
+  if (searches.length === 0) {
+    return message;
+  }
+
+  const summaries = searches.map(({ input, totalMatches }) => {
+    const scope = describeEmailSearchScope(input);
+    return `Indexed database total: **${totalMatches.toLocaleString("en-US")} email${totalMatches === 1 ? "" : "s"}** match${totalMatches === 1 ? "es" : ""} ${scope}.`;
+  });
+  const groundedBody = searches.length === 1
+    ? replaceContradictoryOverallEmailCounts(message, searches[0].totalMatches)
+    : message;
+  return [...summaries, groundedBody].filter(Boolean).join("\n\n");
+}
+
+function collectAuthoritativeEmailSearches(toolResults) {
+  const byScope = new Map();
+  for (const entry of toolResults) {
+    if (entry?.toolName !== "find_email") {
+      continue;
+    }
+    const result = parseToolResultPayload(entry.result);
+    const search = result?.emails ?? result;
+    if (!search || !String(search.source || "").startsWith("indexed_database")) {
+      continue;
+    }
+    const totalMatches = Number(search.totalMatches);
+    if (!Number.isSafeInteger(totalMatches) || totalMatches < 0) {
+      continue;
+    }
+    const input = normalizeEmailSearchInput(entry.input);
+    byScope.set(JSON.stringify(input), { input, totalMatches });
+  }
+  return [...byScope.values()];
+}
+
+function normalizeEmailSearchInput(input = {}) {
+  return Object.fromEntries(
+    ["emailId", "subject", "from", "to", "state", "label"]
+      .map((key) => [key, typeof input?.[key] === "string" ? input[key].trim() : ""])
+      .filter(([, value]) => value),
+  );
+}
+
+function describeEmailSearchScope(input) {
+  const filters = [];
+  if (input.label) filters.push(`the ${input.label} label`);
+  if (input.state) filters.push(`the ${input.state} state`);
+  if (input.from) filters.push(`sender ${input.from}`);
+  if (input.to) filters.push(`account ${input.to}`);
+  if (input.subject) filters.push(`subject “${input.subject}”`);
+  if (input.emailId) filters.push(`email id ${input.emailId}`);
+  return filters.length > 0 ? filters.join(" and ") : "the requested filters";
+}
+
+function replaceContradictoryOverallEmailCounts(message, totalMatches) {
+  const formattedTotal = totalMatches.toLocaleString("en-US");
+  return String(message || "")
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => {
+      const describesOverallCount = /\b(?:you have|there (?:are|is)|total(?: of)?|I found|we found|database (?:has|contains|found)|matches? found)\b/i.test(sentence);
+      const mentionsEmailCount = /\b\d[\d,]*\b(?=\s+(?:(?:labeled|labelled|matching|indexed|general|archived|unread|read)\s+){0,3}(?:emails?|messages?)\b)/i.test(sentence);
+      if (!describesOverallCount || !mentionsEmailCount) {
+        return sentence;
+      }
+      return sentence.replace(/\b\d[\d,]*\b(?=\s+(?:(?:labeled|labelled|matching|indexed|general|archived|unread|read)\s+){0,3}(?:emails?|messages?)\b)/i, formattedTotal);
+    })
+    .join(" ")
+    .trim();
 }
 
 function extractProposedBulkActionFromAiHelperToolResults(toolResults = []) {
