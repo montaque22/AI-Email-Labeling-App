@@ -29,6 +29,7 @@ RUN npm ci --omit=dev \
   && npm cache clean --force
 COPY --from=build /src/dist ./dist
 COPY --from=build /src/server ./server
+COPY --from=build /src/shared ./shared
 COPY --from=build /src/prisma ./prisma
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh

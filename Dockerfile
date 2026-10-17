@@ -16,6 +16,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server ./server
+COPY --from=build /app/shared ./shared
 COPY --from=build /app/prisma ./prisma
 EXPOSE 3000
 CMD ["npm", "run", "start"]

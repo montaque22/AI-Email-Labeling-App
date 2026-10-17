@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.89
+
+- Fixed add-on startup by including shared server modules in the production image.
+
 ## 0.1.88
 
 - Clarified the HACS integration as a remote Emailable client for VPS, Docker, Coolify, add-on, or other reachable Emailable servers.

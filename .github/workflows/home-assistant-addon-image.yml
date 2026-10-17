@@ -12,6 +12,7 @@ on:
       - "package-lock.json"
       - "prisma/**"
       - "server/**"
+      - "shared/**"
       - "src/**"
       - "index.html"
       - "vite.config.*"
