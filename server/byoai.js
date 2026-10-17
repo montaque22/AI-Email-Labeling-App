@@ -1551,6 +1551,10 @@ async function generateAiHelperChat(userId, request) {
     : "";
   const singleActiveEmail = request.contextMessages.length === 1 ? request.contextMessages[0] : null;
   const defaultTaskSourceEmailId = singleActiveEmail?.emailId || "";
+  const requireIndexedEmailSearch = shouldRequireIndexedEmailSearch(request.prompt, {
+    hasRememberedEmails: memory.affectedEmails.length > 0,
+    lastAssistantQuestion,
+  });
   const aiResponse = await callBestAvailableAi(userId, {
     systemPrompt: [
       "You are Emailable's AI Helper, an email and task assistant acting as an agent for the app user.",
@@ -1560,8 +1564,10 @@ async function generateAiHelperChat(userId, request) {
       "Keep conversational continuity. Interpret short follow-ups such as yes, sure, no, that one, do it, or continue as direct answers to your immediately previous question unless the user clearly changed topics.",
       "When you list or identify emails and then ask whether the user wants to act on them, assume short follow-ups like delete them, archive them, yes, or do it refer to that same listed set.",
       "When you list or identify tasks and then ask whether the user wants to act on them, assume short follow-ups like delete them, defer them, close them, complete them, yes, or do it refer to that same listed set.",
-      "Emails visible on screen or selected by the user are active context and should be considered first.",
-      "For every email search, use this order: (1) inspect active on-screen context, (2) query the indexed database with find_email even if the screen has matches so counts are complete, and (3) search connected providers only when the first two stages found nothing or the user explicitly requested a remote/provider search.",
+      "Emails visible on screen or selected by the user are supplemental context only. Never use the visible list to narrow, redefine, estimate, or answer an email request unless the user explicitly says visible, selected, on screen, or this page.",
+      "For every email search, analysis, count, comparison, summary, recommendation, or action-targeting request, query the indexed database with find_email before reasoning about the answer. The database is the authoritative default scope. Search connected providers only when the indexed database has no matches or the user explicitly requests remote/provider search.",
+      "Pay close attention to quantifiers, labels, accounts, states, date ranges, exclusions, and words such as all, only, every, any, except, before, and after. Preserve the user's requested scope exactly. Do not silently narrow 'all General emails' to visible General emails, recent emails, one account, a sample, or the first page.",
+      "Think through the full request before answering. Restate the interpreted scope briefly when it is broad or destructive, report the database total, and clearly disclose if any requested portion was not examined.",
       "Tasks visible on screen or selected by the user are active context and should be considered first.",
       "For task requests, use task tools to find, open, summarize, group, delete, defer, edit, and close/complete tasks. Use listTasks for broad summaries, searchTasks for fuzzy title lookup, getTask for a specific id, deleteTask for deletion, editTask for edits, and generateNudgeSteps or simplifyNudgeStep for next-step help.",
       "When creating a task from an email, always include sourceEmailId with the exact Email ID from the active email context or from the find_email result that the task is based on.",
@@ -1608,6 +1614,7 @@ async function generateAiHelperChat(userId, request) {
     responseShape: "text",
     toolChoice: "auto",
   }, {
+    firstStepToolName: requireIndexedEmailSearch ? "find_email" : undefined,
     mcpClients: await buildAiHelperMcpClients(userId),
     onToolResult: (result) => toolResults.push(result),
     toolExecutionContext: {
@@ -1632,6 +1639,16 @@ async function generateAiHelperChat(userId, request) {
     affectedEmails: affectedEmails.length > 0 ? affectedEmails : [],
     affectedTasks: affectedTasks.length > 0 ? affectedTasks : [],
   };
+}
+
+function shouldRequireIndexedEmailSearch(prompt, { hasRememberedEmails = false, lastAssistantQuestion = "" } = {}) {
+  const normalized = String(prompt || "").toLowerCase();
+  const isEmailRequest = /\b(email|emails|mail|message|messages|inbox|sender|subject|thread|threads|label|labels|archive|archived|draft|drafts|unread|read|spam|trash)\b/.test(normalized);
+  const isEmailFollowUp = hasRememberedEmails && /\b(it|its|that|those|them|they|these|which|what|all|any|more|keep|delete|archive|review|important|safe)\b/.test(normalized);
+  const previousQuestionWasAboutEmail = /\b(email|mail|message|inbox|sender|subject|label)\b/i.test(lastAssistantQuestion);
+  const isComposeOnly = /\b(compose|write|draft|reply|respond|send)\b/.test(normalized)
+    && !/\b(find|search|scan|review|analy[sz]e|count|how many|which|what|show|list|look through)\b/.test(normalized);
+  return !isComposeOnly && (isEmailRequest || isEmailFollowUp || previousQuestionWasAboutEmail);
 }
 
 async function suggestEmailActions(userId, request) {
@@ -2290,6 +2307,7 @@ export async function callBestAvailableAi(userId, prompt, options = {}) {
         onToolResult: options.onToolResult,
         toolExecutionContext: options.toolExecutionContext,
         toolChoice: options.toolChoice,
+        firstStepToolName: options.firstStepToolName,
       });
     } catch (error) {
       lastError = error;
@@ -2386,6 +2404,13 @@ async function callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, respo
     ...promptInput,
     tools,
     ...(hasTools && options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+    ...(hasTools && options.firstStepToolName && tools[options.firstStepToolName]
+      ? {
+          prepareStep: ({ stepNumber }) => stepNumber === 0
+            ? { toolChoice: { type: "tool", toolName: options.firstStepToolName } }
+            : { toolChoice: "auto" },
+        }
+      : {}),
     stopWhen: stepCountIs(10),
     temperature: 0.2,
   });
