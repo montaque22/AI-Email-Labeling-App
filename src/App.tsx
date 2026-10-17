@@ -4919,10 +4919,11 @@ function InboxAiHelperPanel({
     }));
   }
 
-  function inferSearchScope(query: string): { cleanedQuery: string; labelId: string; mode: InboxMode | "search"; stateSpecific: boolean } {
+  function inferSearchScope(query: string, bulkAction: "archive" | "delete" | null = null): { cleanedQuery: string; labelId: string; mode: InboxMode | "search"; stateSpecific: boolean } {
     const normalized = query.toLowerCase();
     const label = labels.find((item) => normalized.includes(item.name.toLowerCase()));
-    const mode: InboxMode | "search" = /\b(archive|archived)\b/.test(normalized)
+    const explicitlyRequestsArchivedMail = /\barchived\b/.test(normalized) || (bulkAction !== "archive" && /\barchive\b/.test(normalized));
+    const mode: InboxMode | "search" = explicitlyRequestsArchivedMail
       ? "archive"
       : /\b(draft|drafts)\b/.test(normalized)
         ? "drafts"
@@ -4931,9 +4932,12 @@ function InboxAiHelperPanel({
           : label
             ? "inbox"
             : "search";
+    const labelNamePattern = label?.name
+      ? new RegExp(label.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi")
+      : null;
     const cleanedQuery = query
-      .replace(/\b(what|which|show|find|search|look|for|do|i|have|in|my|the|emails?|messages?|mail|archive|archived|drafts?|sent|inbox|label|labels|folder|folders)\b/gi, " ")
-      .replace(label?.name ?? "", " ")
+      .replace(/\b(what|which|show|find|search|look|for|do|i|have|in|my|the|all|every|please|emails?|messages?|mail|delete|deleting|remove|removing|trash|archive|archiving|archived|drafts?|sent|inbox|labelled|labeled|tagged|categorized|category|label|labels|folder|folders|under|with)\b/gi, " ")
+      .replace(labelNamePattern ?? /$^/, " ")
       .replace(/\s+/g, " ")
       .trim();
 
@@ -4961,12 +4965,12 @@ function InboxAiHelperPanel({
     return found;
   }
 
-  async function searchIndexedMail(query: string) {
+  async function searchIndexedMail(query: string, bulkAction: "archive" | "delete" | null = null) {
     if (accounts.length === 0 || !query.trim()) {
       return [];
     }
 
-    const scope = inferSearchScope(query);
+    const scope = inferSearchScope(query, bulkAction);
     const accountIds = accounts.map((account) => account.id);
     const search = scope.cleanedQuery;
 
@@ -5094,7 +5098,7 @@ function InboxAiHelperPanel({
     void onOpenMessage(affectedEmailToInboxMessage(email));
   }
 
-  async function findBulkActionTargets(prompt: string) {
+  async function findBulkActionTargets(prompt: string, action: "archive" | "delete") {
     const normalized = prompt.toLowerCase();
     const referencesSelected = /\b(selected|these|them|this|current)\b/.test(normalized);
     if (selectedMessages.length > 0 && referencesSelected) {
@@ -5122,7 +5126,7 @@ function InboxAiHelperPanel({
       return contextMessages;
     }
 
-    const searchResults = await searchIndexedMail(prompt);
+    const searchResults = await searchIndexedMail(prompt, action);
     if (searchResults.length > 0) {
       return searchResults;
     }
@@ -5137,7 +5141,7 @@ function InboxAiHelperPanel({
   async function prepareBulkEmailAction(prompt: string, action: "archive" | "delete") {
     setIsThinking(true);
     try {
-      const targets = await findBulkActionTargets(prompt);
+      const targets = await findBulkActionTargets(prompt, action);
       if (targets.length === 0) {
         addMessage({
           role: "assistant",
