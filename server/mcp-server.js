@@ -303,7 +303,7 @@ function createMcpServer(userId) {
     "find_email",
     {
       title: "Find Email",
-      description: "Search Emailable's indexed email database first for emails and counts by id, subject, from, to/account, label, inbox/archive/trash/draft/sent state, read/unread status, and received/sent timestamps. Set searchConnectedAccounts to true when indexed results are missing or too shallow and a deeper connected-provider search is needed.",
+      description: "Search indexed email and return an authoritative totalMatches plus one result page. returned is never the full count unless nextOffset is null. Follow nextOffset for exhaustive review; use totalMatches for count questions.",
       inputSchema: {
         emailId: z.string().optional().describe("Provider email/message id or RFC822 Message-ID."),
         subject: z.string().optional().describe("Subject text to search for."),
@@ -311,7 +311,7 @@ function createMcpServer(userId) {
         to: z.string().optional().describe("Recipient/connected account email address to search in."),
         state: z.string().optional().describe("Optional mailbox/state filter such as inbox, sent, drafts, archive, archived, read, unread, or a label/folder name."),
         label: z.string().optional().describe("Optional Emailable label/folder name to filter by."),
-        limit: z.number().min(1).max(200).optional().describe("Maximum indexed results to return. Use a small limit for examples and a larger limit for counting."),
+        limit: z.number().min(1).max(100).optional().describe("Page size. Use 100 for exhaustive review; totalMatches always reports the complete count."),
         offset: z.number().int().min(0).optional().describe("Zero-based indexed result offset. Use with limit to scan all matches in batches."),
         searchConnectedAccounts: z.boolean().optional().describe("When true, search connected email providers if the indexed database does not contain enough information. Use for deep searches across archive, trash, drafts, sent mail, or older/unindexed messages."),
       },

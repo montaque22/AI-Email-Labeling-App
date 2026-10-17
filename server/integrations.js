@@ -1488,7 +1488,7 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
   const to = typeof payload.to === "string" ? payload.to.trim().toLowerCase() : "";
   const state = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
   const label = typeof payload.label === "string" ? payload.label.trim() : "";
-  const limit = Math.min(Math.max(Number(payload.limit) || 20, 1), 200);
+  const limit = Math.min(Math.max(Number(payload.limit) || 20, 1), 100);
   const offset = Math.max(Number.parseInt(payload.offset, 10) || 0, 0);
   const searchConnectedAccounts = Boolean(payload.searchConnectedAccounts);
 
@@ -1634,7 +1634,13 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
     results,
     source: "indexed_database",
     totalMatches,
-    nextOffset: offset + limit < totalMatches ? offset + limit : null,
+    nextOffset: result.nextPageToken ? Number.parseInt(result.nextPageToken, 10) : null,
+    page: {
+      complete: !result.nextPageToken,
+      offset,
+      returned: results.length,
+      scannedThrough: Math.min(offset + result.messages.length, totalMatches),
+    },
   };
 }
 

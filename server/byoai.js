@@ -203,7 +203,7 @@ const SYSTEM_MCP_TOOLS = [
   },
   {
     name: "find_email",
-    description: "Search Emailable's indexed email database first for emails and counts by id, subject, from, to/account, label, inbox/archive/trash/draft/sent state, read/unread status, and received/sent timestamps. Use this for questions like how many emails are archived, what is in trash, what is in a label, what drafts exist, or whether a sender has recent mail. When indexed results are missing or too shallow to answer, set searchConnectedAccounts to true to broaden the search across connected providers.",
+    description: "Search Emailable's indexed email database first for emails and authoritative counts by id, subject, from, to/account, label, inbox/archive/trash/draft/sent state, read/unread status, and timestamps. totalMatches is the exact database count for the full filter; returned is only this page and must never be presented as the total. Follow nextOffset until null when the user asks you to inspect every match. When indexed results are empty, set searchConnectedAccounts to true only if remote search is allowed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -213,7 +213,7 @@ const SYSTEM_MCP_TOOLS = [
         to: { type: "string", description: "Recipient/connected account email address to search in." },
         state: { type: "string", description: "Optional mailbox/state filter such as inbox, sent, drafts, archive, archived, read, unread, or a label/folder name." },
         label: { type: "string", description: "Optional Emailable label/folder name to filter by." },
-        limit: { type: "number", description: "Maximum indexed results to return. Use a small limit for examples and a larger limit for counting." },
+        limit: { type: "number", minimum: 1, maximum: 100, description: "Page size. Use 100 for an exhaustive review. This does not control totalMatches, which always reports the complete database count." },
         offset: { type: "number", description: "Zero-based indexed result offset. Use with limit to scan every matching email in batches." },
         searchConnectedAccounts: { type: "boolean", description: "When true, search connected email providers if the indexed database does not contain enough information. Use for deep searches across archive, trash, drafts, sent mail, or older/unindexed messages." },
       },
@@ -1586,6 +1586,8 @@ async function generateAiHelperChat(userId, request) {
       "For every email search, analysis, count, comparison, summary, recommendation, or action-targeting request, query the indexed database with find_email before reasoning about the answer. The database is the authoritative default scope. Search connected providers only when the indexed database has no matches or the user explicitly requests remote/provider search.",
       "Pay close attention to quantifiers, labels, accounts, states, date ranges, exclusions, and words such as all, only, every, any, except, before, and after. Preserve the user's requested scope exactly. Do not silently narrow 'all General emails' to visible General emails, recent emails, one account, a sample, or the first page.",
       "Think through the full request before answering. Restate the interpreted scope briefly when it is broad or destructive, report the database total, and clearly disclose if any requested portion was not examined.",
+      "For find_email results, totalMatches is the authoritative count for the complete database scope. returned is only the current page. Never add page lengths, count preview cards, or substitute reviewed results for totalMatches. If the user asks only how many, answer from totalMatches after verifying the filter. If the user asks to look through all matches, use limit 100, follow nextOffset until it is null, and reconcile the scan against totalMatches before claiming completion.",
+      "Before sending any numeric email claim, check it against the latest find_email totalMatches for the same filter. If the tool evidence conflicts or pagination is incomplete, continue searching or explicitly say the review is incomplete; never guess or present a partial number as the total.",
       "When the user explicitly commands you to delete or archive email, first search the complete indexed scope with find_email, then call propose_email_bulk_action with the exact structured scope and database count. That proposal never executes the action; the UI will require confirmation. Do not merely describe how the user could do it.",
       "Tasks visible on screen or selected by the user are active context and should be considered first.",
       "For task requests, use task tools to find, open, summarize, group, delete, defer, edit, and close/complete tasks. Use listTasks for broad summaries, searchTasks for fuzzy title lookup, getTask for a specific id, deleteTask for deletion, editTask for edits, and generateNudgeSteps or simplifyNudgeStep for next-step help.",
