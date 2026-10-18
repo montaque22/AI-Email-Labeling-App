@@ -1488,11 +1488,26 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
   const to = typeof payload.to === "string" ? payload.to.trim().toLowerCase() : "";
   const state = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
   const label = typeof payload.label === "string" ? payload.label.trim() : "";
+  const receivedAfter = parseOptionalDate(payload.receivedAfter);
+  const receivedBefore = parseOptionalDate(payload.receivedBefore);
+  const hasAttachments = typeof payload.hasAttachments === "boolean" ? payload.hasAttachments : null;
   const limit = Math.min(Math.max(Number(payload.limit) || 20, 1), 100);
   const offset = Math.max(Number.parseInt(payload.offset, 10) || 0, 0);
   const searchConnectedAccounts = Boolean(payload.searchConnectedAccounts);
 
-  const indexedMatches = await findIndexedEmailsForMcp(userId, { emailId, subject, from, to, state, label, limit, offset });
+  const indexedMatches = await findIndexedEmailsForMcp(userId, {
+    emailId,
+    subject,
+    from,
+    to,
+    state,
+    label,
+    receivedAfter,
+    receivedBefore,
+    hasAttachments,
+    limit,
+    offset,
+  });
   if (indexedMatches.totalMatches > 0 || !searchConnectedAccounts) {
     return indexedMatches;
   }
@@ -1545,7 +1560,19 @@ export async function findConnectedEmailsForMcp(userId, payload = {}) {
   return { returned: results.length, results, source: "connected_accounts", totalMatches: results.length };
 }
 
-async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, state, label, limit = 20, offset = 0 }) {
+async function findIndexedEmailsForMcp(userId, {
+  emailId,
+  subject,
+  from,
+  to,
+  state,
+  label,
+  receivedAfter,
+  receivedBefore,
+  hasAttachments,
+  limit = 20,
+  offset = 0,
+}) {
   const accounts = to
     ? (await getConnectedEmailAccounts(userId)).filter((account) => account.email.toLowerCase() === to)
     : await getConnectedEmailAccounts(userId);
@@ -1588,6 +1615,9 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
       .filter((email) => !archivedOnly || email.archived === true)
       .filter((email) => !trashOnly || emailStateLooksLikeTrash(email))
       .filter((email) => !labelName || email.labels.some((item) => item.toLowerCase() === labelName.toLowerCase()))
+      .filter((email) => !receivedAfter || new Date(email.date).getTime() >= new Date(receivedAfter).getTime())
+      .filter((email) => !receivedBefore || new Date(email.date).getTime() <= new Date(receivedBefore).getTime())
+      .filter((email) => hasAttachments === null || email.hasAttachments === hasAttachments)
       .map(indexedEmailToMcpResult);
     return { returned: results.length, results, source: "indexed_database", totalMatches: results.length };
   }
@@ -1599,6 +1629,10 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
     direction,
     includeArchived: !normalizedState || archivedOnly || normalizedState === "read" || normalizedState === "unread" || trashOnly,
     labelName,
+    receivedAfter,
+    receivedBefore,
+    isRead: readFilter,
+    hasAttachments,
     search,
     sort: "newest",
     limit,
@@ -1621,6 +1655,9 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
     readFilter,
     search,
     trashOnly,
+    receivedAfter,
+    receivedBefore,
+    hasAttachments,
   });
   const results = filtered
     .slice(0, limit)
@@ -1640,7 +1677,19 @@ async function findIndexedEmailsForMcp(userId, { emailId, subject, from, to, sta
   };
 }
 
-async function countIndexedEmailsForMcp(userId, { accountIds, archivedOnly, direction, includeArchived, labelName, readFilter, search, trashOnly }) {
+async function countIndexedEmailsForMcp(userId, {
+  accountIds,
+  archivedOnly,
+  direction,
+  includeArchived,
+  labelName,
+  readFilter,
+  search,
+  trashOnly,
+  receivedAfter,
+  receivedBefore,
+  hasAttachments,
+}) {
   const values = [userId];
   const conditions = ["user_id = $1"];
   if (accountIds.length) {
@@ -1682,8 +1731,28 @@ async function countIndexedEmailsForMcp(userId, { accountIds, archivedOnly, dire
     values.push(readFilter);
     conditions.push(`is_read = $${values.length}`);
   }
+  if (receivedAfter) {
+    values.push(receivedAfter);
+    conditions.push(`received_at >= $${values.length}::timestamptz`);
+  }
+  if (receivedBefore) {
+    values.push(receivedBefore);
+    conditions.push(`received_at <= $${values.length}::timestamptz`);
+  }
+  if (hasAttachments !== null) {
+    values.push(hasAttachments);
+    conditions.push(`has_attachments = $${values.length}`);
+  }
   const result = await dbPool.query(`select count(*)::int as count from email_index where ${conditions.join(" and ")}`, values);
   return Number(result.rows[0]?.count || 0);
+}
+
+function parseOptionalDate(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return "";
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
 }
 
 function escapeSqlLike(value) {

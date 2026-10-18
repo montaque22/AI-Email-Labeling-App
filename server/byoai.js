@@ -30,8 +30,7 @@ import { logSystemEvent } from "./system-logs.js";
 import { upsertEmailAutomationResult } from "./email-index.js";
 import {
   buildAiHelperSystemPrompt,
-  constrainAiHelperEmailSearchInput,
-  isAiHelperScopeFollowUp,
+  buildAiHelperVerificationPrompt,
 } from "./ai-helper-agent.js";
 
 const SECRET = process.env.BETTER_AUTH_SECRET || "local-byoai-secret";
@@ -218,23 +217,27 @@ const SYSTEM_MCP_TOOLS = [
         to: { type: "string", description: "Recipient/connected account email address to search in." },
         state: { type: "string", description: "Optional mailbox/state filter such as inbox, sent, drafts, archive, archived, read, unread, or a label/folder name." },
         label: { type: "string", description: "Optional Emailable label/folder name to filter by." },
+        receivedAfter: { type: "string", description: "Optional ISO date/time lower bound, inclusive." },
+        receivedBefore: { type: "string", description: "Optional ISO date/time upper bound, inclusive." },
+        hasAttachments: { type: "boolean", description: "Optional attachment-presence filter." },
         limit: { type: "number", minimum: 1, maximum: 100, description: "Page size. Use 100 for an exhaustive review. This does not control totalMatches, which always reports the complete database count." },
         offset: { type: "number", description: "Zero-based indexed result offset. Use with limit to scan every matching email in batches." },
         searchConnectedAccounts: { type: "boolean", description: "When true, search connected email providers if the indexed database does not contain enough information. Use for deep searches across archive, trash, drafts, sent mail, or older/unindexed messages." },
-        filterEvidence: {
-          type: "object",
-          description: "For each restrictive filter, quote the exact user phrase that supports it. Omit for an unfiltered all-mail search.",
-          properties: {
-            emailId: { type: "string" },
-            subject: { type: "string" },
-            from: { type: "string" },
-            to: { type: "string" },
-            state: { type: "string" },
-            label: { type: "string" },
-          },
-          additionalProperties: false,
-        },
       },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "calculate",
+    description: "Perform reliable arithmetic for counts, percentages, ratios, sums, differences, products, and quotients. Use this instead of mental arithmetic whenever an answer depends on calculated numeric results.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        operation: { type: "string", enum: ["add", "subtract", "multiply", "divide", "percentage"] },
+        left: { type: "number", description: "First operand or percentage numerator." },
+        right: { type: "number", description: "Second operand or percentage denominator." },
+      },
+      required: ["operation", "left", "right"],
       additionalProperties: false,
     },
   },
@@ -804,9 +807,33 @@ export function registerByoAiRoutes(app) {
         return;
       }
 
-      res.json(await generateAiHelperChat(req.user.id, input.request));
+      res.status(200);
+      res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+      res.write(`${JSON.stringify({ type: "working" })}\n`);
+      res.flush?.();
+      const result = await generateAiHelperChat(req.user.id, input.request);
+      for (const delta of chunkTextForStreaming(result.message)) {
+        res.write(`${JSON.stringify({ delta, type: "text-delta" })}\n`);
+        res.flush?.();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      res.write(`${JSON.stringify({
+        affectedEmails: result.affectedEmails,
+        affectedTasks: result.affectedTasks,
+        proposedBulkAction: result.proposedBulkAction,
+        type: "done",
+      })}\n`);
+      res.end();
     } catch (error) {
-      handleError(res, error);
+      if (res.headersSent) {
+        res.write(`${JSON.stringify({ error: error.message || "AI Helper could not answer that.", type: "error" })}\n`);
+        res.end();
+      } else {
+        handleError(res, error);
+      }
     }
   });
 
@@ -1586,10 +1613,6 @@ async function generateAiHelperChat(userId, request) {
     : "";
   const singleActiveEmail = request.contextMessages.length === 1 ? request.contextMessages[0] : null;
   const defaultTaskSourceEmailId = singleActiveEmail?.emailId || "";
-  const requireIndexedEmailSearch = shouldRequireIndexedEmailSearch(request.prompt, {
-    hasRememberedEmails: memory.affectedEmails.length > 0,
-    lastAssistantQuestion,
-  });
   const aiResponse = await callBestAvailableAi(userId, {
     systemPrompt: buildAiHelperSystemPrompt(),
     messages: [
@@ -1621,17 +1644,20 @@ async function generateAiHelperChat(userId, request) {
     responseShape: "text",
     toolChoice: "auto",
   }, {
-    firstStepToolName: requireIndexedEmailSearch ? "find_email" : undefined,
     mcpClients: await buildAiHelperMcpClients(userId),
     onToolResult: (result) => toolResults.push(result),
     toolExecutionContext: {
-      allowInheritedEmailScope: memory.affectedEmails.length > 0 && isAiHelperScopeFollowUp(request.prompt),
       defaultTaskSourceEmailId,
-      emailSearchPrompt: request.prompt,
     },
   });
 
-  const message = groundAiHelperEmailSearchMessage(cleanAiTextResponse(aiResponse), toolResults);
+  const candidateMessage = cleanAiTextResponse(aiResponse);
+  const message = await verifyAiHelperResponse(userId, {
+    candidate: candidateMessage,
+    history: previousHistory,
+    request: request.prompt,
+    toolResults,
+  });
   const affectedEmails = extractAffectedEmailsFromAiHelperToolResults(toolResults);
   const affectedTasks = extractAffectedTasksFromAiHelperToolResults(toolResults);
   const proposedBulkAction = extractProposedBulkActionFromAiHelperToolResults(toolResults);
@@ -1652,76 +1678,23 @@ async function generateAiHelperChat(userId, request) {
   };
 }
 
-export function groundAiHelperEmailSearchMessage(message, toolResults = []) {
-  const searches = collectAuthoritativeEmailSearches(toolResults);
-  if (searches.length === 0) {
-    return message;
-  }
-
-  const summaries = searches.map(({ input, totalMatches }) => {
-    const scope = describeEmailSearchScope(input);
-    return `Indexed database total: **${totalMatches.toLocaleString("en-US")} email${totalMatches === 1 ? "" : "s"}** match${totalMatches === 1 ? "es" : ""} ${scope}.`;
+async function verifyAiHelperResponse(userId, { candidate, history, request, toolResults }) {
+  const toolEvidence = toolResults.map((entry) => ({
+    input: entry.input,
+    result: parseToolResultPayload(entry.result),
+    toolName: entry.toolName,
+  }));
+  const response = await callBestAvailableAi(userId, {
+    systemPrompt: "You are the final quality-control pass for an inbox agent. Return only the corrected user-facing answer. Tool results are authoritative. Check scope, arithmetic, completeness, and whether the answer follows the request. Never invent facts or tool calls.",
+    userPrompt: buildAiHelperVerificationPrompt({
+      candidate,
+      history: history.slice(-12).map((message) => `${message.role}: ${message.text}`).join("\n"),
+      request,
+      toolResults: JSON.stringify(toolEvidence).slice(0, 30_000),
+    }),
+    responseShape: "inbox-agent-verification",
   });
-  const groundedBody = searches.length === 1
-    ? replaceContradictoryOverallEmailCounts(message, searches[0].totalMatches)
-    : message;
-  return [...summaries, groundedBody].filter(Boolean).join("\n\n");
-}
-
-function collectAuthoritativeEmailSearches(toolResults) {
-  const byScope = new Map();
-  for (const entry of toolResults) {
-    if (entry?.toolName !== "find_email") {
-      continue;
-    }
-    const result = parseToolResultPayload(entry.result);
-    const search = result?.emails ?? result;
-    if (!search || !String(search.source || "").startsWith("indexed_database")) {
-      continue;
-    }
-    const totalMatches = Number(search.totalMatches);
-    if (!Number.isSafeInteger(totalMatches) || totalMatches < 0) {
-      continue;
-    }
-    const input = normalizeEmailSearchInput(entry.input);
-    byScope.set(JSON.stringify(input), { input, totalMatches });
-  }
-  return [...byScope.values()];
-}
-
-function normalizeEmailSearchInput(input = {}) {
-  return Object.fromEntries(
-    ["emailId", "subject", "from", "to", "state", "label"]
-      .map((key) => [key, typeof input?.[key] === "string" ? input[key].trim() : ""])
-      .filter(([, value]) => value),
-  );
-}
-
-function describeEmailSearchScope(input) {
-  const filters = [];
-  if (input.label) filters.push(`the ${input.label} label`);
-  if (input.state) filters.push(`the ${input.state} state`);
-  if (input.from) filters.push(`sender ${input.from}`);
-  if (input.to) filters.push(`account ${input.to}`);
-  if (input.subject) filters.push(`subject “${input.subject}”`);
-  if (input.emailId) filters.push(`email id ${input.emailId}`);
-  return filters.length > 0 ? filters.join(" and ") : "all indexed mail";
-}
-
-function replaceContradictoryOverallEmailCounts(message, totalMatches) {
-  const formattedTotal = totalMatches.toLocaleString("en-US");
-  return String(message || "")
-    .split(/(?<=[.!?])\s+/)
-    .map((sentence) => {
-      const describesOverallCount = /\b(?:you have|there (?:are|is)|total(?: of)?|I found|we found|database (?:has|contains|found)|matches? found)\b/i.test(sentence);
-      const mentionsEmailCount = /\b\d[\d,]*\b(?=\s+(?:(?:labeled|labelled|matching|indexed|general|archived|unread|read)\s+){0,3}(?:emails?|messages?)\b)/i.test(sentence);
-      if (!describesOverallCount || !mentionsEmailCount) {
-        return sentence;
-      }
-      return sentence.replace(/\b\d[\d,]*\b(?=\s+(?:(?:labeled|labelled|matching|indexed|general|archived|unread|read)\s+){0,3}(?:emails?|messages?)\b)/i, formattedTotal);
-    })
-    .join(" ")
-    .trim();
+  return cleanAiTextResponse(response) || candidate || "I could not produce a verified answer.";
 }
 
 function extractProposedBulkActionFromAiHelperToolResults(toolResults = []) {
@@ -1737,14 +1710,12 @@ function extractProposedBulkActionFromAiHelperToolResults(toolResults = []) {
   };
 }
 
-function shouldRequireIndexedEmailSearch(prompt, { hasRememberedEmails = false, lastAssistantQuestion = "" } = {}) {
-  const normalized = String(prompt || "").toLowerCase();
-  const isEmailRequest = /\b(email|emails|mail|message|messages|inbox|sender|subject|thread|threads|label|labels|archive|archived|draft|drafts|unread|read|spam|trash)\b/.test(normalized);
-  const isEmailFollowUp = hasRememberedEmails && /\b(it|its|that|those|them|they|these|which|what|all|any|more|keep|delete|archive|review|important|safe)\b/.test(normalized);
-  const previousQuestionWasAboutEmail = /\b(email|mail|message|inbox|sender|subject|label)\b/i.test(lastAssistantQuestion);
-  const isComposeOnly = /\b(compose|write|draft|reply|respond|send)\b/.test(normalized)
-    && !/\b(find|search|scan|review|analy[sz]e|count|how many|which|what|show|list|look through)\b/.test(normalized);
-  return !isComposeOnly && (isEmailRequest || isEmailFollowUp || previousQuestionWasAboutEmail);
+function chunkTextForStreaming(text, chunkSize = 48) {
+  const chunks = [];
+  for (let index = 0; index < text.length; index += chunkSize) {
+    chunks.push(text.slice(index, index + chunkSize));
+  }
+  return chunks;
 }
 
 async function suggestEmailActions(userId, request) {
@@ -2613,12 +2584,6 @@ function buildSdkTools(clients, onToolResult, executionContext = {}) {
 function applySystemToolExecutionDefaults(toolName, input, executionContext = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return input;
-  }
-  if (toolName === "find_email") {
-    return constrainAiHelperEmailSearchInput(input, {
-      allowInheritedScope: executionContext.allowInheritedEmailScope,
-      prompt: executionContext.emailSearchPrompt,
-    });
   }
   if (toolName !== "createTask") {
     return input;

@@ -5095,7 +5095,11 @@ function InboxAiHelperPanel({
     return String(data.bodyText ?? "").trim();
   }
 
-  async function askAiHelper(prompt: string, conversationHistory: InboxAiChatMessage[]) {
+  async function askAiHelper(
+    prompt: string,
+    conversationHistory: InboxAiChatMessage[],
+    onText: (text: string) => void,
+  ) {
     const response = await fetch("/api/byoai/helper-chat", {
       method: "POST",
       credentials: "include",
@@ -5124,9 +5128,36 @@ function InboxAiHelperPanel({
         sessionId,
       }),
     });
-    const data = await response.json();
     if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
       throw new Error(data.error ?? "AI Helper could not answer that.");
+    }
+    if (!response.body) {
+      throw new Error("AI Helper returned an empty response stream.");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let streamedText = "";
+    let data: Record<string, unknown> = {};
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = done ? "" : lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as Record<string, unknown>;
+        if (event.type === "text-delta" && typeof event.delta === "string") {
+          streamedText += event.delta;
+          onText(streamedText);
+        } else if (event.type === "done") {
+          data = event;
+        } else if (event.type === "error") {
+          throw new Error(typeof event.error === "string" ? event.error : "AI Helper could not answer that.");
+        }
+      }
+      if (done) break;
     }
     const affectedEmails = Array.isArray(data.affectedEmails)
       ? data.affectedEmails
@@ -5148,10 +5179,13 @@ function InboxAiHelperPanel({
             threadId: email.threadId ?? email.id ?? email.emailId ?? "",
           }))
       : [];
-    const proposedBulkAction = data.proposedBulkAction && ["archive", "delete"].includes(data.proposedBulkAction.action)
-      ? data.proposedBulkAction as InboxAiBulkActionProposal
+    const rawBulkAction = data.proposedBulkAction && typeof data.proposedBulkAction === "object"
+      ? data.proposedBulkAction as Partial<InboxAiBulkActionProposal>
       : null;
-    return { affectedEmails, message: String(data.message ?? "").trim(), proposedBulkAction };
+    const proposedBulkAction = rawBulkAction?.action && ["archive", "delete"].includes(rawBulkAction.action)
+      ? rawBulkAction as InboxAiBulkActionProposal
+      : null;
+    return { affectedEmails, message: streamedText.trim(), proposedBulkAction };
   }
 
   async function resolveAgentBulkActionProposal(proposal: InboxAiBulkActionProposal, fallbackEmails: InboxMessage[]) {
@@ -5283,9 +5317,14 @@ function InboxAiHelperPanel({
     }
 
     setIsThinking(true);
+    const streamingMessageId = Date.now() + conversationHistory.length + 1;
+    setMessages((current) => [...current, { id: streamingMessageId, role: "assistant", text: "" }]);
     try {
-      const answer = await askAiHelper(prompt, conversationHistory);
+      const answer = await askAiHelper(prompt, conversationHistory, (text) => {
+        setMessages((current) => current.map((message) => message.id === streamingMessageId ? { ...message, text } : message));
+      });
       if (answer.proposedBulkAction) {
+        setMessages((current) => current.filter((message) => message.id !== streamingMessageId));
         const fallbackEmails = answer.affectedEmails.map(affectedEmailToInboxMessage);
         const targets = await resolveAgentBulkActionProposal(answer.proposedBulkAction, fallbackEmails);
         if (targets.length === 0) throw new Error(`I could not resolve any emails in ${answer.proposedBulkAction.scopeSummary}.`);
@@ -5302,13 +5341,13 @@ function InboxAiHelperPanel({
         });
         return;
       }
-      addMessage({
-        affectedEmails: answer.affectedEmails,
-        role: "assistant",
-        text: answer.message,
-      });
+      setMessages((current) => current.map((message) => message.id === streamingMessageId
+        ? { ...message, affectedEmails: answer.affectedEmails, text: answer.message }
+        : message));
     } catch (error) {
-      addMessage({ role: "assistant", text: error instanceof Error ? error.message : "AI Helper could not answer that." });
+      setMessages((current) => current.map((message) => message.id === streamingMessageId
+        ? { ...message, text: error instanceof Error ? error.message : "AI Helper could not answer that." }
+        : message));
     } finally {
       setIsThinking(false);
     }

@@ -21,6 +21,7 @@ import {
 } from "./integrations.js";
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
+import { calculateInboxAgentValues } from "./ai-helper-agent.js";
 import {
   completeTask,
   createTaskFromWorkflow,
@@ -311,6 +312,9 @@ function createMcpServer(userId) {
         to: z.string().optional().describe("Recipient/connected account email address to search in."),
         state: z.string().optional().describe("Optional mailbox/state filter such as inbox, sent, drafts, archive, archived, read, unread, or a label/folder name."),
         label: z.string().optional().describe("Optional Emailable label/folder name to filter by."),
+        receivedAfter: z.string().optional().describe("Optional ISO date/time lower bound, inclusive."),
+        receivedBefore: z.string().optional().describe("Optional ISO date/time upper bound, inclusive."),
+        hasAttachments: z.boolean().optional().describe("Optional attachment-presence filter."),
         limit: z.number().min(1).max(100).optional().describe("Page size. Use 100 for exhaustive review; totalMatches always reports the complete count."),
         offset: z.number().int().min(0).optional().describe("Zero-based indexed result offset. Use with limit to scan all matches in batches."),
         searchConnectedAccounts: z.boolean().optional().describe("When true, search connected email providers if the indexed database does not contain enough information. Use for deep searches across archive, trash, drafts, sent mail, or older/unindexed messages."),
@@ -319,6 +323,20 @@ function createMcpServer(userId) {
     async (input) => {
       return loggedMcpToolResult(userId, "find_email", input, "internal:find-email", () => findEmailTool(userId, input));
     },
+  );
+
+  server.registerTool(
+    "calculate",
+    {
+      title: "Calculate",
+      description: "Perform reliable arithmetic for counts, percentages, ratios, sums, differences, products, and quotients.",
+      inputSchema: {
+        operation: z.enum(["add", "subtract", "multiply", "divide", "percentage"]),
+        left: z.number(),
+        right: z.number(),
+      },
+    },
+    async (input) => loggedMcpToolResult(userId, "calculate", input, "internal:calculate", async () => ({ calculation: calculateInboxAgentValues(input) })),
   );
 
   server.registerTool(

@@ -392,6 +392,26 @@ export async function listEmailIndexEntries(userId, query) {
     )`);
   }
 
+  if (query.receivedAfter) {
+    values.push(query.receivedAfter);
+    conditions.push(`received_at >= $${values.length}::timestamptz`);
+  }
+
+  if (query.receivedBefore) {
+    values.push(query.receivedBefore);
+    conditions.push(`received_at <= $${values.length}::timestamptz`);
+  }
+
+  if (typeof query.isRead === "boolean") {
+    values.push(query.isRead);
+    conditions.push(`is_read = $${values.length}`);
+  }
+
+  if (typeof query.hasAttachments === "boolean") {
+    values.push(query.hasAttachments);
+    conditions.push(`has_attachments = $${values.length}`);
+  }
+
   if (query.archivedOnly) {
     conditions.push("archived = true");
   } else if (!query.includeArchived) {
