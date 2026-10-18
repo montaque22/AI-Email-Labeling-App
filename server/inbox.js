@@ -39,10 +39,17 @@ import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import { generateAiLabel, isAiActiveForUser } from "./byoai.js";
 import { getPollingProcessingJob } from "./polling.js";
+import { completeBackgroundTask, createBackgroundTask, failBackgroundTask, updateBackgroundTask, warnBackgroundTask } from "./background-tasks.js";
+import { runDetachedTask } from "./detached-tasks.js";
+import { drainProviderDeleteQueues } from "./provider-delete-queue.js";
 import crypto from "node:crypto";
 import nodemailer from "nodemailer";
 
 const INBOX_PAGE_SIZE = 10;
+const PROVIDER_DELETE_BATCH_SIZE = 10;
+const PROVIDER_DELETE_BATCH_DELAY_MS = 250;
+const PROVIDER_DELETE_MAX_ATTEMPTS = 3;
+const AI_BACKGROUND_DELETE_THRESHOLD = 20;
 const activeInboxProcessingJobs = new Map();
 
 export function registerInboxRoutes(app) {
@@ -266,6 +273,36 @@ export function registerInboxRoutes(app) {
       const input = parseBulkMessageInput(req.body);
       if (!input.ok) {
         res.status(400).json({ error: input.error });
+        return;
+      }
+
+      const runInBackground = req.body?.source === "ai" && input.messages.length > AI_BACKGROUND_DELETE_THRESHOLD;
+      if (runInBackground) {
+        const task = createBackgroundTask(req.user.id, {
+          type: "ai_bulk_delete",
+          title: "AI email deletion",
+          message: "Preparing provider deletion queues…",
+          total: input.messages.length,
+        });
+        runDetachedTask(`AI bulk delete ${task.id}`, async () => {
+          try {
+            const result = await deleteInboxMessages(req.user.id, input.messages, { backgroundTaskId: task.id });
+            if (result.failed.length > 0) {
+              warnBackgroundTask(req.user.id, task.id, `${result.failed.length} email${result.failed.length === 1 ? "" : "s"} could not be deleted after retries.`, {
+                message: `${result.deleted} deleted; ${result.failed.length} failed.`,
+                description: "Failed messages remain in Emailable so the database stays consistent with the provider.",
+              });
+            } else {
+              completeBackgroundTask(req.user.id, task.id, {
+                message: `${result.deleted} emails deleted from providers and Emailable.`,
+                result: { deleted: result.deleted, failed: 0 },
+              });
+            }
+          } catch (error) {
+            failBackgroundTask(req.user.id, task.id, error, { message: "AI email deletion stopped unexpectedly." });
+          }
+        });
+        res.status(202).json({ background: true, task });
         return;
       }
 
@@ -1058,26 +1095,42 @@ async function setInboxMessagesLabel(userId, action) {
   };
 }
 
-async function deleteInboxMessages(userId, messages) {
+async function deleteInboxMessages(userId, messages, { backgroundTaskId = "" } = {}) {
   const accounts = await getInboxAccounts(userId, []);
   const accountsById = new Map(accounts.map((account) => [account.id, account]));
   const results = [];
-
+  const queued = [];
   for (const message of messages) {
     const account = accountsById.get(message.accountId);
-    if (!account) {
-      results.push({ ...message, ok: false, error: "Account not found" });
-      continue;
-    }
-
-    try {
-      await deleteEmailIndexEntries(userId, [message]);
-      queueProviderDelete(userId, account, message);
-      results.push({ ...message, ok: true });
-    } catch (error) {
-      results.push({ ...message, ok: false, error: error.message });
-    }
+    if (!account) results.push({ ...message, ok: false, error: "Account not found" });
+    else queued.push({ account, accountId: account.id, message });
   }
+
+  const queueResults = await drainProviderDeleteQueues(queued, {
+    batchSize: PROVIDER_DELETE_BATCH_SIZE,
+    batchDelayMs: PROVIDER_DELETE_BATCH_DELAY_MS,
+    maxAttempts: PROVIDER_DELETE_MAX_ATTEMPTS,
+    worker: async (item) => {
+      if (!item.providerDeleted) {
+        await deleteProviderMessage(userId, item.account, item.message);
+        item.providerDeleted = true;
+      }
+      await deleteEmailIndexEntries(userId, [item.message]);
+    },
+    onProgress: async (completed) => {
+      if (!backgroundTaskId) return;
+      const succeeded = completed.filter((result) => result.ok).length;
+      const failed = completed.filter((result) => !result.ok).length + results.filter((result) => !result.ok).length;
+      updateBackgroundTask(userId, backgroundTaskId, {
+        completed: succeeded,
+        failed,
+        message: `Deleted ${succeeded} of ${messages.length} emails…`,
+      });
+    },
+  });
+  results.push(...queueResults.map((result) => result.ok
+    ? { ...result.item.message, ok: true, attempts: result.item.attempts }
+    : { ...result.item.message, ok: false, attempts: result.item.attempts, error: result.error }));
 
   const deleted = results.filter((result) => result.ok).length;
   const failed = results.filter((result) => !result.ok);
@@ -1240,19 +1293,6 @@ async function renegeInboxMessageCommitments(userId, messages) {
   });
 
   return { cleared, failed, results };
-}
-
-function queueProviderDelete(userId, account, message) {
-  void deleteProviderMessage(userId, account, message).catch((error) => {
-    console.warn(`Background provider delete failed for ${account.email} ${message.emailId}:`, error.message);
-    void logSystemEvent(userId, {
-      category: "email",
-      eventName: "email.provider_delete_failed",
-      status: "error",
-      message: `Provider delete failed for ${account.email}: ${error.message}`,
-      payload: { emailId: message.emailId, accountEmail: account.email, provider: account.provider, error: error.message },
-    }).catch(() => {});
-  });
 }
 
 async function deleteProviderMessage(userId, account, message) {

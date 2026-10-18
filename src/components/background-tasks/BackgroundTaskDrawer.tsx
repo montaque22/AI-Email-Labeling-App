@@ -14,6 +14,7 @@ type BackgroundTaskDrawerProps = {
 
 const POLL_INTERVAL_MS = 2500;
 const REFRESH_EVENT = "emailable:background-tasks-refresh";
+const OPEN_EVENT = "emailable:background-tasks-open";
 const POLLING_COMPLETE_EVENT = "emailable:polling-complete";
 
 /**
@@ -105,10 +106,16 @@ export function BackgroundTaskDrawer({ user }: BackgroundTaskDrawerProps) {
     const handleRefresh = () => {
       void loadTasks();
     };
+    const handleOpen = () => {
+      setIsOpen(true);
+      void loadTasks();
+    };
     window.addEventListener(REFRESH_EVENT, handleRefresh);
+    window.addEventListener(OPEN_EVENT, handleOpen);
     return () => {
       window.clearInterval(intervalId);
       window.removeEventListener(REFRESH_EVENT, handleRefresh);
+      window.removeEventListener(OPEN_EVENT, handleOpen);
     };
   }, [user?.email]);
 
@@ -162,7 +169,7 @@ export function BackgroundTaskDrawer({ user }: BackgroundTaskDrawerProps) {
           onClick={() => setIsOpen(true)}
           className="relative rounded-full border border-white/70 bg-white/85 px-4 py-2 text-sm font-medium text-zinc-800 shadow-lg backdrop-blur-xl transition hover:bg-white"
         >
-          {runningCount > 0 ? "Background tasks" : errorCount > 0 || warningCount > 0 ? "Task needs attention" : "Task complete"}
+          {runningCount > 0 ? "Agent threads" : errorCount > 0 || warningCount > 0 ? "Thread needs attention" : "Thread complete"}
           {errorCount + warningCount > 0 ? (
             <span
               className={cn(
@@ -184,7 +191,7 @@ export function BackgroundTaskDrawer({ user }: BackgroundTaskDrawerProps) {
         >
           <div className="flex items-start justify-between gap-3 border-b border-white/60 px-4 py-3">
             <div>
-              <h3 className="text-sm font-semibold">Background tasks</h3>
+              <h3 className="text-sm font-semibold">Agent threads</h3>
               <p className="text-xs text-zinc-500">
                 {runningCount > 0 ? `${runningCount} running` : `${successCount} complete`}
                 {errorCount > 0 ? `, ${errorCount} error${errorCount === 1 ? "" : "s"}` : ""}

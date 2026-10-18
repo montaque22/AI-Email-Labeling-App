@@ -818,7 +818,7 @@ export function registerByoAiRoutes(app) {
       for (const delta of chunkTextForStreaming(result.message)) {
         res.write(`${JSON.stringify({ delta, type: "text-delta" })}\n`);
         res.flush?.();
-        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setTimeout(resolve, 8));
       }
       res.write(`${JSON.stringify({
         affectedEmails: result.affectedEmails,
@@ -1648,6 +1648,7 @@ async function generateAiHelperChat(userId, request) {
     onToolResult: (result) => toolResults.push(result),
     toolExecutionContext: {
       defaultTaskSourceEmailId,
+      userId,
     },
   });
 
@@ -2372,7 +2373,7 @@ export async function callBestAvailableAi(userId, prompt, options = {}) {
       return await callAiPlatformWithMetrics(userId, platform, prompt, {
         mcpClients,
         onToolResult: options.onToolResult,
-        toolExecutionContext: options.toolExecutionContext,
+        toolExecutionContext: { ...(options.toolExecutionContext ?? {}), userId },
         toolChoice: options.toolChoice,
         firstStepToolName: options.firstStepToolName,
       });
@@ -2543,11 +2544,43 @@ function buildSdkTools(clients, onToolResult, executionContext = {}) {
         const normalizedInput = useSystemDefaults
           ? applySystemToolExecutionDefaults(name, input ?? {}, executionContext)
           : input ?? {};
-        const result = await execute(normalizedInput);
-        if (typeof onToolResult === "function") {
-          onToolResult({ input: normalizedInput, result, toolName: name });
+        const auditUserId = typeof executionContext.userId === "string" ? executionContext.userId : "";
+        if (auditUserId) {
+          await logSystemEvent(auditUserId, {
+            category: "ai",
+            eventName: "ai_tool.call_started",
+            status: "info",
+            message: `AI tool call started: ${name}`,
+            payload: { input: normalizedInput, toolName: name },
+          });
         }
-        return result;
+        try {
+          const result = await execute(normalizedInput);
+          if (typeof onToolResult === "function") {
+            onToolResult({ input: normalizedInput, result, toolName: name });
+          }
+          if (auditUserId) {
+            await logSystemEvent(auditUserId, {
+              category: "ai",
+              eventName: "ai_tool.call_completed",
+              status: "success",
+              message: `AI tool call completed: ${name}`,
+              payload: { input: normalizedInput, result, toolName: name },
+            });
+          }
+          return result;
+        } catch (error) {
+          if (auditUserId) {
+            await logSystemEvent(auditUserId, {
+              category: "ai",
+              eventName: "ai_tool.call_failed",
+              status: "error",
+              message: `AI tool call failed: ${name}`,
+              payload: { error: error.message, input: normalizedInput, toolName: name },
+            });
+          }
+          throw error;
+        }
       },
     });
   };

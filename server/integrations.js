@@ -1659,6 +1659,60 @@ async function findIndexedEmailsForMcp(userId, {
     receivedBefore,
     hasAttachments,
   });
+  const breakdown = normalizedState ? null : {
+    inbox: await countIndexedEmailsForMcp(userId, {
+      accountIds: accounts.map((account) => account.id),
+      archivedOnly: false,
+      direction: "inbox",
+      includeArchived: false,
+      labelName,
+      readFilter,
+      search,
+      trashOnly: false,
+      receivedAfter,
+      receivedBefore,
+      hasAttachments,
+    }),
+    archived: await countIndexedEmailsForMcp(userId, {
+      accountIds: accounts.map((account) => account.id),
+      archivedOnly: true,
+      direction: "",
+      includeArchived: true,
+      labelName,
+      readFilter,
+      search,
+      trashOnly: false,
+      receivedAfter,
+      receivedBefore,
+      hasAttachments,
+    }),
+    sent: await countIndexedEmailsForMcp(userId, {
+      accountIds: accounts.map((account) => account.id),
+      archivedOnly: false,
+      direction: "sent",
+      includeArchived: true,
+      labelName,
+      readFilter,
+      search,
+      trashOnly: false,
+      receivedAfter,
+      receivedBefore,
+      hasAttachments,
+    }),
+    drafts: await countIndexedEmailsForMcp(userId, {
+      accountIds: accounts.map((account) => account.id),
+      archivedOnly: false,
+      direction: "draft",
+      includeArchived: true,
+      labelName,
+      readFilter,
+      search,
+      trashOnly: false,
+      receivedAfter,
+      receivedBefore,
+      hasAttachments,
+    }),
+  };
   const results = filtered
     .slice(0, limit)
     .map(indexedEmailToMcpResult);
@@ -1667,6 +1721,12 @@ async function findIndexedEmailsForMcp(userId, {
     results,
     source: "indexed_database",
     totalMatches,
+    scope: {
+      account: to || "all connected accounts",
+      label: labelName || "all labels",
+      state: normalizedState || "all indexed mail",
+    },
+    breakdown,
     nextOffset: result.nextPageToken ? Number.parseInt(result.nextPageToken, 10) : null,
     page: {
       complete: !result.nextPageToken,

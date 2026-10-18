@@ -3767,7 +3767,10 @@ function InboxPage({
     }
   }
 
-  async function deleteSelectedMessages(messagesToDelete = selectedMessages) {
+  async function deleteSelectedMessages(
+    messagesToDelete = selectedMessages,
+    options: { source?: "ai" | "user" } = {},
+  ): Promise<{ backgroundTask?: { id: string; title: string }; failed: number; succeeded: number }> {
     if (messagesToDelete.length === 0) {
       return { failed: 0, succeeded: 0 };
     }
@@ -3786,12 +3789,26 @@ function InboxPage({
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: messagesToDelete.map(messageToBulkPayload) }),
+        body: JSON.stringify({
+          messages: messagesToDelete.map(messageToBulkPayload),
+          source: options.source ?? "user",
+        }),
       });
       const data = await response.json();
       if (!response.ok) {
         setError(data.error ?? "Could not delete messages.");
         return { failed: messagesToDelete.length, succeeded: 0 };
+      }
+
+      if (data.background && data.task?.id) {
+        window.dispatchEvent(new Event("emailable:background-tasks-refresh"));
+        window.dispatchEvent(new Event("emailable:background-tasks-open"));
+        showInboxToast(`Deleting ${messagesToDelete.length} emails in a separate agent thread.`);
+        return {
+          backgroundTask: { id: String(data.task.id), title: String(data.task.title || "AI email deletion") },
+          failed: 0,
+          succeeded: 0,
+        };
       }
 
       const successfulDeletes = Array.isArray(data.results)
@@ -4720,7 +4737,10 @@ function InboxAiHelperPanel({
   labels: Label[];
   onClose: () => void;
   onArchiveMessages: (messages: InboxMessage[]) => Promise<{ failed: number; succeeded: number }>;
-  onDeleteMessages: (messages: InboxMessage[]) => Promise<{ failed: number; succeeded: number }>;
+  onDeleteMessages: (
+    messages: InboxMessage[],
+    options?: { source?: "ai" | "user" },
+  ) => Promise<{ backgroundTask?: { id: string; title: string }; failed: number; succeeded: number }>;
   onOpenComposeDraft: (draft: Partial<InboxComposeDraft> | null) => void;
   onOpenMessage: (message: InboxMessage) => Promise<void> | void;
   privacyMode: boolean;
@@ -5054,7 +5074,14 @@ function InboxAiHelperPanel({
     try {
       const result = action === "archive"
         ? await onArchiveMessages(targetMessages)
-        : await onDeleteMessages(targetMessages);
+        : await onDeleteMessages(targetMessages, { source: "ai" });
+      if ("backgroundTask" in result && result.backgroundTask) {
+        addMessage({
+          role: "assistant",
+          text: `I started a separate progress thread for deleting ${targetMessages.length.toLocaleString()} emails. You can keep using this conversation while it runs. Open “Agent threads” to follow progress and see any errors.`,
+        });
+        return true;
+      }
       addMessage({
         role: "assistant",
         text: result.failed > 0
@@ -5148,7 +5175,9 @@ function InboxAiHelperPanel({
       for (const line of lines) {
         if (!line.trim()) continue;
         const event = JSON.parse(line) as Record<string, unknown>;
-        if (event.type === "text-delta" && typeof event.delta === "string") {
+        if (event.type === "working") {
+          onText("Working…");
+        } else if (event.type === "text-delta" && typeof event.delta === "string") {
           streamedText += event.delta;
           onText(streamedText);
         } else if (event.type === "done") {
