@@ -19,6 +19,19 @@ export function buildAiHelperSystemPrompt() {
   ].join("\n");
 }
 
+export function buildAiHelperMessages(history, prompt) {
+  return [
+    ...history.map((message) => ({
+      role: message.role,
+      content: message.text,
+    })),
+    {
+      role: "user",
+      content: prompt,
+    },
+  ];
+}
+
 export function buildAiHelperVerificationPrompt({ candidate, history, request, toolResults }) {
   return [
     "User request:",

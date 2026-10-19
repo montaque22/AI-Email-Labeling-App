@@ -1,11 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAiHelperMessages,
   buildAiHelperSystemPrompt,
   buildAiHelperVerificationPrompt,
   calculateInboxAgentValues,
 } from "./ai-helper-agent.js";
 
 describe("inbox agent policy", () => {
+  it("sends the current user prompt without appending synthetic context", () => {
+    const messages = buildAiHelperMessages([
+      { role: "user", text: "Find messages from Acme" },
+      { role: "assistant", text: "I found 12 messages." },
+    ], "Archive them");
+
+    expect(messages).toEqual([
+      { role: "user", content: "Find messages from Acme" },
+      { role: "assistant", content: "I found 12 messages." },
+      { role: "user", content: "Archive them" },
+    ]);
+  });
+
   it("delegates flexible database-first work to the model and tools", () => {
     const prompt = buildAiHelperSystemPrompt();
 

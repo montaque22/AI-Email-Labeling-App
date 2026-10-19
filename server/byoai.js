@@ -29,6 +29,7 @@ import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import { upsertEmailAutomationResult } from "./email-index.js";
 import {
+  buildAiHelperMessages,
   buildAiHelperSystemPrompt,
   buildAiHelperVerificationPrompt,
 } from "./ai-helper-agent.js";
@@ -1579,75 +1580,17 @@ async function generateAiHelperChat(userId, request) {
   const history = combinedHistory.slice(-AI_HELPER_HISTORY_LIMIT);
   const currentMessageIsInHistory = history.at(-1)?.role === "user" && history.at(-1)?.text === request.prompt;
   const previousHistory = currentMessageIsInHistory ? history.slice(0, -1) : history;
-  const lastAssistantQuestion = [...previousHistory].reverse().find((message) => message.role === "assistant")?.text || "";
   const toolResults = [];
-  const context = request.contextMessages
-    .slice(0, 30)
-    .map((message, index) => [
-      `${index + 1}. State: ${message.state || "visible"}`,
-      `Email ID: ${message.emailId || ""}`,
-      `Thread ID: ${message.threadId || message.emailId || ""}`,
-      `Account: ${message.accountEmail || ""}`,
-      `From: ${message.from || message.sender || ""}`,
-      `Subject: ${message.subject || "(no subject)"}`,
-      `Labels: ${Array.isArray(message.labels) && message.labels.length ? message.labels.join(", ") : "none"}`,
-      `Date: ${message.date || ""}`,
-      `Snippet: ${message.snippet || ""}`,
-    ].join("\n"))
-    .join("\n\n");
-  const taskContext = request.contextTasks
-    .slice(0, 50)
-    .map((task, index) => [
-      `${index + 1}. ${task.title || "(untitled task)"}`,
-      `ID: ${task.id || ""}`,
-      `Project: ${task.project || "none"}`,
-      `Priority: ${task.priority || ""}`,
-      `Due: ${task.dueDate || "none"}`,
-      `Tags: ${Array.isArray(task.tags) && task.tags.length ? task.tags.join(", ") : "none"}`,
-      `Notes: ${task.notes || "none"}`,
-      `Status: ${task.completedAt ? "completed" : task.stuck ? "stuck" : "open"}`,
-    ].join("\n"))
-    .join("\n\n");
-  const rememberedTasks = memory.affectedTasks.length
-    ? memory.affectedTasks.map((task, index) => `${index + 1}. ${task.title} (${task.id})`).join("\n")
-    : "";
-  const singleActiveEmail = request.contextMessages.length === 1 ? request.contextMessages[0] : null;
-  const defaultTaskSourceEmailId = singleActiveEmail?.emailId || "";
   const aiResponse = await callBestAvailableAi(userId, {
     systemPrompt: buildAiHelperSystemPrompt(),
-    messages: [
-      ...previousHistory.map((message) => ({
-        role: message.role,
-        content: message.text,
-      })),
-      {
-        role: "user",
-        content: [
-          `User request: ${request.prompt}`,
-          "",
-          lastAssistantQuestion ? `Your immediately previous question was: ${lastAssistantQuestion}` : "You did not ask an immediately previous question.",
-          "If the user request is a short affirmative or negative answer, continue from that previous question instead of asking what they mean.",
-          "",
-          `AI Helper session id: ${request.sessionId || "unknown"}`,
-          "",
-          `Active screen context (${request.contextDescription || "visible emails"}):`,
-          context || "(no visible or selected email context)",
-          "",
-          "Active task context:",
-          taskContext || "(no visible task context)",
-          "",
-          "Recently affected tasks from this session:",
-          rememberedTasks || "(none)",
-        ].join("\n"),
-      },
-    ],
+    messages: buildAiHelperMessages(previousHistory, request.prompt),
     responseShape: "text",
     toolChoice: "auto",
   }, {
     mcpClients: await buildAiHelperMcpClients(userId),
     onToolResult: (result) => toolResults.push(result),
     toolExecutionContext: {
-      defaultTaskSourceEmailId,
+      defaultTaskSourceEmailId: "",
       userId,
     },
   });
@@ -3014,49 +2957,12 @@ function parseComposeSuggestionInput(body) {
 function parseAiHelperChatInput(body) {
   const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
   const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim().slice(0, 120) : "";
-  const contextDescription = typeof body?.contextDescription === "string" ? body.contextDescription.trim().slice(0, 200) : "";
   const conversationHistory = Array.isArray(body?.conversationHistory)
     ? body.conversationHistory.slice(-AI_HELPER_HISTORY_LIMIT).filter((message) => message && typeof message === "object").map((message) => ({
         role: message.role === "assistant" ? "assistant" : "user",
         text: typeof message.text === "string" ? message.text.trim().slice(0, 4000) : "",
       })).filter((message) => message.text)
     : [];
-  const contextMessages = Array.isArray(body?.contextMessages)
-    ? body.contextMessages.slice(0, 30).filter((message) => message && typeof message === "object").map((message) => ({
-        accountEmail: typeof message.accountEmail === "string" ? message.accountEmail : "",
-        date: typeof message.date === "string" ? message.date : "",
-        emailId: typeof message.emailId === "string"
-          ? message.emailId
-          : typeof message.id === "string"
-            ? message.id
-            : "",
-        from: typeof message.from === "string" ? message.from : "",
-        labels: Array.isArray(message.labels) ? message.labels.filter((label) => typeof label === "string").slice(0, 8) : [],
-        mailbox: typeof message.mailbox === "string" ? message.mailbox : "",
-        sender: typeof message.sender === "string" ? message.sender : "",
-        snippet: typeof message.snippet === "string" ? message.snippet.slice(0, 600) : "",
-        state: typeof message.state === "string" ? message.state : "",
-        subject: typeof message.subject === "string" ? message.subject : "",
-        threadId: typeof message.threadId === "string" ? message.threadId : "",
-      }))
-    : [];
-  const contextTasks = Array.isArray(body?.contextTasks)
-    ? body.contextTasks.slice(0, 50).filter((task) => task && typeof task === "object").map((task) => ({
-        id: typeof task.id === "string" ? task.id : "",
-        title: typeof task.title === "string" ? task.title.slice(0, 240) : "",
-        notes: typeof task.notes === "string" ? task.notes.slice(0, 1200) : "",
-        tags: Array.isArray(task.tags) ? task.tags.filter((tag) => typeof tag === "string").slice(0, 12) : [],
-        priority: Number.isFinite(Number(task.priority)) ? Number(task.priority) : 0,
-        dueDate: typeof task.dueDate === "string" ? task.dueDate : "",
-        project: typeof task.project === "string" ? task.project.slice(0, 120) : "",
-        deferCount: Number.isFinite(Number(task.deferCount)) ? Number(task.deferCount) : 0,
-        duplicateCount: Number.isFinite(Number(task.duplicateCount)) ? Number(task.duplicateCount) : 0,
-        sourceEmailId: typeof task.sourceEmailId === "string" ? task.sourceEmailId : "",
-        stuck: Boolean(task.stuck),
-        completedAt: typeof task.completedAt === "string" ? task.completedAt : "",
-      })).filter((task) => task.id && task.title)
-    : [];
-
   if (!prompt) {
     return { ok: false, error: "Ask the AI Helper a question." };
   }
@@ -3064,7 +2970,7 @@ function parseAiHelperChatInput(body) {
     return { ok: false, error: "AI Helper prompt must be 2,000 characters or less." };
   }
 
-  return { ok: true, request: { contextDescription, contextMessages, contextTasks, conversationHistory, prompt, sessionId } };
+  return { ok: true, request: { conversationHistory, prompt, sessionId } };
 }
 
 function parseEmailActionInput(body) {

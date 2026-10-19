@@ -27,7 +27,7 @@ type TaskAiHelperProps = {
   tasks: Task[];
 };
 
-export function TaskAiHelper({ onClose, onOpenTask, onTasksChanged, selectedTask, tasks }: TaskAiHelperProps) {
+export function TaskAiHelper({ onClose, onOpenTask, onTasksChanged, tasks }: TaskAiHelperProps) {
   const [input, setInput] = useState("");
   const [isThinking, setIsThinking] = useState(false);
   const [messages, setMessages] = useState<TaskAiMessage[]>(() => loadStoredMessages());
@@ -59,8 +59,6 @@ export function TaskAiHelper({ onClose, onOpenTask, onTasksChanged, selectedTask
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contextDescription: selectedTask ? `Tasks page with selected task: ${selectedTask.title}` : "Tasks page",
-          contextTasks: buildTaskContext(tasks, selectedTask),
           conversationHistory: nextMessages.slice(-TASK_AI_HISTORY_LIMIT).map((message) => ({
             role: message.role,
             text: message.text,
@@ -112,7 +110,7 @@ export function TaskAiHelper({ onClose, onOpenTask, onTasksChanged, selectedTask
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-zinc-950">Task AI</p>
-          <p className="truncate text-xs text-zinc-500">{tasks.length} task{tasks.length === 1 ? "" : "s"} in context</p>
+          <p className="truncate text-xs text-zinc-500">{tasks.length} task{tasks.length === 1 ? "" : "s"}</p>
         </div>
         <Button aria-label="Close task AI" onClick={onClose} size="icon" type="button" variant="ghost">
           <X className="h-4 w-4" />
@@ -194,12 +192,6 @@ export function TaskAiHelper({ onClose, onOpenTask, onTasksChanged, selectedTask
       </form>
     </aside>
   );
-}
-
-function buildTaskContext(tasks: Task[], selectedTask: Task | null) {
-  const selected = selectedTask ? [selectedTask] : [];
-  const visible = tasks.filter((task) => task.id !== selectedTask?.id);
-  return [...selected, ...visible].slice(0, 50);
 }
 
 function getTaskAiSessionId() {

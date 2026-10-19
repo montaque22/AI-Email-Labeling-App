@@ -5100,10 +5100,6 @@ function InboxAiHelperPanel({
   }
 
   async function draftEmailBody(prompt: string, draft: Partial<InboxComposeDraft>) {
-    const contextSummary = activeContext
-      .slice(0, 8)
-      .map((message, index) => `${index + 1}. From ${message.from || message.sender}; Subject: ${message.subject}; Snippet: ${message.snippet}; Labels: ${message.labels.join(", ") || "none"}`)
-      .join("\n");
     const response = await fetch("/api/byoai/compose-suggestion", {
       method: "POST",
       credentials: "include",
@@ -5111,7 +5107,7 @@ function InboxAiHelperPanel({
       body: JSON.stringify({
         currentBody: draft.bodyText || "",
         message: draft.replyContext ?? null,
-        prompt: `You are helping from the Inbox AI helper. Active screen context: ${selectedContextText}.\n\nVisible or selected email context:\n${contextSummary || "(none)"}\n\nUser request:\n${prompt}`,
+        prompt,
         requiredTools: [],
       }),
     });
@@ -5135,21 +5131,6 @@ function InboxAiHelperPanel({
         conversationHistory: conversationHistory.slice(-INBOX_AI_HELPER_HISTORY_LIMIT).map((message) => ({
           role: message.role,
           text: message.text,
-        })),
-        contextDescription: `${selectedContextText}. Available labels: ${labels.map((label) => label.name).join(", ") || "none"}.`,
-        contextMessages: activeContext.map((message) => ({
-          accountEmail: message.accountEmail,
-          date: message.date,
-          emailId: message.id,
-          from: message.from,
-          id: message.id,
-          labels: message.labels,
-          mailbox: message.mailbox,
-          sender: message.sender,
-          snippet: message.snippet,
-          state: message.mailbox || getInboxModeDescription(inboxMode),
-          subject: message.subject,
-          threadId: message.threadId,
         })),
         prompt,
         sessionId,
@@ -5434,7 +5415,7 @@ function InboxAiHelperPanel({
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-zinc-950">AI Helper</p>
-          <p className="truncate text-xs text-zinc-500">{selectedContextText} in context</p>
+          <p className="truncate text-xs text-zinc-500">{selectedContextText}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <AiHelperSessionResetButton disabled={isThinking} onReset={resetAgentSession} />
