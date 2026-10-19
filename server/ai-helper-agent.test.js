@@ -3,6 +3,7 @@ import {
   buildAiHelperMessages,
   buildAiHelperSystemPrompt,
   buildAiHelperVerificationPrompt,
+  buildLabelCatalog,
   calculateInboxAgentValues,
 } from "./ai-helper-agent.js";
 
@@ -36,6 +37,30 @@ describe("inbox agent policy", () => {
 
     expect(prompt).not.toMatch(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
     expect(prompt).not.toContain("General");
+  });
+
+  it("includes the user's label names and descriptions as reference data", () => {
+    const prompt = buildAiHelperSystemPrompt([
+      { name: "Receipts", description: "Purchase confirmations and invoices." },
+      { name: "Needs Reply", description: "Messages awaiting a response." },
+    ]);
+
+    expect(prompt).toContain('"name":"Receipts"');
+    expect(prompt).toContain('"description":"Purchase confirmations and invoices."');
+    expect(prompt).toContain('"name":"Needs Reply"');
+  });
+
+  it("requires clarification before uncertain label-scoped actions", () => {
+    const prompt = buildAiHelperSystemPrompt([{ name: "Archive Later", description: "Low-priority mail." }]);
+
+    expect(prompt).toContain("use the catalog's exact label name in tool calls");
+    expect(prompt).toContain("ask one concise clarifying question before calling an action tool");
+    expect(prompt).toContain("Never invent, silently substitute, or broaden a label");
+  });
+
+  it("provides a safe fallback for labels without descriptions", () => {
+    expect(buildLabelCatalog([{ name: "Reference", description: "" }]))
+      .toBe('[{"name":"Reference","description":"No description provided."}]');
   });
 
   it("gives the verifier the request, history, evidence, and candidate answer", () => {

@@ -1581,8 +1581,9 @@ async function generateAiHelperChat(userId, request) {
   const currentMessageIsInHistory = history.at(-1)?.role === "user" && history.at(-1)?.text === request.prompt;
   const previousHistory = currentMessageIsInHistory ? history.slice(0, -1) : history;
   const toolResults = [];
+  const labels = await getAiHelperLabelCatalog(userId);
   const aiResponse = await callBestAvailableAi(userId, {
-    systemPrompt: buildAiHelperSystemPrompt(),
+    systemPrompt: buildAiHelperSystemPrompt(labels),
     messages: buildAiHelperMessages(previousHistory, request.prompt),
     responseShape: "text",
     toolChoice: "auto",
@@ -1620,6 +1621,19 @@ async function generateAiHelperChat(userId, request) {
     affectedTasks: affectedTasks.length > 0 ? affectedTasks : [],
     proposedBulkAction,
   };
+}
+
+async function getAiHelperLabelCatalog(userId) {
+  const result = await dbPool.query(
+    `
+      select name, description
+      from labels
+      where user_id = $1
+      order by lower(name), created_at desc
+    `,
+    [userId],
+  );
+  return result.rows;
 }
 
 async function verifyAiHelperResponse(userId, { candidate, history, request, toolResults }) {
