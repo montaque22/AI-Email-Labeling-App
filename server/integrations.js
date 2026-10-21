@@ -3439,7 +3439,7 @@ function startReviewedRuleProviderApply(userId, { rule, reviewedRule, labelName,
 // How long a `providerApply` row may sit at "queued" before the startup sweep decides nobody
 // is coming back for it. Comfortably longer than a slow IMAP round-trip, short enough that a
 // restart does not leave a user staring at a stale "queued" for the rest of the day.
-const QUEUED_PROVIDER_APPLY_GRACE = "5 minutes";
+const QUEUED_PROVIDER_APPLY_GRACE_MS = 5 * 60 * 1000;
 const PROVIDER_APPLY_INTERRUPTED_DESCRIPTION =
   "Emailable restarted before it finished applying this label to the provider email. The reviewed rule is saved and still shapes future emails, but the provider message was never relabelled. Review the rule again to retry.";
 
@@ -3464,6 +3464,29 @@ export async function reconcileInterruptedProviderApplies() {
     return 0;
   }
 
+  // `queuedAt` is free-form jsonb text, and no cast in Postgres is total over it. The guard
+  // this replaced admitted anything matching `^\d{4}-\d{2}-\d{2}T` and then cast it, so a
+  // value like "2026-13-45T99:99:99Z" raised "date/time field value out of range" and aborted
+  // the whole statement — on every boot, where the only symptom is a log line nobody reads.
+  // Reading the candidates first and deciding in JS keeps the decision total: `Date.parse`
+  // answers NaN for anything it cannot read, and NaN fails every comparison, so the
+  // `>= cutoff` below is false and the row is swept. That is the -infinity case, now by
+  // construction rather than by trusting a regex to predict what Postgres will accept.
+  const candidates = await dbPool.query(`
+    select id, metadata->'providerApply'->>'queuedAt' as "queuedAt"
+    from email_rules
+    where metadata->'providerApply'->>'status' = 'queued'
+  `);
+
+  const cutoff = Date.now() - QUEUED_PROVIDER_APPLY_GRACE_MS;
+  const staleIds = candidates.rows
+    .filter((row) => !(Date.parse(row.queuedAt ?? "") >= cutoff))
+    .map((row) => row.id);
+
+  if (staleIds.length === 0) {
+    return 0;
+  }
+
   const interrupted = {
     ok: false,
     status: "interrupted",
@@ -3473,25 +3496,19 @@ export async function reconcileInterruptedProviderApplies() {
     interruptedAt: new Date().toISOString(),
   };
 
-  // The CASE is load-bearing: it pins evaluation order so a malformed `queuedAt` is never
-  // cast. Missing or unparseable timestamps sort as -infinity, which is the behaviour we
-  // want — a row with no record of when it was queued is by definition not in flight now.
+  // The status is re-checked rather than assumed: the read above is not in the same statement
+  // as this write, and a second instance booting alongside this one may have resolved a row in
+  // between. `returning` therefore reports what this call actually changed, not what it hoped to.
   const result = await dbPool.query(
     `
       update email_rules
       set metadata = metadata || jsonb_build_object('providerApply', (coalesce(metadata->'providerApply', '{}'::jsonb) || $1::jsonb)),
           updated_at = now()
-      where metadata->'providerApply'->>'status' = 'queued'
-        and (
-          case
-            when coalesce(metadata->'providerApply'->>'queuedAt', '') ~ '^\\d{4}-\\d{2}-\\d{2}T'
-              then (metadata->'providerApply'->>'queuedAt')::timestamptz
-            else '-infinity'::timestamptz
-          end
-        ) < now() - interval '${QUEUED_PROVIDER_APPLY_GRACE}'
+      where id = any($2::uuid[])
+        and metadata->'providerApply'->>'status' = 'queued'
       returning user_id as "userId", email_id as "emailId", subject
     `,
-    [JSON.stringify(interrupted)],
+    [JSON.stringify(interrupted), staleIds],
   );
 
   const rows = result.rows;
