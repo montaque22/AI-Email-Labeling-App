@@ -54,6 +54,7 @@
     "@testing-library/react": "^16.3.3",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "embedded-postgres": "18.4.0-beta.17",
     "jsdom": "^29.1.1",
     "prisma": "latest",
     "supertest": "^7.3.1",
