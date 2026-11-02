@@ -40,6 +40,7 @@ export async function ensureEmailIndexTable() {
   await dbPool.query("alter table email_index add column if not exists responding_to_email_id text");
   await dbPool.query("alter table email_index add column if not exists metadata jsonb not null default '{}'::jsonb");
   await dbPool.query("alter table email_index add column if not exists archived boolean not null default false");
+  await dbPool.query("alter table email_index add column if not exists trashed_at timestamptz");
   await dbPool.query("alter table email_index add column if not exists commitment_text text");
   await dbPool.query("alter table email_index add column if not exists commitment_due_at timestamptz");
   await dbPool.query("alter table email_index add column if not exists commitment_set_at timestamptz");
@@ -235,7 +236,10 @@ export async function deleteEmailIndexEntries(userId, messages) {
     const batch = messages.slice(offset, offset + 20);
     const results = await Promise.all(batch.map((message) => dbPool.query(
       `
-        delete from email_index
+        update email_index
+        set archived = true,
+            trashed_at = now(),
+            updated_at = now()
         where user_id = $1
           and email_account_id = $2
           and email_id = $3
@@ -248,6 +252,34 @@ export async function deleteEmailIndexEntries(userId, messages) {
     deleted.push(...results.flatMap((result) => result.rows.map(mapEmailIndexRow)));
   }
   return deleted;
+}
+
+export async function restoreTrashedEmailIndexEntries(userId, messages) {
+  if (!dbPool || !messages.length) {
+    return [];
+  }
+
+  const restored = [];
+  for (let offset = 0; offset < messages.length; offset += 20) {
+    const batch = messages.slice(offset, offset + 20);
+    const results = await Promise.all(batch.map((message) => dbPool.query(
+      `
+        update email_index
+        set archived = false,
+            trashed_at = null,
+            updated_at = now()
+        where user_id = $1
+          and email_account_id = $2
+          and email_id = $3
+          and mailbox = $4
+          and trashed_at is not null
+        returning *
+      `,
+      [userId, message.accountId, message.emailId, message.mailbox || ""],
+    )));
+    restored.push(...results.flatMap((result) => result.rows.map(mapEmailIndexRow)));
+  }
+  return restored;
 }
 
 export async function archiveEmailIndexEntries(userId, messages, { allowCommitted = false } = {}) {
@@ -364,7 +396,7 @@ export async function listEmailIndexEntries(userId, query) {
   const limit = Math.min(Math.max(Number(query.limit) || EMAIL_INDEX_PAGE_SIZE, 1), 100);
   const offset = Math.max(Number.parseInt(query.pageToken || "0", 10) || 0, 0);
   const values = [userId];
-  const conditions = ["user_id = $1"];
+  const conditions = ["user_id = $1", "trashed_at is null"];
 
   if (query.accountIds?.length) {
     values.push(query.accountIds);
@@ -460,6 +492,7 @@ export async function listEmailIndexEntriesByLabel(userId, labelName, { limit = 
       from email_index
       where user_id = $1
         and direction = 'inbox'
+        and trashed_at is null
         and $2 = any(labels)
       order by received_at desc, created_at desc
       limit $3

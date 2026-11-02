@@ -76,6 +76,8 @@ import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/ru
 import { InboxSelectAllBanner } from "./components/inbox/InboxSelectAllBanner";
 import { AiHelperSessionResetButton } from "./components/inbox/AiHelperSessionResetButton";
 import { AttentionDashboard, type AttentionCategory, type AttentionDashboardData, type AttentionMessage } from "./components/inbox/AttentionDashboard";
+import { AttentionTrashConfirmation } from "./components/inbox/AttentionTrashConfirmation";
+import { LiquidActionBar } from "./components/inbox/LiquidActionBar";
 import { AttentionDashboardSettingsPage } from "./components/settings/AttentionDashboardSettingsPage";
 import { authClient } from "./lib/auth-client";
 import { fetchNoStore } from "./lib/http";
@@ -802,8 +804,10 @@ type InboxComposeDraft = {
 };
 
 type InboxToast = {
+  actionLabel?: string;
   id: number;
   message: string;
+  onAction?: () => void;
   type: "success" | "error";
   persistent?: boolean;
 };
@@ -2367,13 +2371,13 @@ function InboxPage({
   const [isByoAiActive, setIsByoAiActive] = useState(false);
   const [activeAiTools, setActiveAiTools] = useState<AiMcpTool[]>([]);
   const [isAiHelperOpen, setIsAiHelperOpen] = useState(false);
+  const [attentionSelectedMessages, setAttentionSelectedMessages] = useState<AttentionMessage[]>([]);
+  const [pendingAttentionTrash, setPendingAttentionTrash] = useState<AttentionMessage[] | null>(null);
   const isMobileViewport = useIsMobileViewport();
   const [composeRevision, setComposeRevision] = useState(0);
-  const [isBulkActionBarRendered, setIsBulkActionBarRendered] = useState(false);
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const [isMobileLabelPickerOpen, setIsMobileLabelPickerOpen] = useState(false);
   const [isMobileEditMode, setIsMobileEditMode] = useState(false);
-  const [isBulkLabelMenuOpen, setIsBulkLabelMenuOpen] = useState(false);
   const [commitmentDraftMessages, setCommitmentDraftMessages] = useState<InboxMessage[]>([]);
   const [commitmentText, setCommitmentText] = useState("");
   const [commitmentDueAt, setCommitmentDueAt] = useState("");
@@ -2455,24 +2459,47 @@ function InboxPage({
     void loadAttentionDashboard();
   }, [selectedAccountIds.join(",")]);
 
-  async function loadAttentionDashboard() {
-    setIsAttentionDashboardLoading(true);
+  async function loadAttentionDashboard(options: { appendCategory?: "attention" | "interest" } = {}) {
+    const appendCategory = options.appendCategory;
+    if (!appendCategory) setIsAttentionDashboardLoading(true);
     try {
       const params = new URLSearchParams({ accountIds: selectedAccountIds.join(",") });
+      if (appendCategory) {
+        params.set(`${appendCategory}Offset`, String(attentionDashboard?.categories[appendCategory].length ?? 0));
+        params.set(`${appendCategory}Limit`, "10");
+      } else {
+        params.set("attentionLimit", String(Math.max(5, attentionDashboard?.categories.attention.length ?? 0)));
+        params.set("interestLimit", String(Math.max(5, attentionDashboard?.categories.interest.length ?? 0)));
+      }
       const response = await fetchNoStore(`/api/inbox/attention-dashboard?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Could not load the Attention Dashboard.");
-      setAttentionDashboard(data as AttentionDashboardData);
-      return data as AttentionDashboardData;
+      const next = data as AttentionDashboardData;
+      if (appendCategory) {
+        setAttentionDashboard((current) => current ? {
+          ...next,
+          categories: {
+            ...current.categories,
+            [appendCategory]: mergeAttentionMessages(current.categories[appendCategory], next.categories[appendCategory]),
+          },
+        } : next);
+        return next;
+      }
+      setAttentionDashboard(next);
+      return next;
     } catch (dashboardError) {
       setError(dashboardError instanceof Error ? dashboardError.message : "Could not load the Attention Dashboard.");
     } finally {
-      setIsAttentionDashboardLoading(false);
+      if (!appendCategory) setIsAttentionDashboardLoading(false);
     }
     return null;
   }
 
-  async function updateAttentionPreference(message: InboxMessage | AttentionMessage, action: string, category?: AttentionCategory) {
+  async function updateAttentionPreference(message: InboxMessage | AttentionMessage, action: string, category?: AttentionCategory, options: { isUndo?: boolean } = {}) {
+    const nextFollowed = action === "follow" ? true : action === "unfollow" ? false : undefined;
+    if (typeof nextFollowed === "boolean") {
+      setAttentionDashboard((current) => current ? updateAttentionDashboardMessage(current, message, { followed: nextFollowed }) : current);
+    }
     const response = await fetchNoStore("/api/inbox/attention-preference", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2481,9 +2508,39 @@ function InboxPage({
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       showInboxToast(data.error ?? "Could not update that recommendation.", "error");
+      await loadAttentionDashboard();
       return;
     }
+    if (typeof nextFollowed === "boolean" && !options.isUndo) {
+      showInboxToast(nextFollowed ? "Email followed." : "Email unfollowed.", "success", {
+        actionLabel: "Undo",
+        onAction: () => void updateAttentionPreference(message, nextFollowed ? "unfollow" : "follow", category, { isUndo: true }),
+      });
+    }
     await loadAttentionDashboard();
+  }
+
+  async function selectAllAttentionCategory(category: "attention" | "interest") {
+    const params = new URLSearchParams({ accountIds: selectedAccountIds.join(","), category });
+    const response = await fetchNoStore(`/api/inbox/attention-dashboard/selection?${params.toString()}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showInboxToast(data.error ?? "Could not select all matching emails.", "error");
+      return [];
+    }
+    return (data.messages ?? []) as AttentionMessage[];
+  }
+
+  async function revalidateAttentionAction(messagesToActOn: AttentionMessage[], category: AttentionCategory) {
+    const eligibleMessages = category === "cleanup"
+      ? (await loadAttentionDashboard())?.categories.cleanup ?? []
+      : await selectAllAttentionCategory(category);
+    const eligibleKeys = new Set(eligibleMessages.map((message) => getInboxMessageKey(message as InboxMessage)));
+    const revalidated = messagesToActOn.filter((message) => eligibleKeys.has(getInboxMessageKey(message as InboxMessage)));
+    if (revalidated.length !== messagesToActOn.length) {
+      showInboxToast("Some emails changed and were removed from this action.", "error");
+    }
+    return revalidated;
   }
 
   function recordAttentionEngagement(message: InboxMessage, eventType: "open" | "search_open" = "open") {
@@ -3253,34 +3310,6 @@ function InboxPage({
   const allVisibleSelected = filteredMessages.length > 0 && filteredMessages.every((message) => selectedMessageKeys.includes(getInboxMessageKey(message)));
   const selectedMessagesLabelValue = getCommonMessageLabelId(selectedMessages, labels);
 
-  useEffect(() => {
-    if (hasSelectedMessages) {
-      setIsBulkActionBarRendered(true);
-      return;
-    }
-
-    setIsBulkLabelMenuOpen(false);
-    const timeout = window.setTimeout(() => setIsBulkActionBarRendered(false), 190);
-    return () => window.clearTimeout(timeout);
-  }, [hasSelectedMessages]);
-
-  useEffect(() => {
-    if (!isBulkLabelMenuOpen) {
-      return;
-    }
-
-    function handlePointerDown(event: MouseEvent) {
-      const target = event.target;
-      if (target instanceof Element && target.closest("[data-bulk-label-menu]")) {
-        return;
-      }
-      setIsBulkLabelMenuOpen(false);
-    }
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [isBulkLabelMenuOpen]);
-
   function enterMobileEditMode(message?: InboxMessage) {
     if (!isMobileEditMode) {
       navigator.vibrate?.(12);
@@ -3346,7 +3375,7 @@ function InboxPage({
     }
   }
 
-  function showInboxToast(message: string, type: InboxToast["type"] = "success", options: Pick<InboxToast, "persistent"> = {}) {
+  function showInboxToast(message: string, type: InboxToast["type"] = "success", options: Pick<InboxToast, "actionLabel" | "onAction" | "persistent"> = {}) {
     setToast({ id: Date.now(), message, type, ...options });
   }
 
@@ -3679,7 +3708,6 @@ function InboxPage({
           : current,
       );
       setSelectedMessageKeys((current) => current.filter((key) => !updatedKeys.has(key)));
-      setIsBulkLabelMenuOpen(false);
 
       if (successfulUpdates.length > 0) {
         showInboxToast(nextLabelName ? `Updated ${successfulUpdates.length} message${successfulUpdates.length === 1 ? "" : "s"} to ${nextLabelName}.` : `Removed labels from ${successfulUpdates.length} message${successfulUpdates.length === 1 ? "" : "s"}.`);
@@ -3754,6 +3782,7 @@ function InboxPage({
       setCommitmentDraftMessages([]);
       if (successfulKeys.size > 0) {
         showInboxToast(`Commitment saved for ${successfulKeys.size} email${successfulKeys.size === 1 ? "" : "s"}.`);
+        if (inboxView === "dashboard") await loadAttentionDashboard();
       }
       if (data.failed?.length) {
         showInboxToast(`${data.failed.length} email${data.failed.length === 1 ? "" : "s"} could not be updated.`, "error");
@@ -3833,6 +3862,7 @@ function InboxPage({
       setCommitmentConfirm(null);
       void refreshPwaUnreadBadge();
       showInboxToast("Commitment completed and email archived.");
+      if (inboxView === "dashboard") await loadAttentionDashboard();
       showCelebration("confetti");
     } catch {
       showInboxToast("Could not complete this commitment.", "error");
@@ -3877,6 +3907,7 @@ function InboxPage({
       setIsMobileEditMode(false);
       setCommitmentConfirm(null);
       showInboxToast("Commitment removed.");
+      if (inboxView === "dashboard") await loadAttentionDashboard();
       showCelebration("thumbs-down");
     } catch {
       showInboxToast("Could not remove this commitment.", "error");
@@ -3898,7 +3929,6 @@ function InboxPage({
     }
 
     const requestedDeleteKeys = messagesToDelete.map(getInboxMessageKey);
-    setIsBulkLabelMenuOpen(false);
     setDeletingMessageKeys(requestedDeleteKeys);
     setIsBulkActionRunning(true);
     setError(null);
@@ -3943,7 +3973,10 @@ function InboxPage({
       const adjustedNextPageToken = removeMessagesFromCurrentInboxView(successfulDeletes);
       void refreshPwaUnreadBadge();
       if (successfulDeletes.length > 0) {
-        showInboxToast(`${successfulDeletes.length} message${successfulDeletes.length === 1 ? "" : "s"} deleted.`);
+        showInboxToast(successfulDeletes.length === 1 ? "Email moved to Trash." : `${successfulDeletes.length} emails moved to Trash.`, "success", {
+          actionLabel: "Undo",
+          onAction: () => void restoreTrashedMessages(successfulDeletes),
+        });
         setIsMobileEditMode(false);
         const visibleAfterDelete = Math.max(0, messages.length - successfulDeletes.length);
         await refreshInboxAfterDeleteMutation(visibleAfterDelete, adjustedNextPageToken, successfulDeletes.length);
@@ -3962,6 +3995,23 @@ function InboxPage({
     }
   }
 
+  async function restoreTrashedMessages(messagesToRestore: InboxMessage[]) {
+    const response = await fetch("/api/inbox/messages/restore", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: messagesToRestore.map(messageToBulkPayload) }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || Number(data.restored ?? 0) === 0) {
+      showInboxToast(data.error ?? data.failed?.[0]?.error ?? "Could not restore that email from Trash.", "error");
+      return;
+    }
+    showInboxToast(`${data.restored} email${data.restored === 1 ? "" : "s"} restored from Trash.`);
+    await Promise.all([loadLabelCounts(), loadAttentionDashboard()]);
+    if (inboxView === "all-mail") await loadMessages({ reset: true });
+  }
+
   async function archiveSelectedMessages(messagesToArchive = selectedMessages) {
     if (messagesToArchive.length === 0) {
       return { failed: 0, succeeded: 0 };
@@ -3972,7 +4022,6 @@ function InboxPage({
     }
 
     setIsBulkActionRunning(true);
-    setIsBulkLabelMenuOpen(false);
     setError(null);
     try {
       const response = await fetch("/api/inbox/messages/archive", {
@@ -4256,138 +4305,45 @@ function InboxPage({
         </div>
       </div>
 
-      {!isMobileEditMode ? <Button
-        aria-label="Compose email"
-        className="inbox-floating-compose fixed right-5 z-40 h-14 w-14 rounded-full border-white/70 bg-white/70 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85"
-        onClick={() => {
-          openComposeDraft(null);
-        }}
-        size="icon"
-        type="button"
-        variant="outline"
-      >
-        <Plus className="h-5 w-5" />
-      </Button> : null}
-      {isByoAiActive && !isMobileEditMode ? (
-        <Button
-          aria-label="Open AI helper"
-          className="inbox-floating-ai fixed right-5 z-[120] flex h-14 w-14 rounded-full border-white/70 bg-white/70 text-zinc-900 shadow-xl shadow-slate-900/15 backdrop-blur-xl hover:bg-white/85"
-          onClick={() => setIsAiHelperOpen(true)}
-          size="icon"
-          type="button"
-          variant="outline"
-        >
-          <Sparkles className="h-5 w-5" />
-        </Button>
+      {!isMobileEditMode ? (
+        <LiquidActionBar
+          canArchive={inboxView === "dashboard"
+            ? !attentionSelectedMessages.some((message) => Boolean(message.commitment))
+            : !selectedHasCommitments}
+          canTrash={inboxView === "dashboard"
+            ? !attentionSelectedMessages.some((message) => Boolean(message.commitment))
+            : !selectedHasCommitments}
+          disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning}
+          isAiAvailable={isByoAiActive}
+          labels={inboxView === "all-mail" ? labels : []}
+          onArchive={() => {
+            if (inboxView === "dashboard") {
+              void (async () => {
+                const eligible = await revalidateAttentionAction(attentionSelectedMessages, attentionCategory);
+                const result = await archiveSelectedMessages(eligible as InboxMessage[]);
+                if (result.failed === 0) setAttentionSelectedMessages([]);
+                await loadAttentionDashboard();
+              })();
+            } else {
+              void archiveSelectedMessages();
+            }
+          }}
+          onClearSelection={() => inboxView === "dashboard" ? setAttentionSelectedMessages([]) : setSelectedMessageKeys([])}
+          onCompose={() => openComposeDraft(null)}
+          onOpenAi={() => setIsAiHelperOpen(true)}
+          onSelectLabel={inboxView === "all-mail" && selectedMessages.length > 0
+            ? (labelId) => void setMessagesLabel(selectedMessages, labelId)
+            : undefined}
+          onSetCommitment={inboxView === "all-mail" && !selectedHasCompletedCommitments && selectedMessages.length > 0
+            ? () => openCommitmentModal(selectedMessages)
+            : undefined}
+          onTrash={() => inboxView === "dashboard"
+            ? setPendingAttentionTrash(attentionSelectedMessages)
+            : void deleteSelectedMessages()}
+          selectedCount={inboxView === "dashboard" ? attentionSelectedMessages.length : selectedMessages.length}
+          selectedLabelId={selectedMessagesLabelValue}
+        />
       ) : null}
-      {isBulkActionBarRendered ? (
-        <div className="inbox-floating-actions fixed left-1/2 z-40 flex items-center gap-1 rounded-full border border-white/70 bg-white/70 p-2 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl" data-state={hasSelectedMessages ? "open" : "closed"}>
-          <span className="select-none whitespace-nowrap px-3 text-sm font-medium text-zinc-600" aria-live="polite">
-            {selectedMessages.length} selected
-          </span>
-          <div className="h-8 w-px bg-zinc-200/80" />
-          {!selectedHasCommitments ? (
-            <>
-              <Button
-                aria-label="Archive selected emails"
-                className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
-                disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning}
-                onClick={() => void archiveSelectedMessages()}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                {isBulkActionRunning ? <Loader /> : <Archive className="h-5 w-5" />}
-              </Button>
-              <div className="h-8 w-px bg-zinc-200/80" />
-            </>
-          ) : null}
-          {!selectedHasCompletedCommitments ? (
-            <>
-              <Button
-                aria-label="Set commitment"
-                className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
-                disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning || selectedMessages.length === 0}
-                onClick={() => openCommitmentModal(selectedMessages)}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                {isCommitmentActionRunning ? <Loader /> : <Gem className="h-5 w-5" />}
-              </Button>
-              <div className="h-8 w-px bg-zinc-200/80" />
-            </>
-          ) : null}
-          <div className="relative" data-bulk-label-menu>
-            <Button
-              aria-label="Change selected email labels"
-              className="h-12 w-12 rounded-full border-transparent bg-white/35 text-zinc-700 hover:bg-white/70"
-              disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning || selectedMessages.length === 0}
-              onClick={() => setIsBulkLabelMenuOpen((current) => !current)}
-              size="icon"
-              type="button"
-              variant="ghost"
-            >
-              {isLabelActionRunning ? <Loader /> : <Tag className="h-5 w-5" />}
-            </Button>
-            {isBulkLabelMenuOpen ? (
-              <div className="absolute bottom-16 left-1/2 z-50 w-64 -translate-x-1/2 rounded-2xl border border-zinc-200 bg-white p-2 shadow-2xl shadow-slate-900/20">
-                <p className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-500">Move to label</p>
-                <div className="-mx-2 max-h-72 overflow-y-auto">
-                  <button
-                    className={cn(
-                      "flex w-full cursor-pointer items-center justify-between gap-3 px-5 py-2 text-left text-sm text-zinc-700 transition-colors hover:bg-zinc-100/90",
-                      !selectedMessagesLabelValue && "bg-blue-50/90 text-blue-800 hover:bg-blue-50/90",
-                    )}
-                    onClick={() => {
-                      setIsBulkLabelMenuOpen(false);
-                      void setMessagesLabel(selectedMessages, "");
-                    }}
-                    type="button"
-                  >
-                    <span>No label</span>
-                    {!selectedMessagesLabelValue ? <Check className="h-4 w-4" /> : null}
-                  </button>
-                  {labels.map((label) => (
-                    <button
-                      className={cn(
-                        "flex w-full cursor-pointer items-center justify-between gap-3 px-5 py-2 text-left text-sm text-zinc-700 transition-colors hover:bg-zinc-100/90",
-                        selectedMessagesLabelValue === label.id && "bg-blue-50/90 text-blue-800 hover:bg-blue-50/90",
-                      )}
-                      key={label.id}
-                      onClick={() => {
-                        setIsBulkLabelMenuOpen(false);
-                        void setMessagesLabel(selectedMessages, label.id);
-                      }}
-                      type="button"
-                    >
-                      <span className="truncate">{label.name}</span>
-                      {selectedMessagesLabelValue === label.id ? <Check className="h-4 w-4" /> : null}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-          {!selectedHasCommitments ? (
-            <>
-              <div className="h-8 w-px bg-zinc-200/80" />
-              <Button
-                aria-label="Delete selected emails"
-                className="h-12 w-12 rounded-full border-transparent bg-white/35 text-red-600 hover:bg-red-50/80 hover:text-red-700"
-                disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning}
-                onClick={() => void deleteSelectedMessages()}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                {isBulkActionRunning ? <Loader /> : <Trash2 className="h-5 w-5" />}
-              </Button>
-            </>
-          ) : null}
-        </div>
-      ) : null}
-
       {accountsNeedingRefresh.length > 0 ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 shadow-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -4445,25 +4401,26 @@ function InboxPage({
               variant="embedded"
             />
           ) : null}
+          isActionRunning={isBulkActionRunning || isCommitmentActionRunning}
           isLoading={isAttentionDashboardLoading}
           onArchive={async (dashboardMessages) => {
-            const refreshed = await loadAttentionDashboard();
-            const eligible = getRevalidatedCleanupMessages(dashboardMessages, refreshed);
-            if (eligible.length !== dashboardMessages.length) showInboxToast("Some messages changed and were removed from this cleanup action.", "error");
-            if (eligible.length > 0) await archiveSelectedMessages(eligible as InboxMessage[]);
+            const eligible = await revalidateAttentionAction(dashboardMessages, attentionCategory);
+            await archiveSelectedMessages(eligible as InboxMessage[]);
             await loadAttentionDashboard();
           }}
+          onCommitment={(message) => openCommitmentModal([message as InboxMessage])}
           onDelete={async (dashboardMessages) => {
-            const refreshed = await loadAttentionDashboard();
-            const eligible = getRevalidatedCleanupMessages(dashboardMessages, refreshed);
-            if (eligible.length !== dashboardMessages.length) showInboxToast("Some messages changed and were removed from this cleanup action.", "error");
-            if (eligible.length > 0) await deleteSelectedMessages(eligible as InboxMessage[], { source: "user" });
+            const eligible = await revalidateAttentionAction(dashboardMessages, attentionCategory);
+            await deleteSelectedMessages(eligible as InboxMessage[], { source: "user" });
             await loadAttentionDashboard();
           }}
-          onDismiss={(message, category) => updateAttentionPreference(message, "dismiss", category)}
+          onLoadMore={async (category) => { await loadAttentionDashboard({ appendCategory: category }); }}
           onOpen={(message) => void openMessage(message as InboxMessage)}
+          onSelectAllMatching={selectAllAttentionCategory}
           onSelectCategory={setAttentionCategory}
+          onSelectionChange={setAttentionSelectedMessages}
           onToggleFollow={(message) => updateAttentionPreference(message, message.followed ? "unfollow" : "follow")}
+          selectedMessages={attentionSelectedMessages}
         />
       ) : (
         <>
@@ -4604,7 +4561,7 @@ function InboxPage({
             <CardContent className={cn(
               "space-y-0 max-md:min-h-[calc(100svh-14rem)] max-md:px-0 max-md:pb-18 max-md:pt-0 md:pb-10",
               isMobileEditMode && "pb-28",
-              isBulkActionBarRendered && "md:pb-36",
+              hasSelectedMessages && "md:pb-36",
             )}>
               <div className="hidden justify-start md:flex">
                 {filteredMessages.length > 0 ? (
@@ -4745,7 +4702,22 @@ function InboxPage({
           onOpenComposeDraft={openComposeDraft}
           onOpenMessage={(message) => void openMessage(message)}
           privacyMode={privacyMode}
-          selectedMessages={selectedMessages}
+          selectedMessages={(inboxView === "dashboard" ? attentionSelectedMessages : selectedMessages) as InboxMessage[]}
+        />
+      ) : null}
+
+      {pendingAttentionTrash ? (
+        <AttentionTrashConfirmation
+          isRunning={isBulkActionRunning}
+          messages={pendingAttentionTrash}
+          onCancel={() => setPendingAttentionTrash(null)}
+          onConfirm={(dashboardMessages) => void (async () => {
+            const eligible = await revalidateAttentionAction(dashboardMessages, attentionCategory);
+            const result = await deleteSelectedMessages(eligible as InboxMessage[], { source: "user" });
+            if (result.failed === 0) setAttentionSelectedMessages([]);
+            setPendingAttentionTrash(null);
+            await loadAttentionDashboard();
+          })()}
         />
       ) : null}
 
@@ -6656,9 +6628,12 @@ function InboxToastMessage({ toast }: { toast: InboxToast }) {
             : "border-red-200 bg-red-50/95 text-red-700",
         )}
       >
-        <span className="flex items-center gap-2">
+        <span className="flex items-center gap-3">
           {toast.persistent ? <Loader /> : null}
           <span>{toast.message}</span>
+          {toast.actionLabel && toast.onAction ? (
+            <button className="pointer-events-auto font-semibold underline underline-offset-4" onClick={toast.onAction} type="button">{toast.actionLabel}</button>
+          ) : null}
         </span>
       </div>
     </div>
@@ -16951,10 +16926,24 @@ function getAttentionEngagementSessionId() {
   return next;
 }
 
-function getRevalidatedCleanupMessages(requested: AttentionMessage[], dashboard: AttentionDashboardData | null) {
-  if (!dashboard) return [];
-  const requestedKeys = new Set(requested.map((message) => `${message.accountId}:${message.mailbox || ""}:${message.id}`));
-  return dashboard.categories.cleanup.filter((message) => requestedKeys.has(`${message.accountId}:${message.mailbox || ""}:${message.id}`));
+function mergeAttentionMessages(current: AttentionMessage[], incoming: AttentionMessage[]) {
+  const merged = new Map(current.map((message) => [getInboxMessageKey(message as InboxMessage), message]));
+  incoming.forEach((message) => merged.set(getInboxMessageKey(message as InboxMessage), message));
+  return [...merged.values()];
+}
+
+function updateAttentionDashboardMessage(dashboard: AttentionDashboardData, target: InboxMessage | AttentionMessage, updates: Partial<AttentionMessage>) {
+  const targetKey = getInboxMessageKey(target as InboxMessage);
+  const update = (message: AttentionMessage) => getInboxMessageKey(message as InboxMessage) === targetKey ? { ...message, ...updates } : message;
+  return {
+    ...dashboard,
+    categories: {
+      attention: dashboard.categories.attention.map(update),
+      cleanup: dashboard.categories.cleanup.map(update),
+      interest: dashboard.categories.interest.map(update),
+    },
+    cleanupGroups: dashboard.cleanupGroups.map((group) => ({ ...group, messages: group.messages.map(update) })),
+  };
 }
 
 function normalizeReplySubject(subject: string) {

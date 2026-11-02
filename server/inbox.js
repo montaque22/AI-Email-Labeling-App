@@ -16,6 +16,7 @@ import {
   listEmailAutomationResultsForMessage,
   listEmailIndexEntriesByLabel,
   listEmailIndexEntries,
+  restoreTrashedEmailIndexEntries,
   setEmailIndexCommitment,
   updateEmailIndexLabels,
   updateEmailIndexReadStatus,
@@ -308,6 +309,20 @@ export function registerInboxRoutes(app) {
 
       const result = await deleteInboxMessages(req.user.id, input.messages);
       res.json(result);
+    } catch (error) {
+      handleProviderError(res, error);
+    }
+  });
+
+  app.post("/api/inbox/messages/restore", requireSession, async (req, res) => {
+    try {
+      const input = parseBulkMessageInput(req.body);
+      if (!input.ok) {
+        res.status(400).json({ error: input.error });
+        return;
+      }
+
+      res.json(await restoreInboxMessages(req.user.id, input.messages));
     } catch (error) {
       handleProviderError(res, error);
     }
@@ -1149,6 +1164,40 @@ async function deleteInboxMessages(userId, messages, { backgroundTaskId = "" } =
   };
 }
 
+async function restoreInboxMessages(userId, messages) {
+  const accounts = await getInboxAccounts(userId, []);
+  const accountsById = new Map(accounts.map((account) => [account.id, account]));
+  const results = [];
+
+  for (const message of messages) {
+    const account = accountsById.get(message.accountId);
+    if (!account) {
+      results.push({ ...message, ok: false, error: "Account not found" });
+      continue;
+    }
+
+    try {
+      await restoreProviderMessage(account, message);
+      const restored = await restoreTrashedEmailIndexEntries(userId, [message]);
+      if (restored.length === 0) throw new Error("The local Trash entry was not found");
+      results.push({ ...message, ok: true });
+    } catch (error) {
+      results.push({ ...message, ok: false, error: error instanceof Error ? error.message : "Restore failed" });
+    }
+  }
+
+  const restored = results.filter((result) => result.ok).length;
+  const failed = results.filter((result) => !result.ok);
+  await logSystemEvent(userId, {
+    category: "email",
+    eventName: "email.restored",
+    status: failed.length > 0 ? (restored > 0 ? "warning" : "error") : "success",
+    message: `${restored} email${restored === 1 ? "" : "s"} restored from Trash${failed.length ? `; ${failed.length} failed` : ""}.`,
+    payload: { restored, failed, messages },
+  });
+  return { failed, restored, results };
+}
+
 async function archiveInboxMessages(userId, messages) {
   const accounts = await getInboxAccounts(userId, []);
   const accountsById = new Map(accounts.map((account) => [account.id, account]));
@@ -1319,6 +1368,14 @@ async function deleteProviderMessage(userId, account, message) {
     message: `Provider delete completed for ${account.email}.`,
     payload: { emailId: message.emailId, accountEmail: account.email, provider: account.provider },
   });
+}
+
+async function restoreProviderMessage(account, message) {
+  if (account.provider !== "gmail") {
+    throw new Error(`Undo from Trash is not supported for ${account.provider} accounts yet`);
+  }
+  const accessToken = await getValidEmailAccountAccessToken(account);
+  await untrashGmailMessage(accessToken, message.emailId);
 }
 
 async function getInboxAccounts(userId, accountIds = []) {
@@ -1737,6 +1794,15 @@ async function sendMicrosoftComposeMessage(accessToken, account, compose) {
 async function trashGmailMessage(accessToken, emailId) {
   const response = await providerFetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}/trash`,
+    accessToken,
+    { method: "POST" },
+  );
+  return response.json();
+}
+
+async function untrashGmailMessage(accessToken, emailId) {
+  const response = await providerFetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}/untrash`,
     accessToken,
     { method: "POST" },
   );

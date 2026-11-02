@@ -135,33 +135,14 @@ select,
   -webkit-backdrop-filter: blur(22px) saturate(145%);
 }
 
-.inbox-floating-actions {
-  bottom: 1.25rem;
-  animation: inbox-floating-actions-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+.liquid-action-position {
+  right: 1.25rem;
+  bottom: max(1.25rem, env(safe-area-inset-bottom));
   transition: bottom 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.inbox-floating-actions[data-state="closed"] {
-  animation: inbox-floating-actions-out 180ms cubic-bezier(0.4, 0, 1, 1) both;
-}
-
-.inbox-floating-compose {
-  bottom: 1.25rem;
-  transition: bottom 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.inbox-floating-ai {
-  bottom: 6.25rem;
-  transition: bottom 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.emailable-background-tasks-visible .inbox-floating-actions,
-.emailable-background-tasks-visible .inbox-floating-compose {
-  bottom: 6rem;
-}
-
-.emailable-background-tasks-visible .inbox-floating-ai {
-  bottom: 11rem;
+.emailable-background-tasks-visible .liquid-action-position {
+  bottom: max(6rem, calc(env(safe-area-inset-bottom) + 1rem));
 }
 
 .inbox-message-row {
@@ -177,23 +158,15 @@ select,
 }
 
 @media (min-width: 768px) {
-  .inbox-floating-actions,
-  .inbox-floating-compose {
+  .liquid-action-position {
+    right: 2rem;
     bottom: 2rem;
   }
 
-  .inbox-floating-ai {
+  .emailable-background-tasks-visible .liquid-action-position {
     bottom: 7rem;
   }
 
-  .emailable-background-tasks-visible .inbox-floating-actions,
-  .emailable-background-tasks-visible .inbox-floating-compose {
-    bottom: 7rem;
-  }
-
-  .emailable-background-tasks-visible .inbox-floating-ai {
-    bottom: 12rem;
-  }
 }
 
 @keyframes inbox-message-row-enter {
@@ -228,30 +201,6 @@ select,
   .inbox-message-row,
   .inbox-message-row[data-exiting="true"] {
     animation: none;
-  }
-}
-
-@keyframes inbox-floating-actions-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, 18px) scale(0.98);
-  }
-
-  to {
-    opacity: 1;
-    transform: translate(-50%, 0) scale(1);
-  }
-}
-
-@keyframes inbox-floating-actions-out {
-  from {
-    opacity: 1;
-    transform: translate(-50%, 0) scale(1);
-  }
-
-  to {
-    opacity: 0;
-    transform: translate(-50%, 18px) scale(0.98);
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildEngagementSessionKey, DEFAULT_ATTENTION_SETTINGS, deriveAttentionSignals, evaluateAttentionPlacement } from "./attention-dashboard.js";
+import { buildEngagementSessionKey, DEFAULT_ATTENTION_SETTINGS, deriveAttentionSignals, evaluateAttentionPlacement, paginateAttentionCategory } from "./attention-dashboard.js";
 
 const baseMessage = {
   date: "2026-10-31T12:00:00.000Z",
@@ -68,5 +68,14 @@ describe("attention dashboard placement", () => {
   it("deduplicates engagement by email session key", () => {
     expect(buildEngagementSessionKey("open", "session-1", now)).toBe("session-1:open");
     expect(buildEngagementSessionKey("open", "session-1", new Date("2027-01-01"))).toBe("session-1:open");
+  });
+
+  it("returns deterministic five-then-ten priority pages without duplicates", () => {
+    const messages = Array.from({ length: 18 }, (_, index) => ({ id: `message-${index + 1}` }));
+    const firstPage = paginateAttentionCategory(messages, 0, 5);
+    const secondPage = paginateAttentionCategory(messages, 5, 10);
+    expect(firstPage).toHaveLength(5);
+    expect(secondPage).toHaveLength(10);
+    expect(new Set([...firstPage, ...secondPage].map((message) => message.id)).size).toBe(15);
   });
 });

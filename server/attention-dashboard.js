@@ -110,7 +110,27 @@ export function registerAttentionDashboardRoutes(app) {
   app.get("/api/inbox/attention-dashboard", requireSession, async (req, res) => {
     try {
       const accountIds = parseAccountIds(req.query.accountIds);
-      res.json(await getAttentionDashboard(req.user.id, { accountIds }));
+      res.json(await getAttentionDashboard(req.user.id, {
+        accountIds,
+        attentionLimit: parsePageSize(req.query.attentionLimit, 5),
+        attentionOffset: parseOffset(req.query.attentionOffset),
+        interestLimit: parsePageSize(req.query.interestLimit, 5),
+        interestOffset: parseOffset(req.query.interestOffset),
+      }));
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/inbox/attention-dashboard/selection", requireSession, async (req, res) => {
+    try {
+      const category = parseSelectableCategory(req.query.category);
+      if (!category) return res.status(400).json({ error: "Needs Attention or Of Interest category is required." });
+      const dashboard = await getAttentionDashboard(req.user.id, {
+        accountIds: parseAccountIds(req.query.accountIds),
+        includeAllPriorityMessages: true,
+      });
+      res.json({ category, messages: dashboard.categories[category], snapshotAt: new Date().toISOString(), total: dashboard.counts[category] });
     } catch (error) {
       handleError(res, error);
     }
@@ -205,7 +225,14 @@ export function deriveAttentionSignals(message, labelCatalog = []) {
   };
 }
 
-async function getAttentionDashboard(userId, { accountIds = [] } = {}) {
+async function getAttentionDashboard(userId, {
+  accountIds = [],
+  attentionLimit = 5,
+  attentionOffset = 0,
+  includeAllPriorityMessages = false,
+  interestLimit = 5,
+  interestOffset = 0,
+} = {}) {
   const settings = await getAttentionSettings(userId);
   const values = [userId];
   const accountFilter = accountIds.length ? `and indexed.email_account_id = any($2::uuid[])` : "";
@@ -229,7 +256,8 @@ async function getAttentionDashboard(userId, { accountIds = [] } = {}) {
       where indexed.user_id = $1
         ${accountFilter}
         and indexed.direction = 'inbox'
-        and indexed.archived = false
+        and indexed.trashed_at is null
+        and (indexed.archived = false or preference.followed = true)
       order by indexed.received_at desc
     `, values),
     dbPool.query("select name, description from labels where user_id = $1", [userId]),
@@ -252,6 +280,8 @@ async function getAttentionDashboard(userId, { accountIds = [] } = {}) {
   categories.attention.sort(compareAttentionMessages);
   categories.interest.sort(compareInterestMessages);
   const cleanupGroups = groupCleanupMessages(categories.cleanup);
+  const attentionPage = includeAllPriorityMessages ? categories.attention : paginateAttentionCategory(categories.attention, attentionOffset, attentionLimit);
+  const interestPage = includeAllPriorityMessages ? categories.interest : paginateAttentionCategory(categories.interest, interestOffset, interestLimit);
   return {
     counts: {
       attention: categories.attention.length,
@@ -259,13 +289,26 @@ async function getAttentionDashboard(userId, { accountIds = [] } = {}) {
       interest: categories.interest.length,
     },
     categories: {
-      attention: categories.attention.slice(0, settings.maxPriorityEmails),
+      attention: attentionPage,
       cleanup: categories.cleanup,
-      interest: categories.interest.slice(0, settings.maxPriorityEmails),
+      interest: interestPage,
     },
     cleanupGroups,
+    pagination: {
+      attention: buildPagination(categories.attention.length, attentionOffset, attentionPage.length),
+      interest: buildPagination(categories.interest.length, interestOffset, interestPage.length),
+    },
     settings,
   };
+}
+
+export function paginateAttentionCategory(messages, offset, limit) {
+  return messages.slice(Math.max(0, offset), Math.max(0, offset) + Math.max(1, limit));
+}
+
+function buildPagination(total, offset, returned) {
+  const nextOffset = offset + returned;
+  return { hasMore: nextOffset < total, nextOffset: nextOffset < total ? nextOffset : null, total };
 }
 
 async function getAttentionSettings(userId) {
@@ -381,11 +424,15 @@ function groupCleanupMessages(messages) {
 function compareAttentionMessages(left, right) {
   const leftCommitment = left.commitment && !left.commitment.isCompleted ? 1 : 0;
   const rightCommitment = right.commitment && !right.commitment.isCompleted ? 1 : 0;
-  return rightCommitment - leftCommitment || right.attention.attentionScore - left.attention.attentionScore || new Date(right.date) - new Date(left.date);
+  return rightCommitment - leftCommitment || right.attention.attentionScore - left.attention.attentionScore || new Date(right.date) - new Date(left.date) || attentionMessageKey(left).localeCompare(attentionMessageKey(right));
 }
 
 function compareInterestMessages(left, right) {
-  return Number(right.followed) - Number(left.followed) || right.attention.interestScore - left.attention.interestScore || new Date(right.date) - new Date(left.date);
+  return Number(right.followed) - Number(left.followed) || right.attention.interestScore - left.attention.interestScore || new Date(right.date) - new Date(left.date) || attentionMessageKey(left).localeCompare(attentionMessageKey(right));
+}
+
+function attentionMessageKey(message) {
+  return `${message.accountId}:${message.mailbox || ""}:${message.id}`;
 }
 
 function formatCommitmentExplanation(commitment) {
@@ -440,6 +487,18 @@ function parseAttentionSettings(body) {
 
 function parseAccountIds(value) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean).slice(0, 50);
+}
+
+function parseOffset(value) {
+  return Math.max(0, Number.parseInt(String(value || "0"), 10) || 0);
+}
+
+function parsePageSize(value, fallback) {
+  return Math.min(50, Math.max(1, Number.parseInt(String(value || fallback), 10) || fallback));
+}
+
+function parseSelectableCategory(value) {
+  return value === "attention" || value === "interest" ? value : null;
 }
 
 function clampScore(value) {
