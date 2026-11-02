@@ -99,10 +99,10 @@ export function LiquidActionBar({
 
   const liquidSpring = reduceMotion
     ? { duration: 0.12 }
-    : { type: "spring" as const, visualDuration: 0.5, bounce: 0.28 };
+    : { type: "spring" as const, visualDuration: 0.3, bounce: 0.25 };
   const contentSpring = reduceMotion
     ? { duration: 0.1 }
-    : { type: "spring" as const, visualDuration: 0.42, bounce: 0.3, delay: isExpanded ? 0.08 : 0 };
+    : { type: "spring" as const, visualDuration: 0.26, bounce: 0.24, delay: isExpanded ? 0.04 : 0 };
 
   return (
     <div
@@ -112,29 +112,33 @@ export function LiquidActionBar({
       <motion.div
         animate={isExpanded ? "expanded" : "collapsed"}
         aria-label="Inbox actions"
-        className={cn(
-          "relative ml-auto flex min-h-14 items-center justify-end border border-white/80 shadow-2xl shadow-indigo-950/20 backdrop-blur-2xl",
-          isExpanded ? "overflow-visible bg-white/90" : "overflow-hidden bg-gradient-to-br from-sky-400 via-indigo-500 to-fuchsia-500",
-        )}
+        className="relative ml-auto flex min-h-14 items-center justify-end"
         initial={false}
         layout
         role={isExpanded ? "toolbar" : undefined}
         style={{ transformOrigin: "right center" }}
         transition={{
-          borderRadius: liquidSpring,
           layout: liquidSpring,
-          scaleY: reduceMotion ? { duration: 0.12 } : { duration: 0.5, ease: [0.34, 1.56, 0.64, 1], times: [0, 0.3, 0.7, 1] },
+          scaleY: reduceMotion ? { duration: 0.12 } : { duration: 0.3, ease: [0.34, 1.56, 0.64, 1], times: [0, 0.3, 0.7, 1] },
         }}
         variants={{
-          collapsed: { borderRadius: 999, scaleY: reduceMotion ? 1 : [1, 0.9, 1.025, 1] },
-          expanded: { borderRadius: 28, scaleY: reduceMotion ? 1 : [1, 0.91, 1.03, 1] },
+          collapsed: { scaleY: reduceMotion ? 1 : [1, 0.92, 1.02, 1] },
+          expanded: { scaleY: reduceMotion ? 1 : [1, 0.92, 1.025, 1] },
         }}
       >
+        <motion.span
+          animate={{ opacity: isExpanded ? 1 : 0, scaleX: isExpanded ? 1 : 0.18 }}
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 left-0 right-7 rounded-full border border-white/80 bg-white/90 shadow-2xl shadow-indigo-950/20 backdrop-blur-2xl"
+          initial={false}
+          style={{ transformOrigin: "right center" }}
+          transition={liquidSpring}
+        />
         <AnimatePresence initial={false} mode="popLayout">
           {isExpanded ? (
             <motion.div
               animate={{ opacity: 1, scale: 1, x: 0 }}
-              className="flex min-w-0 items-center pl-2"
+              className="relative z-10 flex min-w-0 items-center pl-2"
               exit={{ opacity: 0, scale: 0.86, x: 18 }}
               initial={{ opacity: 0, scale: 0.86, x: 18 }}
               id="liquid-action-content"
@@ -204,8 +208,7 @@ export function LiquidActionBar({
           aria-expanded={isExpanded}
           aria-label={isExpanded ? "Collapse actions" : hasSelection ? `Open actions for ${selectedCount} selected emails` : "Open inbox actions"}
           className={cn(
-            "relative z-10 flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2",
-            isExpanded && "bg-gradient-to-br from-sky-400 via-indigo-500 to-fuchsia-500 shadow-lg shadow-violet-500/25",
+            "relative z-20 flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-400 via-indigo-500 to-fuchsia-500 text-white shadow-xl shadow-violet-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2",
           )}
           onClick={() => {
             setIsExpanded((current) => !current);
@@ -223,7 +226,7 @@ export function LiquidActionBar({
               exit={{ opacity: 0, rotate: isExpanded ? -45 : 45, scale: 0.6 }}
               initial={{ opacity: 0, rotate: isExpanded ? 45 : -45, scale: 0.6 }}
               key={isExpanded ? "close" : "sparkles"}
-              transition={reduceMotion ? { duration: 0.08 } : { type: "spring", visualDuration: 0.45, bounce: 0.35 }}
+              transition={reduceMotion ? { duration: 0.08 } : { type: "spring", visualDuration: 0.3, bounce: 0.3 }}
             >
               {isExpanded ? <X className="h-6 w-6" /> : <Sparkles className="h-6 w-6" />}
             </motion.span>

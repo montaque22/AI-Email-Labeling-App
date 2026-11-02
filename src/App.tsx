@@ -4314,7 +4314,7 @@ function InboxPage({
             ? !attentionSelectedMessages.some((message) => Boolean(message.commitment))
             : !selectedHasCommitments}
           disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning}
-          isAiAvailable={isByoAiActive}
+          isAiAvailable
           labels={inboxView === "all-mail" ? labels : []}
           onArchive={() => {
             if (inboxView === "dashboard") {
@@ -4690,7 +4690,7 @@ function InboxPage({
         />
       ) : null}
 
-      {isAiHelperOpen && isByoAiActive ? (
+      {isAiHelperOpen ? (
         <InboxAiHelperPanel
           accounts={accounts}
           contextMessages={filteredMessages.slice(0, 30)}
