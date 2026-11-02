@@ -4,6 +4,7 @@ import { Button } from "../ui/button";
 import { MarkdownViewer } from "../ui/MarkdownViewer";
 import { getRuntimeUrl } from "../../lib/runtime-base";
 import { cn } from "../../lib/utils";
+import { useBodyScrollLock, useIsMobileViewport } from "../../hooks/useResponsiveScrollLock";
 import type { Task } from "./types";
 
 const TASK_AI_HISTORY_LIMIT = 60;
@@ -33,18 +34,9 @@ export function TaskAiHelper({ onClose, onOpenTask, onTasksChanged, tasks }: Tas
   const [messages, setMessages] = useState<TaskAiMessage[]>(() => loadStoredMessages());
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const sessionId = useMemo(() => getTaskAiSessionId(), []);
+  const isMobileViewport = useIsMobileViewport();
 
-  useEffect(() => {
-    const previousBodyOverflow = document.body.style.overflow;
-    const previousHtmlOverflow = document.documentElement.style.overflow;
-    document.body.style.overflow = "hidden";
-    document.documentElement.style.overflow = "hidden";
-
-    return () => {
-      document.body.style.overflow = previousBodyOverflow;
-      document.documentElement.style.overflow = previousHtmlOverflow;
-    };
-  }, []);
+  useBodyScrollLock(isMobileViewport);
 
   useEffect(() => {
     sessionStorage.setItem(TASK_AI_STORAGE_KEY, JSON.stringify(messages.slice(-TASK_AI_HISTORY_LIMIT)));

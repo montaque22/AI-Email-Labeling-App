@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.90
+
+- Added the intelligent Inbox Attention Dashboard with Needs Attention, Of Interest, and Quick Cleanup views.
+- Added configurable prioritization and behavioral personalization settings.
+- Kept desktop inbox content scrollable while the AI Helper is open.
+
 ## 0.1.89
 
 - Fixed add-on startup by including shared server modules in the production image.

@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import {
   BarChart3,
+  Bookmark,
   BookOpen,
   Bot,
   Archive,
@@ -34,6 +35,7 @@ import {
   LogOut,
   List,
   ListChecks,
+  Mail,
   MailCheck,
   Menu,
   MoreVertical,
@@ -73,6 +75,8 @@ import { BackgroundTaskDrawer } from "./components/background-tasks/BackgroundTa
 import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/rules/RuleProviderApplyNotice";
 import { InboxSelectAllBanner } from "./components/inbox/InboxSelectAllBanner";
 import { AiHelperSessionResetButton } from "./components/inbox/AiHelperSessionResetButton";
+import { AttentionDashboard, type AttentionCategory, type AttentionDashboardData, type AttentionMessage } from "./components/inbox/AttentionDashboard";
+import { AttentionDashboardSettingsPage } from "./components/settings/AttentionDashboardSettingsPage";
 import { authClient } from "./lib/auth-client";
 import { fetchNoStore } from "./lib/http";
 import {
@@ -87,10 +91,15 @@ import { useLocalDevelopmentSession } from "./hooks/useLocalDevelopmentSession";
 import { clearPwaUnreadBadge, refreshPwaUnreadBadge } from "./lib/pwa-badge";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
+import { useBodyScrollLock, useIsMobileViewport } from "./hooks/useResponsiveScrollLock";
 
 type Page =
   | "overview"
   | "inbox"
+  | "all-mail"
+  | "sent"
+  | "drafts"
+  | "archive"
   | "calendar"
   | "tasks"
   | "labels"
@@ -103,6 +112,7 @@ type Page =
   | "ai-email-label"
   | "ai-draft-reply"
   | "settings"
+  | "attention-settings"
   | "system"
   | "confidence-threshold"
   | "email-accounts"
@@ -658,6 +668,7 @@ function getActiveAiToolsFromConfig(config: Partial<ByoAiConfig>): AiMcpTool[] {
 
 type InboxSort = "newest" | "oldest" | "sender" | "subject";
 type InboxMode = "inbox" | "drafts" | "sent" | "archive";
+type InboxView = "dashboard" | "all-mail";
 
 const INBOX_ALL_LABEL_ID = "__all__";
 const INBOX_PAGE_DONE = "__done__";
@@ -699,6 +710,12 @@ type InboxMessage = {
   aiActionSuggestions?: InboxAiActionSuggestion[];
   aiActionSuggestionsCachedAt?: string | null;
   automationResultCount?: number;
+  followed?: boolean;
+  attention?: {
+    category: string;
+    explanation: string;
+    reasonCode: string;
+  };
 };
 
 type InboxAutomationResult = {
@@ -927,6 +944,10 @@ const legalDocuments = Object.fromEntries(
 const navItems = [
   { id: "overview" as const, label: "Overview", icon: Gauge },
   { id: "inbox" as const, label: "Inbox", icon: Inbox },
+  { id: "all-mail" as const, label: "All Mail", icon: Mail },
+  { id: "sent" as const, label: "Sent", icon: Send },
+  { id: "drafts" as const, label: "Drafts", icon: FileCheck2 },
+  { id: "archive" as const, label: "Archive", icon: Archive },
   { id: "calendar" as const, label: "Calendar", icon: CalendarDays },
   { id: "tasks" as const, label: "Tasks", icon: ListChecks },
   { id: "labels" as const, label: "Labels", icon: Tag },
@@ -935,8 +956,10 @@ const navItems = [
   { id: "ai-prompts" as const, label: "Artificial Intelligence", icon: Sparkles },
   { id: "settings" as const, label: "Settings", icon: Settings },
 ];
-const emailNavItems = navItems.filter((item) => item.id !== "ai-prompts" && item.id !== "settings");
-const configurationNavItems = navItems.filter((item) => item.id === "ai-prompts" || item.id === "settings");
+const emailNavItems = navItems.filter((item) => ["overview", "inbox", "all-mail", "sent", "drafts", "archive"].includes(item.id));
+const organizeNavItems = navItems.filter((item) => ["labels", "calendar", "tasks"].includes(item.id));
+const intelligenceNavItems = navItems.filter((item) => ["rules", "metrics", "ai-prompts"].includes(item.id));
+const configurationNavItems = navItems.filter((item) => item.id === "settings");
 
 const aiPromptSubItems = [
   { id: "ai-byoai" as const, label: "BYOAI" },
@@ -946,6 +969,7 @@ const aiPromptSubItems = [
 
 const settingsSubItems = [
   { id: "system" as const, label: "System" },
+  { id: "attention-settings" as const, label: "Focus & Attention" },
   { id: "confidence-threshold" as const, label: "Confidence Threshold" },
   { id: "email-accounts" as const, label: "Email Accounts" },
   { id: "endpoints" as const, label: "Endpoints" },
@@ -1855,7 +1879,11 @@ function AuthenticatedLayout({
         <nav className={cn("min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain py-4", sidebarCollapsed ? "px-2" : "px-3")}>
           {renderNavSection("Email", emailNavItems, onNavigate, sidebarCollapsed)}
           <div className="my-3 border-t border-white/70" />
-          {renderNavSection("Configurations", configurationNavItems, onNavigate, sidebarCollapsed)}
+          {renderNavSection("Organize", organizeNavItems, onNavigate, sidebarCollapsed)}
+          <div className="my-3 border-t border-white/70" />
+          {renderNavSection("Intelligence", intelligenceNavItems, onNavigate, sidebarCollapsed)}
+          <div className="my-3 border-t border-white/70" />
+          {renderNavSection("Configuration", configurationNavItems, onNavigate, sidebarCollapsed)}
         </nav>
         <div className={cn("relative space-y-2 border-t border-zinc-200 p-3", sidebarCollapsed && "px-2")}>
           <button
@@ -1953,7 +1981,11 @@ function AuthenticatedLayout({
               <nav className="space-y-1 px-3 py-4">
                 {renderNavSection("Email", emailNavItems, navigateFromMobileMenu)}
                 <div className="my-3 border-t border-white/70" />
-                {renderNavSection("Configurations", configurationNavItems, navigateFromMobileMenu)}
+                {renderNavSection("Organize", organizeNavItems, navigateFromMobileMenu)}
+                <div className="my-3 border-t border-white/70" />
+                {renderNavSection("Intelligence", intelligenceNavItems, navigateFromMobileMenu)}
+                <div className="my-3 border-t border-white/70" />
+                {renderNavSection("Configuration", configurationNavItems, navigateFromMobileMenu)}
               </nav>
               <div className="space-y-2 border-t border-zinc-200 p-3">
                 <button
@@ -1996,7 +2028,7 @@ function AuthenticatedLayout({
 
         <main className={cn(
           "min-h-[calc(100vh-4rem)] min-w-0 overflow-x-clip p-4 sm:p-5 lg:p-8",
-          activePage === "inbox" && "max-md:overflow-x-visible max-md:p-0",
+          (["inbox", "all-mail", "sent", "drafts", "archive"] as Page[]).includes(activePage) && "max-md:overflow-x-visible max-md:p-0",
         )}>
           {activePage === "overview" && (
             <OverviewPage
@@ -2006,7 +2038,15 @@ function AuthenticatedLayout({
               privacyMode={privacyMode}
             />
           )}
-          {activePage === "inbox" && <InboxPage onNavigate={onNavigate} onOpenMobileMenu={() => setMobileMenuOpen(true)} privacyMode={privacyMode} />}
+          {(["inbox", "all-mail", "sent", "drafts", "archive"] as Page[]).includes(activePage) && (
+            <InboxPage
+              initialMode={activePage === "sent" ? "sent" : activePage === "drafts" ? "drafts" : activePage === "archive" ? "archive" : "inbox"}
+              initialView={activePage === "inbox" ? "dashboard" : "all-mail"}
+              onNavigate={onNavigate}
+              onOpenMobileMenu={() => setMobileMenuOpen(true)}
+              privacyMode={privacyMode}
+            />
+          )}
           {activePage === "calendar" && <CalendarPage />}
           {activePage === "tasks" && <TasksPage />}
           {activePage === "labels" && <LabelsPage privacyMode={privacyMode} />}
@@ -2023,6 +2063,7 @@ function AuthenticatedLayout({
           {activePage === "ai-draft-reply" && <ReplyPromptPage />}
           {activePage === "ai-prompt-library" && <AiPromptLibraryPage privacyMode={privacyMode} />}
           {activePage === "settings" && <SettingsPage onNavigate={onNavigate} />}
+          {activePage === "attention-settings" && <AttentionDashboardSettingsPage />}
           {activePage === "system" && <SystemSettingsPage />}
           {activePage === "confidence-threshold" && <ConfidenceThresholdPage />}
           {activePage === "email-accounts" && <EmailAccountsPage isHomeAssistant={Boolean(user.homeAssistant)} privacyMode={privacyMode} />}
@@ -2270,10 +2311,14 @@ function DocumentationPage({
 }
 
 function InboxPage({
+  initialMode,
+  initialView,
   onNavigate,
   onOpenMobileMenu,
   privacyMode,
 }: {
+  initialMode: InboxMode;
+  initialView: InboxView;
   onNavigate: (page: Page) => void;
   onOpenMobileMenu: () => void;
   privacyMode: boolean;
@@ -2281,7 +2326,11 @@ function InboxPage({
   const [labels, setLabels] = useState<Label[]>([]);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [accountsNeedingRefresh, setAccountsNeedingRefresh] = useState<EmailAccount[]>([]);
-  const [inboxMode, setInboxMode] = useState<InboxMode>("inbox");
+  const [inboxMode, setInboxMode] = useState<InboxMode>(initialMode);
+  const [inboxView, setInboxView] = useState<InboxView>(initialView);
+  const [attentionCategory, setAttentionCategory] = useState<AttentionCategory>("attention");
+  const [attentionDashboard, setAttentionDashboard] = useState<AttentionDashboardData | null>(null);
+  const [isAttentionDashboardLoading, setIsAttentionDashboardLoading] = useState(true);
   const [selectedLabelId, setSelectedLabelId] = useState(INBOX_ALL_LABEL_ID);
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   const [labelCounts, setLabelCounts] = useState<Record<string, number | null>>({});
@@ -2318,6 +2367,7 @@ function InboxPage({
   const [isByoAiActive, setIsByoAiActive] = useState(false);
   const [activeAiTools, setActiveAiTools] = useState<AiMcpTool[]>([]);
   const [isAiHelperOpen, setIsAiHelperOpen] = useState(false);
+  const isMobileViewport = useIsMobileViewport();
   const [composeRevision, setComposeRevision] = useState(0);
   const [isBulkActionBarRendered, setIsBulkActionBarRendered] = useState(false);
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
@@ -2346,20 +2396,25 @@ function InboxPage({
   const activeProcessingToastJobRef = useRef<string | null>(null);
   const commitmentDraftOpen = commitmentDraftMessages.length > 0;
 
+  useEffect(() => setInboxView(initialView), [initialView]);
+  useEffect(() => setInboxMode(initialMode), [initialMode]);
+
   useEffect(() => {
     async function loadBootstrap() {
       setIsLoading(true);
       setError(null);
 
       try {
-        const [labelsResponse, accountsResponse, byoAiResponse] = await Promise.all([
+        const [labelsResponse, accountsResponse, byoAiResponse, attentionSettingsResponse] = await Promise.all([
           fetchNoStore("/api/inbox/labels"),
           fetchNoStore("/api/email-accounts"),
           fetchNoStore("/api/byoai/config"),
+          fetchNoStore("/api/settings/attention-dashboard"),
         ]);
         const labelsData = await labelsResponse.json();
         const accountsData = await accountsResponse.json();
         const byoAiData = await byoAiResponse.json().catch(() => ({}));
+        const attentionSettingsData = await attentionSettingsResponse.json().catch(() => ({}));
 
         if (!labelsResponse.ok) {
           setError(labelsData.error ?? "Could not load labels.");
@@ -2377,6 +2432,9 @@ function InboxPage({
         setSelectedAccountIds(loadedAccounts.map((account: EmailAccount) => account.id));
         setIsByoAiActive(Boolean(byoAiResponse.ok && byoAiData.aiEnabled));
         setActiveAiTools(byoAiResponse.ok ? getActiveAiToolsFromConfig(byoAiData) : []);
+        if (initialView === "dashboard" && attentionSettingsResponse.ok && attentionSettingsData.dashboardEnabled === false) {
+          setInboxView("all-mail");
+        }
         void checkInboxAccountTokenStatuses(loadedAccounts);
       } catch {
         setError("Could not load Inbox setup.");
@@ -2387,6 +2445,55 @@ function InboxPage({
 
     void loadBootstrap();
   }, []);
+
+  useEffect(() => {
+    if (selectedAccountIds.length === 0) {
+      setAttentionDashboard(null);
+      setIsAttentionDashboardLoading(false);
+      return;
+    }
+    void loadAttentionDashboard();
+  }, [selectedAccountIds.join(",")]);
+
+  async function loadAttentionDashboard() {
+    setIsAttentionDashboardLoading(true);
+    try {
+      const params = new URLSearchParams({ accountIds: selectedAccountIds.join(",") });
+      const response = await fetchNoStore(`/api/inbox/attention-dashboard?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not load the Attention Dashboard.");
+      setAttentionDashboard(data as AttentionDashboardData);
+      return data as AttentionDashboardData;
+    } catch (dashboardError) {
+      setError(dashboardError instanceof Error ? dashboardError.message : "Could not load the Attention Dashboard.");
+    } finally {
+      setIsAttentionDashboardLoading(false);
+    }
+    return null;
+  }
+
+  async function updateAttentionPreference(message: InboxMessage | AttentionMessage, action: string, category?: AttentionCategory) {
+    const response = await fetchNoStore("/api/inbox/attention-preference", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...messageToBulkPayload(message as InboxMessage), action, category }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showInboxToast(data.error ?? "Could not update that recommendation.", "error");
+      return;
+    }
+    await loadAttentionDashboard();
+  }
+
+  function recordAttentionEngagement(message: InboxMessage, eventType: "open" | "search_open" = "open") {
+    const sessionId = getAttentionEngagementSessionId();
+    void fetchNoStore("/api/inbox/engagement", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...messageToBulkPayload(message), eventType, sessionId }),
+    });
+  }
 
   async function checkInboxAccountTokenStatuses(loadedAccounts: EmailAccount[]) {
     if (loadedAccounts.length === 0) {
@@ -2504,32 +2611,16 @@ function InboxPage({
     return () => window.removeEventListener("emailable:polling-complete", refreshAfterPolling);
   }, [inboxMode, selectedLabelId, selectedAccountIds.join(","), labels.length]);
 
-  useEffect(() => {
-    const shouldLockScroll = Boolean(
-      selectedMessage ||
-        ruleEditorMessage ||
-        isComposeOpen ||
-        commitmentDraftOpen ||
-        commitmentConfirm ||
-        isMobileFilterOpen ||
-        isMobileLabelPickerOpen ||
-        isAiHelperOpen,
-    );
-
-    if (!shouldLockScroll) {
-      return;
-    }
-
-    const previousBodyOverflow = document.body.style.overflow;
-    const previousHtmlOverflow = document.documentElement.style.overflow;
-    document.body.style.overflow = "hidden";
-    document.documentElement.style.overflow = "hidden";
-
-    return () => {
-      document.body.style.overflow = previousBodyOverflow;
-      document.documentElement.style.overflow = previousHtmlOverflow;
-    };
-  }, [selectedMessage, ruleEditorMessage, isComposeOpen, commitmentDraftOpen, commitmentConfirm, isMobileFilterOpen, isMobileLabelPickerOpen, isAiHelperOpen]);
+  useBodyScrollLock(Boolean(
+    selectedMessage ||
+      ruleEditorMessage ||
+      isComposeOpen ||
+      commitmentDraftOpen ||
+      commitmentConfirm ||
+      isMobileFilterOpen ||
+      isMobileLabelPickerOpen ||
+      (isAiHelperOpen && isMobileViewport),
+  ));
 
   useEffect(() => {
     function refreshWhenVisible() {
@@ -3064,6 +3155,7 @@ function InboxPage({
   }
 
   async function openMessage(message: InboxMessage) {
+    if (inboxMode !== "drafts") recordAttentionEngagement(message);
     if (inboxMode !== "drafts") {
       setSelectedMessage(message);
     }
@@ -3119,6 +3211,32 @@ function InboxPage({
       inboxMode === "drafts" ? setError("Could not load draft.") : setDetailError("Could not load email.");
     } finally {
       setIsDetailLoading(false);
+    }
+  }
+
+  function openAdjacentDashboardMessage(direction: -1 | 1) {
+    if (!selectedMessage || !attentionDashboard) return;
+    const categoryMessages = attentionDashboard.categories[attentionCategory] as InboxMessage[];
+    const currentIndex = categoryMessages.findIndex((message) => getInboxMessageKey(message) === getInboxMessageKey(selectedMessage));
+    const nextMessage = categoryMessages[currentIndex + direction];
+    if (nextMessage) void openMessage(nextMessage);
+  }
+
+  async function actOnDashboardMessage(message: InboxMessage, action: "archive" | "delete") {
+    const categoryMessages = attentionDashboard?.categories[attentionCategory] as InboxMessage[] | undefined;
+    const currentIndex = categoryMessages?.findIndex((item) => getInboxMessageKey(item) === getInboxMessageKey(message)) ?? -1;
+    const result = action === "archive"
+      ? await archiveSelectedMessages([message])
+      : await deleteSelectedMessages([message], { source: "user" });
+    if (result.succeeded === 0) return;
+    const refreshed = await loadAttentionDashboard();
+    const nextMessages = refreshed?.categories[attentionCategory] as InboxMessage[] | undefined;
+    const nextMessage = nextMessages?.[Math.max(0, currentIndex)] ?? nextMessages?.[Math.max(0, currentIndex - 1)];
+    if (nextMessage) {
+      await openMessage(nextMessage);
+    } else {
+      setSelectedMessage(null);
+      setMessageDetail(null);
     }
   }
 
@@ -4044,6 +4162,17 @@ function InboxPage({
           <div className="fixed left-3 right-3 top-[calc(env(safe-area-inset-top)+4.75rem)] z-[95] flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50/95 px-4 py-3 text-sm text-red-700 shadow-xl shadow-red-900/10 backdrop-blur-xl md:hidden">
             <span className="min-w-0 flex-1">{error}</span>
             <button
+              className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
+              onClick={() => onNavigate("attention-settings")}
+              type="button"
+            >
+              <div>
+                <p className="text-sm font-medium text-zinc-950">Focus & Attention</p>
+                <p className="mt-1 text-sm text-zinc-500">Configure prioritization, engagement, and cleanup suggestions.</p>
+              </div>
+              <ChevronRight className="h-4 w-4 text-zinc-400" />
+            </button>
+            <button
               aria-label="Dismiss error"
               className="-mr-1 rounded-full p-1 text-red-600 transition hover:bg-red-100 hover:text-red-800"
               onClick={() => setError(null)}
@@ -4080,15 +4209,15 @@ function InboxPage({
             </Button>
             <button
               className="min-w-0 flex-1 truncate rounded-full border border-white/70 bg-white/60 px-4 py-2 text-center text-sm font-semibold text-zinc-950 shadow-sm backdrop-blur-xl disabled:cursor-default"
-              disabled={!isLabelFilteredInboxMode(inboxMode)}
+              disabled={inboxView === "dashboard" || !isLabelFilteredInboxMode(inboxMode)}
               onClick={() => setIsMobileLabelPickerOpen(true)}
               type="button"
             >
-              {isLabelFilteredInboxMode(inboxMode)
+              {inboxView === "dashboard" ? "Dashboard" : isLabelFilteredInboxMode(inboxMode)
                 ? selectedLabelId === INBOX_ALL_LABEL_ID ? "All" : selectedLabel?.name || "Choose label"
                 : inboxMode === "drafts" ? "Drafts" : "Sent"}
             </button>
-            <Button aria-label="Open inbox filters" className="shrink-0 rounded-full border-white/70 bg-white/60 shadow-sm backdrop-blur-xl" onClick={() => setIsMobileFilterOpen(true)} size="icon" type="button" variant="outline">
+            <Button aria-label="Open inbox filters" className="shrink-0 rounded-full border-white/70 bg-white/60 shadow-sm backdrop-blur-xl" disabled={inboxView === "dashboard"} onClick={() => setIsMobileFilterOpen(true)} size="icon" type="button" variant="outline">
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
           </>
@@ -4277,6 +4406,67 @@ function InboxPage({
           </div>
         </div>
       ) : null}
+
+      <div className="flex justify-end">
+        <div className="inline-flex rounded-full border border-white/80 bg-white/65 p-1 shadow-sm backdrop-blur-xl" role="group" aria-label="Inbox view">
+          <button className={cn("rounded-full px-5 py-2 text-sm font-medium transition", inboxView === "dashboard" ? "bg-violet-100 text-violet-700 shadow-sm" : "text-zinc-600 hover:text-zinc-950")} onClick={() => { setSelectedMessage(null); setMessageDetail(null); setInboxView("dashboard"); }} type="button">Dashboard</button>
+          <button className={cn("rounded-full px-5 py-2 text-sm font-medium transition", inboxView === "all-mail" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-600 hover:text-zinc-950")} onClick={() => { setSelectedMessage(null); setMessageDetail(null); setInboxView("all-mail"); }} type="button">All Mail</button>
+        </div>
+      </div>
+
+      {inboxView === "dashboard" ? (
+        <AttentionDashboard
+          category={attentionCategory}
+          data={attentionDashboard}
+          detailPanel={selectedMessage ? (
+            <InboxMessageModal
+              detail={messageDetail}
+              error={detailError}
+              isDeleting={deletingMessageKeys.includes(getInboxMessageKey(selectedMessage))}
+              isArchiving={isBulkActionRunning}
+              isLoading={isDetailLoading}
+              isLabelActionRunning={isLabelActionRunning}
+              labels={labels}
+              onClose={() => { setSelectedMessage(null); setMessageDetail(null); }}
+              onDelete={(message) => void actOnDashboardMessage(message, "delete")}
+              onNext={() => openAdjacentDashboardMessage(1)}
+              onPrevious={() => openAdjacentDashboardMessage(-1)}
+              onArchive={(message) => void actOnDashboardMessage(message, "archive")}
+              onCommitment={(message) => openCommitmentModal([message])}
+              onCompleteCommitment={(message) => setCommitmentConfirm({ kind: "complete", messages: [message] })}
+              onRenegeCommitment={(message) => setCommitmentConfirm({ kind: "renege", messages: [message] })}
+              onEditRule={(message) => setRuleEditorMessage(message)}
+              onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
+              onReply={(detail, summary) => openReplyComposer(detail, summary)}
+              onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
+              onToggleFollow={(message) => void updateAttentionPreference(message, message.followed ? "unfollow" : "follow")}
+              privacyMode={privacyMode}
+              summary={selectedMessage}
+              variant="embedded"
+            />
+          ) : null}
+          isLoading={isAttentionDashboardLoading}
+          onArchive={async (dashboardMessages) => {
+            const refreshed = await loadAttentionDashboard();
+            const eligible = getRevalidatedCleanupMessages(dashboardMessages, refreshed);
+            if (eligible.length !== dashboardMessages.length) showInboxToast("Some messages changed and were removed from this cleanup action.", "error");
+            if (eligible.length > 0) await archiveSelectedMessages(eligible as InboxMessage[]);
+            await loadAttentionDashboard();
+          }}
+          onDelete={async (dashboardMessages) => {
+            const refreshed = await loadAttentionDashboard();
+            const eligible = getRevalidatedCleanupMessages(dashboardMessages, refreshed);
+            if (eligible.length !== dashboardMessages.length) showInboxToast("Some messages changed and were removed from this cleanup action.", "error");
+            if (eligible.length > 0) await deleteSelectedMessages(eligible as InboxMessage[], { source: "user" });
+            await loadAttentionDashboard();
+          }}
+          onDismiss={(message, category) => updateAttentionPreference(message, "dismiss", category)}
+          onOpen={(message) => void openMessage(message as InboxMessage)}
+          onSelectCategory={setAttentionCategory}
+          onToggleFollow={(message) => updateAttentionPreference(message, message.followed ? "unfollow" : "follow")}
+        />
+      ) : (
+        <>
 
       <div className="md:hidden">
         <InboxSearchBox
@@ -4511,6 +4701,8 @@ function InboxPage({
           </Card>
         </div>
       </div>
+        </>
+      )}
 
       {isMobileFilterOpen ? (
         <InboxMobileFilterDrawer
@@ -4572,8 +4764,10 @@ function InboxPage({
                 setSelectedMessage(null);
                 setMessageDetail(null);
               }}
-              onDelete={(message) => void deleteSelectedMessages([message])}
-              onArchive={(message) => void archiveSelectedMessages([message])}
+              onDelete={(message) => inboxView === "dashboard" ? void actOnDashboardMessage(message, "delete") : void deleteSelectedMessages([message])}
+              onNext={inboxView === "dashboard" ? () => openAdjacentDashboardMessage(1) : undefined}
+              onPrevious={inboxView === "dashboard" ? () => openAdjacentDashboardMessage(-1) : undefined}
+              onArchive={(message) => inboxView === "dashboard" ? void actOnDashboardMessage(message, "archive") : void archiveSelectedMessages([message])}
               onCommitment={(message) => openCommitmentModal([message])}
               onCompleteCommitment={(message) => setCommitmentConfirm({ kind: "complete", messages: [message] })}
               onRenegeCommitment={(message) => setCommitmentConfirm({ kind: "renege", messages: [message] })}
@@ -4581,11 +4775,12 @@ function InboxPage({
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
               onReply={(detail, summary) => openReplyComposer(detail, summary)}
               onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
+              onToggleFollow={(message) => void updateAttentionPreference(message, message.followed ? "unfollow" : "follow")}
               privacyMode={privacyMode}
               summary={selectedMessage}
             />
           </div>
-          <div className="hidden md:block">
+          <div className={cn("hidden md:block", inboxView === "dashboard" && "md:hidden")}>
             <InboxMessageModal
               detail={messageDetail}
               error={detailError}
@@ -4607,6 +4802,7 @@ function InboxPage({
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
               onReply={(detail, summary) => openReplyComposer(detail, summary)}
               onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
+              onToggleFollow={(message) => void updateAttentionPreference(message, message.followed ? "unfollow" : "follow")}
               privacyMode={privacyMode}
               summary={selectedMessage}
             />
@@ -6300,10 +6496,13 @@ function InboxMessagePushView({
   onCompleteCommitment,
   onDelete,
   onEditRule,
+  onNext,
+  onPrevious,
   onRenegeCommitment,
   onSetLabel,
   onReply,
   onShowReplies,
+  onToggleFollow,
   privacyMode,
   summary,
 }: {
@@ -6320,10 +6519,13 @@ function InboxMessagePushView({
   onCompleteCommitment: (message: InboxMessage) => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
+  onNext?: () => void;
+  onPrevious?: () => void;
   onRenegeCommitment: (message: InboxMessage) => void;
   onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
   onShowReplies: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
+  onToggleFollow: (message: InboxMessage) => void;
   privacyMode: boolean;
   summary: InboxMessage;
 }) {
@@ -6341,6 +6543,11 @@ function InboxMessagePushView({
         </Button>
         <div className="min-w-0 flex-1" />
         <div className="flex shrink-0 items-center gap-1">
+          {onPrevious ? <Button aria-label="Previous email" onClick={onPrevious} size="icon" type="button" variant="ghost"><ChevronLeft className="h-4 w-4" /></Button> : null}
+          {onNext ? <Button aria-label="Next email" onClick={onNext} size="icon" type="button" variant="ghost"><ChevronRight className="h-4 w-4" /></Button> : null}
+          <Button aria-label={summary.followed ? "Unfollow email" : "Follow email"} onClick={() => onToggleFollow(summary)} size="icon" type="button" variant="ghost">
+            <Bookmark className={cn("h-4 w-4", summary.followed && "fill-blue-600 text-blue-600")} />
+          </Button>
           {commitment ? null : (
             <>
               <Button aria-label="Delete email" className="text-red-600 hover:text-red-700" disabled={isDeleting} onClick={() => onDelete(summary)} size="icon" type="button" variant="ghost">
@@ -6381,6 +6588,7 @@ function InboxMessagePushView({
               <p className="shrink-0 text-xs text-zinc-500">{formatDateTime(detail?.date || summary.date)}</p>
             </div>
             <h1 className="text-lg font-semibold leading-tight text-zinc-950">{detail?.subject || summary.subject || "(no subject)"}</h1>
+            {summary.attention?.explanation ? <p className="mt-3 rounded-xl border border-violet-100 bg-violet-50/70 px-3 py-2 text-sm text-violet-900">{summary.attention.explanation}</p> : null}
           </div>
 
           {isLoading ? <p className="rounded-xl border border-white/70 bg-white/60 p-4 text-sm text-zinc-500">Loading email...</p> : null}
@@ -6543,12 +6751,16 @@ function InboxMessageModal({
   onCompleteCommitment,
   onDelete,
   onEditRule,
+  onNext,
+  onPrevious,
   onRenegeCommitment,
   onSetLabel,
   onReply,
   onShowReplies,
+  onToggleFollow,
   privacyMode,
   summary,
+  variant = "modal",
 }: {
   detail: InboxMessageDetail | null;
   error: string | null;
@@ -6563,12 +6775,16 @@ function InboxMessageModal({
   onCompleteCommitment: (message: InboxMessage) => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
+  onNext?: () => void;
+  onPrevious?: () => void;
   onRenegeCommitment: (message: InboxMessage) => void;
   onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
   onShowReplies: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
+  onToggleFollow: (message: InboxMessage) => void;
   privacyMode: boolean;
   summary: InboxMessage;
+  variant?: "embedded" | "modal";
 }) {
   const rule = detail?.rule ?? summary.rule ?? null;
   const commitment = detail?.commitment ?? summary.commitment ?? null;
@@ -6578,10 +6794,12 @@ function InboxMessageModal({
   const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4">
+    <div className={cn(
+      variant === "modal" ? "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4" : "sticky top-20 hidden min-w-0 md:block",
+    )}>
       <div className={cn(
         "flex max-h-[92vh] w-full items-stretch justify-center gap-3 transition-[max-width] duration-300",
-        "max-w-4xl",
+        variant === "modal" ? "max-w-4xl" : "max-w-none",
       )}>
       <LiquidGlassCard
         borderRadius="8px"
@@ -6607,6 +6825,8 @@ function InboxMessageModal({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              {onPrevious ? <Button aria-label="Previous email" onClick={onPrevious} size="icon" type="button" variant="outline"><ChevronLeft className="h-4 w-4" /></Button> : null}
+              {onNext ? <Button aria-label="Next email" onClick={onNext} size="icon" type="button" variant="outline"><ChevronRight className="h-4 w-4" /></Button> : null}
               <LabelActionSelect
                 disabled={isLabelActionRunning}
                 isLoading={isLabelActionRunning}
@@ -6614,6 +6834,11 @@ function InboxMessageModal({
                 onChange={(labelId) => onSetLabel(summary, labelId)}
                 value={currentLabelId}
               />
+              <Tooltip side="bottom" text={summary.followed ? "Unfollow email" : "Follow email"}>
+                <Button aria-label={summary.followed ? "Unfollow email" : "Follow email"} onClick={() => onToggleFollow(summary)} size="icon" type="button" variant="outline">
+                  <Bookmark className={cn("h-4 w-4", summary.followed && "fill-blue-600 text-blue-600")} />
+                </Button>
+              </Tooltip>
               {commitment ? null : (
                 <>
                   <Tooltip side="bottom" text="Delete email">
@@ -6649,6 +6874,7 @@ function InboxMessageModal({
           {isLoading ? <p className="text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           <InboxAttachedAutomations results={detail?.automationResults ?? []} />
+          {summary.attention?.explanation ? <p className="mb-4 rounded-xl border border-violet-100 bg-violet-50/70 px-4 py-3 text-sm text-violet-900">{summary.attention.explanation}</p> : null}
           {commitment ? (
             <InboxCommitmentPanel
               commitment={commitment}
@@ -15976,12 +16202,16 @@ function isAiPromptsPage(page: Page) {
 }
 
 function isSettingsPage(page: Page) {
-  return page === "settings" || page === "system" || page === "confidence-threshold" || page === "email-accounts" || page === "endpoints" || page === "webhook" || page === "mcp-server";
+  return page === "settings" || page === "system" || page === "attention-settings" || page === "confidence-threshold" || page === "email-accounts" || page === "endpoints" || page === "webhook" || page === "mcp-server";
 }
 
 const pagePaths: Record<Page, string> = {
   overview: "/",
   inbox: "/inbox",
+  "all-mail": "/all-mail",
+  sent: "/sent",
+  drafts: "/drafts",
+  archive: "/archive",
   calendar: "/calendar",
   tasks: "/tasks",
   labels: "/labels",
@@ -15994,6 +16224,7 @@ const pagePaths: Record<Page, string> = {
   "ai-email-label": "/ai/prompts/email-label",
   "ai-draft-reply": "/ai/prompts/draft-reply",
   settings: "/settings",
+  "attention-settings": "/settings/focus-attention",
   system: "/settings/system",
   "confidence-threshold": "/settings/confidence-threshold",
   "email-accounts": "/settings/email-accounts",
@@ -16709,6 +16940,21 @@ function messageToBulkPayload(message: InboxMessage) {
     emailId: message.id,
     mailbox: message.mailbox ?? "",
   };
+}
+
+function getAttentionEngagementSessionId() {
+  const key = "emailable:attention-engagement-session";
+  const existing = window.sessionStorage.getItem(key);
+  if (existing) return existing;
+  const next = window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  window.sessionStorage.setItem(key, next);
+  return next;
+}
+
+function getRevalidatedCleanupMessages(requested: AttentionMessage[], dashboard: AttentionDashboardData | null) {
+  if (!dashboard) return [];
+  const requestedKeys = new Set(requested.map((message) => `${message.accountId}:${message.mailbox || ""}:${message.id}`));
+  return dashboard.categories.cleanup.filter((message) => requestedKeys.has(`${message.accountId}:${message.mailbox || ""}:${message.id}`));
 }
 
 function normalizeReplySubject(subject: string) {
