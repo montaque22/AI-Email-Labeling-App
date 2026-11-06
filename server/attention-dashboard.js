@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { deriveQuickWinMetadata, getInterestFreshness, QUICK_WIN_CONFIDENCE_THRESHOLD } from "./attention-classification.js";
 import { dbPool } from "./db.js";
 import { mapEmailIndexRow } from "./email-index.js";
 import { resolveRequestUser } from "./session.js";
@@ -29,6 +30,9 @@ export async function ensureAttentionDashboardTables() {
       user_id text not null references "user"(id) on delete cascade,
       email_index_id uuid not null references email_index(id) on delete cascade,
       followed boolean not null default false,
+      bookmarked_at timestamptz,
+      interest_refreshed_at timestamptz,
+      quick_win_dismissed_at timestamptz,
       placement_override text,
       dismissed_category text,
       dismissed_at timestamptz,
@@ -39,6 +43,9 @@ export async function ensureAttentionDashboardTables() {
       check (dismissed_category is null or dismissed_category in ('attention', 'interest', 'cleanup'))
     )
   `);
+  await dbPool.query("alter table email_attention_preferences add column if not exists bookmarked_at timestamptz");
+  await dbPool.query("alter table email_attention_preferences add column if not exists interest_refreshed_at timestamptz");
+  await dbPool.query("alter table email_attention_preferences add column if not exists quick_win_dismissed_at timestamptz");
   await dbPool.query(`
     create table if not exists email_engagement_events (
       id uuid primary key,
@@ -51,6 +58,19 @@ export async function ensureAttentionDashboardTables() {
     )
   `);
   await dbPool.query("create index if not exists email_engagement_user_email_idx on email_engagement_events (user_id, email_index_id, occurred_at desc)");
+  await dbPool.query(`
+    create table if not exists email_attention_feedback (
+      id uuid primary key,
+      user_id text not null references "user"(id) on delete cascade,
+      email_index_id uuid not null references email_index(id) on delete cascade,
+      action text not null,
+      evidence_strength text not null default 'individual',
+      context jsonb not null default '{}'::jsonb,
+      created_at timestamptz not null default now(),
+      check (evidence_strength in ('individual', 'repeated', 'explicit'))
+    )
+  `);
+  await dbPool.query("create index if not exists email_attention_feedback_user_idx on email_attention_feedback (user_id, created_at desc)");
   await dbPool.query("alter table user_settings add column if not exists attention_dashboard_enabled boolean not null default true");
   await dbPool.query("alter table user_settings add column if not exists automatic_prioritization boolean not null default true");
   await dbPool.query("alter table user_settings add column if not exists behavioral_personalization boolean not null default true");
@@ -181,6 +201,10 @@ export function evaluateAttentionPlacement(message, preference = {}, settings = 
     category = "attention";
     reasonCode = "active_commitment";
     explanation = formatCommitmentExplanation(message.commitment);
+  } else if (preference.followed || preference.placementOverride === "interest") {
+    category = "interest";
+    reasonCode = preference.followed ? "followed" : "explicit_interest";
+    explanation = preference.followed ? "You bookmarked this email." : "You moved this email to Of Interest.";
   } else if (preference.placementOverride === "attention") {
     category = "attention";
     reasonCode = "explicit_attention";
@@ -189,27 +213,30 @@ export function evaluateAttentionPlacement(message, preference = {}, settings = 
     category = "attention";
     reasonCode = signals.deadline ? "potential_deadline" : signals.security ? "security_notice" : "possible_action";
     explanation = signals.deadline ? "Potential deadline — review suggested." : signals.security ? "Security notice that may require review." : "This message may require action or review.";
-  } else if (preference.followed || preference.placementOverride === "interest") {
-    category = "interest";
-    reasonCode = preference.followed ? "followed" : "explicit_interest";
-    explanation = preference.followed ? "You're following this email." : "You moved this email to Of Interest.";
   } else if (settings.automaticPrioritization && distinctOpens >= 2) {
     category = "interest";
     reasonCode = "repeated_engagement";
     explanation = `Opened in ${distinctOpens} distinct sessions.`;
-  } else if (settings.quickCleanupSuggestions && !protectedFromCleanup && (preference.placementOverride === "cleanup" || signals.promotion)) {
+  } else if (settings.quickCleanupSuggestions && !protectedFromCleanup && (preference.placementOverride === "cleanup" || signals.promotion || signals.repeatedCleanup)) {
     category = "cleanup";
-    reasonCode = preference.placementOverride === "cleanup" ? "explicit_low_priority" : "promotional_or_routine";
-    explanation = preference.placementOverride === "cleanup" ? "You marked this email as low priority." : "Likely promotional or routine email.";
+    reasonCode = preference.placementOverride === "cleanup" ? "explicit_low_priority" : signals.repeatedCleanup ? "repeated_cleanup_pattern" : "promotional_or_routine";
+    explanation = preference.placementOverride === "cleanup" ? "You marked this email as low priority." : signals.repeatedCleanup ? "You often clear similar messages; review suggested." : "Likely promotional or routine email.";
+  } else {
+    category = "review";
+    reasonCode = "needs_review";
+    explanation = "Needs review before Emailable can confidently categorize it.";
   }
 
   if (preference.dismissedCategory === category && category !== "all" && !activeCommitment) {
-    category = "all";
+    category = "review";
     reasonCode = "dismissed";
     explanation = "Recommendation dismissed; the email remains in All Mail.";
   }
 
-  return { attentionScore, category, explanation, interestScore, policyVersion: ATTENTION_POLICY_VERSION, reasonCode };
+  const quickWin = message.attentionClassification && !preference.quickWinDismissedAt
+    ? { ...message.attentionClassification, isQuickWin: category === "attention" && message.attentionClassification.isQuickWin === true && Number(message.attentionClassification.quickWinConfidence) >= QUICK_WIN_CONFIDENCE_THRESHOLD }
+    : { ...(message.attentionClassification || {}), isQuickWin: false };
+  return { attentionScore, category, explanation, interestScore, policyVersion: ATTENTION_POLICY_VERSION, quickWin, reasonCode };
 }
 
 export function deriveAttentionSignals(message, labelCatalog = []) {
@@ -237,20 +264,26 @@ async function getAttentionDashboard(userId, {
   const values = [userId];
   const accountFilter = accountIds.length ? `and indexed.email_account_id = any($2::uuid[])` : "";
   if (accountIds.length) values.push(accountIds);
-  const [emailResult, labelResult] = await Promise.all([
+  const [emailResult, labelResult, cleanupPatternResult] = await Promise.all([
     dbPool.query(`
       select indexed.*,
         preference.followed,
+        preference.created_at as preference_created_at,
+        preference.bookmarked_at,
+        preference.interest_refreshed_at,
+        preference.quick_win_dismissed_at,
         preference.placement_override,
         preference.dismissed_category,
-        coalesce(engagement.distinct_opens, 0)::int as distinct_opens
+        coalesce(engagement.distinct_opens, 0)::int as distinct_opens,
+        engagement.latest_meaningful_at
       from email_index indexed
       left join email_attention_preferences preference
         on preference.user_id = indexed.user_id and preference.email_index_id = indexed.id
       left join (
-        select email_index_id, count(*)::int as distinct_opens
+        select email_index_id, count(*) filter (where event_type in ('open', 'search_open'))::int as distinct_opens,
+          max(occurred_at) filter (where event_type in ('open', 'search_open', 'still_interested')) as latest_meaningful_at
         from email_engagement_events
-        where user_id = $1 and event_type = 'open'
+        where user_id = $1
         group by email_index_id
       ) engagement on engagement.email_index_id = indexed.id
       where indexed.user_id = $1
@@ -261,19 +294,41 @@ async function getAttentionDashboard(userId, {
       order by indexed.received_at desc
     `, values),
     dbPool.query("select name, description from labels where user_id = $1", [userId]),
+    dbPool.query(`
+      select lower(indexed.from_email) as sender_key, lower(label_name) as label_key,
+        count(distinct event.email_index_id)::int as action_count
+      from email_engagement_events event
+      join email_index indexed on indexed.id = event.email_index_id
+      cross join lateral unnest(indexed.labels) as label_name
+      where event.user_id = $1
+        ${accountFilter}
+        and event.event_type in ('archive', 'delete')
+      group by lower(indexed.from_email), lower(label_name)
+      having count(distinct event.email_index_id) >= 3
+    `, values),
   ]);
 
-  const categories = { attention: [], interest: [], cleanup: [], all: [] };
+  const categories = { attention: [], interest: [], cleanup: [], review: [] };
+  const repeatedCleanupPatterns = new Set(cleanupPatternResult.rows.map((row) => `${row.sender_key}:${row.label_key}`));
   for (const row of emailResult.rows) {
     const message = mapEmailIndexRow(row);
+    message.attentionClassification = deriveQuickWinMetadata(message, message.attentionClassification || {});
     message.distinctOpens = Number(row.distinct_opens || 0);
     message.signals = deriveAttentionSignals(message, labelResult.rows);
+    message.signals.repeatedCleanup = message.labels.some((label) => repeatedCleanupPatterns.has(`${String(row.from_email || "").toLowerCase()}:${String(label).toLowerCase()}`));
     const placement = evaluateAttentionPlacement(message, {
       dismissedCategory: row.dismissed_category || null,
       followed: Boolean(row.followed),
       placementOverride: row.placement_override || null,
+      quickWinDismissedAt: row.quick_win_dismissed_at || null,
     }, settings);
-    const decorated = { ...message, attention: placement, followed: Boolean(row.followed) };
+    const interestActivityAt = row.interest_refreshed_at || row.latest_meaningful_at || row.bookmarked_at || row.preference_created_at || message.date;
+    const decorated = {
+      ...message,
+      attention: placement,
+      followed: Boolean(row.followed),
+      interestFreshness: Boolean(row.followed) ? getInterestFreshness(interestActivityAt) : null,
+    };
     categories[placement.category].push(decorated);
   }
 
@@ -285,7 +340,7 @@ async function getAttentionDashboard(userId, {
   return {
     counts: {
       attention: categories.attention.length,
-      cleanup: categories.cleanup.length,
+      cleanup: categories.cleanup.length + categories.review.length,
       interest: categories.interest.length,
     },
     categories: {
@@ -293,7 +348,12 @@ async function getAttentionDashboard(userId, {
       cleanup: categories.cleanup,
       interest: interestPage,
     },
+    cleanupReview: categories.review,
     cleanupGroups,
+    cleanupCounts: { likelyClutter: categories.cleanup.length, needsReview: categories.review.length },
+    commitments: categories.attention.filter((message) => message.commitment && !message.commitment.isCompleted),
+    quickWins: categories.attention.filter((message) => message.attention.quickWin?.isQuickWin),
+    quickWinCount: categories.attention.filter((message) => message.attention.quickWin?.isQuickWin).length,
     pagination: {
       attention: buildPagination(categories.attention.length, attentionOffset, attentionPage.length),
       interest: buildPagination(categories.interest.length, interestOffset, interestPage.length),
@@ -360,16 +420,29 @@ async function updateAttentionPreference(userId, input) {
   const updates = preferenceUpdatesForAction(input.action, input.category);
   const result = await dbPool.query(`
     insert into email_attention_preferences (
-      id, user_id, email_index_id, followed, placement_override, dismissed_category, dismissed_at
-    ) values ($1, $2, $3, coalesce($4, false), $5, $6, $7)
+      id, user_id, email_index_id, followed, placement_override, dismissed_category, dismissed_at,
+      bookmarked_at, interest_refreshed_at, quick_win_dismissed_at
+    ) values ($1, $2, $3, coalesce($4, false), $5, $6, $7, $10, $11, $12)
     on conflict (user_id, email_index_id) do update set
       followed = coalesce($4, email_attention_preferences.followed),
       placement_override = case when $8::boolean then $5 else email_attention_preferences.placement_override end,
       dismissed_category = case when $9::boolean then $6 else email_attention_preferences.dismissed_category end,
       dismissed_at = case when $9::boolean then $7 else email_attention_preferences.dismissed_at end,
+      bookmarked_at = case when $13::boolean then $10 else email_attention_preferences.bookmarked_at end,
+      interest_refreshed_at = case when $14::boolean then $11 else email_attention_preferences.interest_refreshed_at end,
+      quick_win_dismissed_at = case when $15::boolean then $12 else email_attention_preferences.quick_win_dismissed_at end,
       updated_at = now()
-    returning followed, placement_override as "placementOverride", dismissed_category as "dismissedCategory"
-  `, [crypto.randomUUID(), userId, indexed.id, updates.followed, updates.placementOverride, updates.dismissedCategory, updates.dismissedAt, updates.setPlacement, updates.setDismissal]);
+    returning followed, placement_override as "placementOverride", dismissed_category as "dismissedCategory",
+      bookmarked_at as "bookmarkedAt", interest_refreshed_at as "interestRefreshedAt"
+  `, [
+    crypto.randomUUID(), userId, indexed.id, updates.followed, updates.placementOverride,
+    updates.dismissedCategory, updates.dismissedAt, updates.setPlacement, updates.setDismissal,
+    updates.bookmarkedAt, updates.interestRefreshedAt, updates.quickWinDismissedAt,
+    updates.setBookmarkedAt, updates.setInterestRefreshedAt, updates.setQuickWinDismissedAt,
+  ]);
+  if (updates.feedbackAction) {
+    await recordAttentionFeedback(userId, indexed.id, updates.feedbackAction, updates.evidenceStrength || "individual", input);
+  }
   return result.rows[0];
 }
 
@@ -390,6 +463,27 @@ export function buildEngagementSessionKey(eventType, sessionId, now = new Date()
   return `${sessionId || now.toISOString().slice(0, 10)}:${eventType}`.slice(0, 180);
 }
 
+export async function clearAttentionBookmarks(userId, messages) {
+  if (!dbPool || !messages?.length) return 0;
+  let cleared = 0;
+  for (const message of messages) {
+    const result = await dbPool.query(`
+      update email_attention_preferences preference
+      set followed = false, placement_override = case when placement_override = 'interest' then null else placement_override end,
+        updated_at = now()
+      from email_index indexed
+      where preference.user_id = $1
+        and preference.email_index_id = indexed.id
+        and indexed.email_account_id = $2
+        and indexed.email_id = $3
+        and indexed.mailbox = $4
+        and preference.followed = true
+    `, [userId, message.accountId, message.emailId, message.mailbox || ""]);
+    cleared += result.rowCount;
+  }
+  return cleared;
+}
+
 async function findIndexedEmail(userId, input) {
   const result = await dbPool.query(`
     select id from email_index
@@ -400,13 +494,29 @@ async function findIndexedEmail(userId, input) {
 }
 
 function preferenceUpdatesForAction(action, category) {
-  if (action === "follow") return { followed: true, placementOverride: null, dismissedCategory: null, dismissedAt: null, setPlacement: false, setDismissal: false };
-  if (action === "unfollow") return { followed: false, placementOverride: null, dismissedCategory: null, dismissedAt: null, setPlacement: false, setDismissal: false };
-  if (action === "mark_attention") return { followed: null, placementOverride: "attention", dismissedCategory: null, dismissedAt: null, setPlacement: true, setDismissal: true };
-  if (action === "mark_interest") return { followed: null, placementOverride: "interest", dismissedCategory: null, dismissedAt: null, setPlacement: true, setDismissal: true };
-  if (action === "mark_low_priority") return { followed: null, placementOverride: "cleanup", dismissedCategory: null, dismissedAt: null, setPlacement: true, setDismissal: true };
-  if (action === "clear_override") return { followed: null, placementOverride: null, dismissedCategory: null, dismissedAt: null, setPlacement: true, setDismissal: true };
-  return { followed: null, placementOverride: null, dismissedCategory: category, dismissedAt: new Date(), setPlacement: false, setDismissal: true };
+  const unchanged = {
+    bookmarkedAt: null, dismissedAt: null, dismissedCategory: null, feedbackAction: null,
+    followed: null, interestRefreshedAt: null, placementOverride: null, quickWinDismissedAt: null,
+    setBookmarkedAt: false, setDismissal: false, setInterestRefreshedAt: false,
+    setPlacement: false, setQuickWinDismissedAt: false,
+  };
+  const now = new Date();
+  if (action === "follow") return { ...unchanged, bookmarkedAt: now, feedbackAction: "bookmark", evidenceStrength: "explicit", followed: true, interestRefreshedAt: now, setBookmarkedAt: true, setDismissal: true, setInterestRefreshedAt: true };
+  if (action === "unfollow" || action === "return") return { ...unchanged, feedbackAction: action === "return" ? "return" : "unbookmark", evidenceStrength: "explicit", followed: false, placementOverride: null, setPlacement: action === "return" };
+  if (action === "still_interested") return { ...unchanged, feedbackAction: "still_interested", evidenceStrength: "explicit", followed: true, interestRefreshedAt: now, setInterestRefreshedAt: true };
+  if (action === "not_quick_win") return { ...unchanged, feedbackAction: "not_quick_win", evidenceStrength: "explicit", quickWinDismissedAt: now, setQuickWinDismissedAt: true };
+  if (action === "mark_attention") return { ...unchanged, feedbackAction: "mark_attention", evidenceStrength: "explicit", placementOverride: "attention", setDismissal: true, setPlacement: true };
+  if (action === "mark_interest") return { ...unchanged, bookmarkedAt: now, feedbackAction: "mark_interest", evidenceStrength: "explicit", followed: true, interestRefreshedAt: now, placementOverride: "interest", setBookmarkedAt: true, setDismissal: true, setInterestRefreshedAt: true, setPlacement: true };
+  if (action === "mark_low_priority") return { ...unchanged, feedbackAction: "mark_low_priority", evidenceStrength: "explicit", placementOverride: "cleanup", setDismissal: true, setPlacement: true };
+  if (action === "clear_override") return { ...unchanged, placementOverride: null, setPlacement: true };
+  return { ...unchanged, dismissedAt: now, dismissedCategory: category, feedbackAction: `dismiss_${category}`, setDismissal: true };
+}
+
+async function recordAttentionFeedback(userId, emailIndexId, action, evidenceStrength, input) {
+  await dbPool.query(`
+    insert into email_attention_feedback (id, user_id, email_index_id, action, evidence_strength, context)
+    values ($1, $2, $3, $4, $5, $6::jsonb)
+  `, [crypto.randomUUID(), userId, emailIndexId, action, evidenceStrength, JSON.stringify({ category: input.category || null })]);
 }
 
 function groupCleanupMessages(messages) {
@@ -448,7 +558,7 @@ function parsePreferenceInput(body) {
   const identity = parseEmailIdentity(body);
   const action = String(body?.action || "");
   if (!identity.ok) return identity;
-  if (!["follow", "unfollow", "mark_attention", "mark_interest", "mark_low_priority", "dismiss", "clear_override"].includes(action)) return { ok: false, error: "Invalid attention preference action." };
+  if (!["follow", "unfollow", "return", "still_interested", "not_quick_win", "mark_attention", "mark_interest", "mark_low_priority", "dismiss", "clear_override"].includes(action)) return { ok: false, error: "Invalid attention preference action." };
   const category = ["attention", "interest", "cleanup"].includes(body?.category) ? body.category : null;
   if (action === "dismiss" && !category) return { ok: false, error: "A dashboard category is required to dismiss a recommendation." };
   return { ok: true, value: { ...identity.value, action, category } };
@@ -458,7 +568,7 @@ function parseEngagementInput(body) {
   const identity = parseEmailIdentity(body);
   if (!identity.ok) return identity;
   const eventType = String(body?.eventType || "");
-  if (!["open", "search_open", "archive", "delete", "reply"].includes(eventType)) return { ok: false, error: "Invalid engagement event." };
+  if (!["open", "search_open", "still_interested", "archive", "delete", "reply"].includes(eventType)) return { ok: false, error: "Invalid engagement event." };
   return { ok: true, value: { ...identity.value, eventType, sessionId: String(body?.sessionId || "").trim() } };
 }
 

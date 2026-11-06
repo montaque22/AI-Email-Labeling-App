@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildEngagementSessionKey, DEFAULT_ATTENTION_SETTINGS, deriveAttentionSignals, evaluateAttentionPlacement, paginateAttentionCategory } from "./attention-dashboard.js";
+import { deriveQuickWinMetadata, getInterestFreshness, QUICK_WIN_CONFIDENCE_THRESHOLD } from "./attention-classification.js";
 
 const baseMessage = {
   date: "2026-10-31T12:00:00.000Z",
@@ -17,9 +18,9 @@ describe("attention dashboard placement", () => {
     expect(result.reasonCode).toBe("active_commitment");
   });
 
-  it("places a followed email in Of Interest unless attention takes precedence", () => {
+  it("places an explicit bookmark in Of Interest after active Commitments", () => {
     expect(evaluateAttentionPlacement(baseMessage, { followed: true }, DEFAULT_ATTENTION_SETTINGS, now).category).toBe("interest");
-    expect(evaluateAttentionPlacement({ ...baseMessage, signals: { security: true } }, { followed: true }, DEFAULT_ATTENTION_SETTINGS, now).category).toBe("attention");
+    expect(evaluateAttentionPlacement({ ...baseMessage, signals: { security: true } }, { followed: true }, DEFAULT_ATTENTION_SETTINGS, now).category).toBe("interest");
   });
 
   it("uses repeated opens for interest without implying action", () => {
@@ -33,19 +34,24 @@ describe("attention dashboard placement", () => {
     expect(result.category).toBe("attention");
   });
 
-  it("keeps unknown mail in All Mail", () => {
-    expect(evaluateAttentionPlacement(baseMessage, {}, DEFAULT_ATTENTION_SETTINGS, now).category).toBe("all");
+  it("uses repeated contextual cleanup behavior without overriding protected mail", () => {
+    expect(evaluateAttentionPlacement({ ...baseMessage, signals: { repeatedCleanup: true } }, {}, DEFAULT_ATTENTION_SETTINGS, now).reasonCode).toBe("repeated_cleanup_pattern");
+    expect(evaluateAttentionPlacement({ ...baseMessage, signals: { repeatedCleanup: true, security: true } }, {}, DEFAULT_ATTENTION_SETTINGS, now).category).toBe("attention");
+  });
+
+  it("places otherwise uncategorized inbox mail in Needs Review", () => {
+    expect(evaluateAttentionPlacement(baseMessage, {}, DEFAULT_ATTENTION_SETTINGS, now).category).toBe("review");
   });
 
   it("honors dismissal without modifying the underlying email", () => {
     const result = evaluateAttentionPlacement({ ...baseMessage, signals: { security: true } }, { dismissedCategory: "attention" }, DEFAULT_ATTENTION_SETTINGS, now);
-    expect(result.category).toBe("all");
+    expect(result.category).toBe("review");
     expect(result.reasonCode).toBe("dismissed");
   });
 
   it("stops using opens when behavioral personalization is disabled", () => {
     const result = evaluateAttentionPlacement({ ...baseMessage, distinctOpens: 5 }, {}, { ...DEFAULT_ATTENTION_SETTINGS, behavioralPersonalization: false }, now);
-    expect(result.category).toBe("all");
+    expect(result.category).toBe("review");
   });
 
   it("derives semantic evidence from user label descriptions", () => {
@@ -77,5 +83,29 @@ describe("attention dashboard placement", () => {
     expect(firstPage).toHaveLength(5);
     expect(secondPage).toHaveLength(10);
     expect(new Set([...firstPage, ...secondPage].map((message) => message.id)).size).toBe(15);
+  });
+
+  it("identifies clear low-effort actions without treating complex short mail as a Quick Win", () => {
+    const confirmation = deriveQuickWinMetadata({ subject: "Please confirm next week's meeting", snippet: "Can you confirm your availability?" });
+    const complex = deriveQuickWinMetadata({ subject: "Quick analysis", snippet: "Please research and prepare a strategy proposal." });
+    expect(confirmation.isQuickWin).toBe(true);
+    expect(confirmation.quickWinConfidence).toBeGreaterThanOrEqual(QUICK_WIN_CONFIDENCE_THRESHOLD);
+    expect(complex.isQuickWin).toBe(false);
+  });
+
+  it("gates the Quick Win badge by confidence and user correction", () => {
+    const metadata = deriveQuickWinMetadata({ subject: "Confirm attendance", snippet: "RSVP yes or no." });
+    const visible = evaluateAttentionPlacement({ ...baseMessage, attentionClassification: metadata, signals: { action: true } }, {}, DEFAULT_ATTENTION_SETTINGS, now);
+    const corrected = evaluateAttentionPlacement({ ...baseMessage, attentionClassification: metadata, signals: { action: true } }, { quickWinDismissedAt: now }, DEFAULT_ATTENTION_SETTINGS, now);
+    expect(visible.quickWin.isQuickWin).toBe(true);
+    expect(corrected.quickWin.isQuickWin).toBe(false);
+  });
+
+  it("centralizes bookmark freshness thresholds and safely handles missing history", () => {
+    expect(getInterestFreshness("2026-10-30T12:00:00.000Z", now).state).toBe("fresh");
+    expect(getInterestFreshness("2026-10-20T12:00:00.000Z", now).state).toBe("cooling");
+    expect(getInterestFreshness("2026-10-01T12:00:00.000Z", now).state).toBe("review");
+    expect(getInterestFreshness("2026-08-01T12:00:00.000Z", now).state).toBe("stale");
+    expect(getInterestFreshness(null, now).state).toBe("fresh");
   });
 });

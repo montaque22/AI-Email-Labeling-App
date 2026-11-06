@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { deriveQuickWinMetadata } from "./attention-classification.js";
 import { dbPool } from "./db.js";
 
 export const EMAIL_INDEX_PAGE_SIZE = 30;
@@ -91,6 +92,15 @@ export async function upsertEmailIndexEntry(userId, input) {
   }
 
   const labels = normalizeLabels(input.labels);
+  const inputMetadata = input.metadata && typeof input.metadata === "object" ? input.metadata : {};
+  const attentionClassification = deriveQuickWinMetadata({
+    labels,
+    snippet: input.snippet,
+    subject: input.subject,
+  }, inputMetadata.attentionClassification);
+  const metadata = input.direction === "sent"
+    ? inputMetadata
+    : { ...inputMetadata, attentionClassification };
   const result = await dbPool.query(
     `
       insert into email_index (
@@ -145,7 +155,7 @@ export async function upsertEmailIndexEntry(userId, input) {
       Boolean(input.hasAttachments),
       Number.isInteger(input.replyCount) ? input.replyCount : 0,
       input.respondingToEmailId || null,
-      JSON.stringify(input.metadata ?? {}),
+      JSON.stringify(metadata),
     ],
   );
 
@@ -662,6 +672,7 @@ export function mapEmailIndexRow(row) {
     direction: row.direction || "inbox",
     aiActionSuggestions: hasCachedAiActions && Array.isArray(metadata.aiActionSuggestions) ? metadata.aiActionSuggestions : undefined,
     aiActionSuggestionsCachedAt: hasCachedAiActions ? metadata.aiActionSuggestionsUpdatedAt || null : undefined,
+    attentionClassification: metadata.attentionClassification || null,
     automationResultCount: Number(row.automation_result_count || 0),
   };
 }

@@ -15,7 +15,8 @@ export type { AttentionCategory, AttentionDashboardData, AttentionMessage } from
 
 export function AttentionDashboard({
   category, data, detailPanel, isActionRunning = false, isLoading, onArchive, onCommitment, onDelete,
-  onLoadMore, onOpen, onSelectAllMatching, onSelectCategory, onSelectionChange, onToggleFollow, selectedMessages,
+  onLoadMore, onNotQuickWin, onOpen, onReturnInterest, onSelectAllMatching, onSelectCategory, onSelectionChange,
+  onStillInterested, onToggleFollow, selectedMessages,
 }: AttentionDashboardProps) {
   const [allResultsSelected, setAllResultsSelected] = useState(false);
   const [announcement, setAnnouncement] = useState("");
@@ -24,19 +25,42 @@ export function AttentionDashboard({
   const [isMobileSelectionMode, setIsMobileSelectionMode] = useState(false);
   const [isSelectingAll, setIsSelectingAll] = useState(false);
   const [pendingTrash, setPendingTrash] = useState<AttentionMessage[] | null>(null);
+  const [attentionFilter, setAttentionFilter] = useState<"all" | "quick-wins" | "commitments">("all");
+  const [cleanupView, setCleanupView] = useState<"likely-clutter" | "needs-review">("likely-clutter");
 
-  const categoryMessages = data?.categories[category] ?? [];
+  const categoryMessages = category === "cleanup" && cleanupView === "needs-review"
+    ? data?.cleanupReview ?? []
+    : category === "attention" && attentionFilter === "quick-wins"
+      ? data?.quickWins ?? []
+      : category === "attention" && attentionFilter === "commitments"
+        ? data?.commitments ?? []
+        : data?.categories[category] ?? [];
   const selected = selectedMessages;
   const selectedKeys = useMemo(() => new Set(selectedMessages.map(attentionMessageKey)), [selectedMessages]);
   const allLoadedSelected = categoryMessages.length > 0 && categoryMessages.every((message) => selectedKeys.has(attentionMessageKey(message)));
-  const pagination = category === "cleanup" ? null : data?.pagination?.[category];
+  const pagination = category === "cleanup" || (category === "attention" && attentionFilter !== "all") ? null : data?.pagination?.[category];
+  const displayedTotal = category === "attention" && attentionFilter === "quick-wins"
+    ? data?.quickWinCount ?? 0
+    : category === "attention" && attentionFilter === "commitments"
+      ? data?.commitments?.length ?? 0
+      : category === "cleanup" && cleanupView === "needs-review"
+        ? data?.cleanupCounts?.needsReview ?? 0
+        : category === "cleanup"
+          ? data?.cleanupCounts?.likelyClutter ?? 0
+          : data?.counts[category] ?? 0;
   const card = ATTENTION_CATEGORY_CARDS.find((item) => item.id === category);
 
   useEffect(() => {
     onSelectionChange([]);
     setAllResultsSelected(false);
     setIsMobileSelectionMode(false);
+    setAttentionFilter("all");
   }, [category, onSelectionChange]);
+
+  useEffect(() => {
+    onSelectionChange([]);
+    setAllResultsSelected(false);
+  }, [attentionFilter, cleanupView, onSelectionChange]);
 
   function toggleMessage(message: AttentionMessage) {
     const key = attentionMessageKey(message);
@@ -114,7 +138,7 @@ export function AttentionDashboard({
       <AttentionCategoryCards category={category} counts={data?.counts} isLoading={isLoading} onSelect={onSelectCategory} />
 
       <div className={cn("min-w-0", detailPanel && "grid items-start gap-4 lg:grid-cols-[minmax(320px,0.8fr)_minmax(0,1.5fr)]")}>
-        <Card className="min-w-0 overflow-hidden bg-white/60">
+        <Card className="min-w-0 overflow-visible bg-white/60">
           <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-white/70">
             <div>
               <div className="flex items-center gap-2"><CardTitle>{card?.label}</CardTitle><Badge>{data?.counts[category] ?? 0} emails</Badge></div>
@@ -122,6 +146,19 @@ export function AttentionDashboard({
             </div>
             <Button className="sm:hidden" onClick={() => setIsMobileSelectionMode((current) => !current)} size="sm" type="button" variant="outline">{isMobileSelectionMode ? "Cancel" : "Select"}</Button>
           </CardHeader>
+          {category === "attention" ? (
+            <DashboardTabs ariaLabel="Needs Attention filters" onChange={(value) => setAttentionFilter(value as typeof attentionFilter)} options={[
+              { count: data?.counts.attention ?? 0, label: "All", value: "all" },
+              { count: data?.quickWinCount ?? 0, label: "Quick Wins", value: "quick-wins" },
+              { count: data?.categories.attention.filter((message) => Boolean(message.commitment && !message.commitment.isCompleted)).length ?? 0, label: "Commitments", value: "commitments" },
+            ]} value={attentionFilter} />
+          ) : null}
+          {category === "cleanup" ? (
+            <DashboardTabs ariaLabel="Quick Cleanup views" onChange={(value) => setCleanupView(value as typeof cleanupView)} options={[
+              { count: data?.cleanupCounts?.likelyClutter ?? 0, label: "Likely Clutter", value: "likely-clutter" },
+              { count: data?.cleanupCounts?.needsReview ?? 0, label: "Needs Review", value: "needs-review" },
+            ]} value={cleanupView} />
+          ) : null}
           <CardContent className="p-0">
             {isLoading ? <DashboardSkeleton /> : (
               <>
@@ -129,9 +166,9 @@ export function AttentionDashboard({
                   allLoadedSelected={allLoadedSelected} allResultsSelected={allResultsSelected} categoryLabel={card?.label ?? "category"}
                   hasMore={Boolean(pagination?.hasMore)} isMobileSelectionMode={isMobileSelectionMode} isSelectingAll={isSelectingAll}
                   loadedCount={categoryMessages.length} onSelectAllMatching={() => void selectAllMatching()} onToggleLoaded={toggleLoadedMessages}
-                  selectedCount={selected.length} totalCount={data?.counts[category] ?? 0}
+                  selectedCount={selected.length} totalCount={displayedTotal}
                 />
-                {category === "cleanup" ? (
+                {category === "cleanup" && cleanupView === "likely-clutter" ? (
                   <AttentionCleanupGroups
                     expandedGroups={expandedGroups} groups={data?.cleanupGroups ?? []} onOpen={onOpen}
                     onToggleExpanded={(id) => setExpandedGroups((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])}
@@ -140,7 +177,8 @@ export function AttentionDashboard({
                 ) : (
                   <AttentionPriorityList
                     category={category} isActionRunning={isActionRunning} isMobileSelectionMode={isMobileSelectionMode} messages={categoryMessages}
-                    onArchive={(message) => void archiveMessages([message])} onCommitment={onCommitment} onOpen={onOpen}
+                    onArchive={(message) => void archiveMessages([message])} onCommitment={onCommitment} onNotQuickWin={(message) => void onNotQuickWin(message)} onOpen={onOpen}
+                    onReturnInterest={(message) => void onReturnInterest(message)} onStillInterested={(message) => void onStillInterested(message)}
                     onToggleFollow={(message) => void onToggleFollow(message)} onToggleSelection={toggleMessage}
                     onTrash={(message) => setPendingTrash([message])} selectedKeys={selectedKeys}
                   />
@@ -160,6 +198,23 @@ export function AttentionDashboard({
       {pendingTrash ? <AttentionTrashConfirmation isRunning={isActionRunning} messages={pendingTrash} onCancel={() => setPendingTrash(null)} onConfirm={(messages) => void trashMessages(messages)} /> : null}
       <p aria-live="polite" className="sr-only">{announcement}</p>
     </section>
+  );
+}
+
+function DashboardTabs({ ariaLabel, onChange, options, value }: {
+  ariaLabel: string;
+  onChange: (value: string) => void;
+  options: Array<{ count: number; label: string; value: string }>;
+  value: string;
+}) {
+  return (
+    <div aria-label={ariaLabel} className="flex gap-1 overflow-x-auto border-b border-white/70 bg-white/25 px-4 py-2" role="tablist">
+      {options.map((option) => (
+        <button aria-selected={value === option.value} className={cn("min-h-10 shrink-0 rounded-full px-4 text-sm font-medium transition", value === option.value ? "bg-violet-600 text-white shadow-sm" : "text-zinc-600 hover:bg-white/70")} key={option.value} onClick={() => onChange(option.value)} role="tab" type="button">
+          {option.label} <span className={cn("ml-1", value === option.value ? "text-violet-100" : "text-zinc-400")}>{option.count}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 

@@ -4,7 +4,7 @@ import type { AttentionCategory } from "./attention-dashboard-types";
 
 export const ATTENTION_CATEGORY_CARDS = [
   { id: "attention" as const, label: "Needs Attention", description: "Emails requiring action or review.", icon: TriangleAlert, tone: "orange" },
-  { id: "interest" as const, label: "Of Interest", description: "Emails frequently revisited or explicitly followed.", icon: Bookmark, tone: "blue" },
+  { id: "interest" as const, label: "Of Interest", description: "Emails you've bookmarked to revisit.", icon: Bookmark, tone: "blue" },
   { id: "cleanup" as const, label: "Quick Cleanup", description: "Low-priority emails grouped for batch review.", icon: Layers3, tone: "emerald" },
 ];
 

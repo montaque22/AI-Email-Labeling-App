@@ -1,4 +1,4 @@
-import { Archive, Bookmark, Clock3, Gem, MoreHorizontal, ShieldCheck, Trash2 } from "lucide-react";
+import { Archive, Bookmark, Check, Clock3, Gem, MoreHorizontal, RotateCcw, ShieldCheck, Sparkles, Trash2, XCircle } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -7,13 +7,16 @@ import type { AttentionCategory, AttentionMessage } from "./attention-dashboard-
 import { attentionMessageKey, attentionSenderInitial, formatAttentionDate, hasActiveCommitment } from "./attention-dashboard-utils";
 
 type AttentionPriorityListProps = {
-  category: Exclude<AttentionCategory, "cleanup">;
+  category: AttentionCategory;
   isActionRunning: boolean;
   isMobileSelectionMode: boolean;
   messages: AttentionMessage[];
   onArchive: (message: AttentionMessage) => void;
   onCommitment: (message: AttentionMessage) => void;
+  onNotQuickWin: (message: AttentionMessage) => void;
   onOpen: (message: AttentionMessage) => void;
+  onReturnInterest: (message: AttentionMessage) => void;
+  onStillInterested: (message: AttentionMessage) => void;
   onToggleFollow: (message: AttentionMessage) => void;
   onToggleSelection: (message: AttentionMessage) => void;
   onTrash: (message: AttentionMessage) => void;
@@ -35,19 +38,27 @@ function AttentionPriorityRow({
   isActionRunning,
   isMobileSelectionMode,
   message,
+  category,
   onArchive,
   onCommitment,
+  onNotQuickWin,
   onOpen,
+  onReturnInterest,
+  onStillInterested,
   onToggleFollow,
   onToggleSelection,
   onTrash,
   selectedKeys,
-}: Omit<AttentionPriorityListProps, "category" | "messages"> & { message: AttentionMessage }) {
+}: Omit<AttentionPriorityListProps, "messages"> & { message: AttentionMessage }) {
   const key = attentionMessageKey(message);
   const selected = selectedKeys.has(key);
   const committed = hasActiveCommitment(message);
   return (
-    <article className={cn("group flex items-center gap-2 border-b border-white/70 px-3 py-3 last:border-b-0 md:gap-3 md:px-5 md:py-4", selected && "bg-violet-50/60")}>
+    <article className={cn(
+      "group relative flex items-center gap-2 border-b border-white/70 px-3 py-3 last:border-b-0 md:gap-3 md:px-5 md:py-4",
+      selected && "bg-violet-50/60",
+      category === "interest" && freshnessBorderClass(message.interestFreshness?.state),
+    )}>
       <input
         aria-label={`Select ${message.subject || "email"}`}
         checked={selected}
@@ -66,24 +77,29 @@ function AttentionPriorityRow({
           <span className="mt-0.5 block truncate text-xs text-zinc-500 sm:hidden">{message.snippet}</span>
           <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
             {message.labels[0] ? <Badge>{message.labels[0]}</Badge> : null}
-            {committed ? <><Gem className="h-3.5 w-3.5 fill-violet-100 text-violet-600" />Commitment</> : message.attention.reasonCode === "security_notice" ? <><ShieldCheck className="h-3.5 w-3.5 text-orange-500" />Security notice</> : <><Clock3 className="h-3.5 w-3.5 text-blue-600" /><span className="max-w-52 truncate">{message.attention.explanation}</span></>}
+            {message.attention.quickWin?.isQuickWin ? <Badge className="gap-1 border-violet-200 bg-violet-50 text-violet-700"><Sparkles className="h-3 w-3" />Quick Win</Badge> : null}
+            {category === "interest" && message.interestFreshness ? <span title={`${message.interestFreshness.days} days since meaningful interest activity`}>{message.interestFreshness.label}</span> : committed ? <><Gem className="h-3.5 w-3.5 fill-violet-100 text-violet-600" />Commitment</> : message.attention.reasonCode === "security_notice" ? <><ShieldCheck className="h-3.5 w-3.5 text-orange-500" />Security notice</> : <><Clock3 className="h-3.5 w-3.5 text-blue-600" /><span className="max-w-52 truncate">{message.attention.explanation}</span></>}
           </span>
         </span>
         <span className="shrink-0 self-start pt-1 text-xs text-zinc-500 sm:self-center sm:pt-0 sm:text-sm">{formatAttentionDate(message.date)}</span>
       </button>
       <div className="hidden shrink-0 items-center md:flex">
-        <ActionButton label={message.followed ? "Unfollow email" : "Follow email"} onClick={() => onToggleFollow(message)}>
-          <Bookmark className={cn("h-4 w-4", message.followed && "fill-blue-600 text-blue-600")} />
-        </ActionButton>
+        {category === "interest" ? (
+          <>
+            {message.interestFreshness?.state === "review" || message.interestFreshness?.state === "stale" ? <Button onClick={() => onStillInterested(message)} size="sm" type="button" variant="ghost">Still interested</Button> : null}
+            <InterestDoneMenu disabled={isActionRunning} message={message} onArchive={onArchive} onCommitment={onCommitment} onReturn={onReturnInterest} onTrash={onTrash} />
+          </>
+        ) : <ActionButton label={message.followed ? "Remove bookmark" : "Bookmark email"} onClick={() => onToggleFollow(message)}><Bookmark className={cn("h-4 w-4", message.followed && "fill-blue-600 text-blue-600")} /></ActionButton>}
         <ActionButton label={committed ? "Manage commitment" : "Set commitment"} onClick={() => onCommitment(message)}>
           <Gem className={cn("h-4 w-4", committed && "fill-violet-200 text-violet-700")} />
         </ActionButton>
+        {message.attention.quickWin?.isQuickWin ? <ActionButton label="Not a Quick Win" onClick={() => onNotQuickWin(message)}><XCircle className="h-4 w-4" /></ActionButton> : null}
         <ActionButton disabled={isActionRunning} label="Archive email" onClick={() => onArchive(message)}><Archive className="h-4 w-4" /></ActionButton>
         <ActionButton disabled={isActionRunning} label="Move email to Trash" onClick={() => onTrash(message)}><Trash2 className="h-4 w-4 text-red-600" /></ActionButton>
       </div>
       {!isMobileSelectionMode ? (
         <div className="flex shrink-0 items-center md:hidden">
-          <ActionButton label={message.followed ? "Unfollow email" : "Follow email"} onClick={() => onToggleFollow(message)}>
+          <ActionButton label={message.followed ? "Remove bookmark" : "Bookmark email"} onClick={() => onToggleFollow(message)}>
             <Bookmark className={cn("h-4 w-4", message.followed && "fill-blue-600 text-blue-600")} />
           </ActionButton>
           <ActionButton label={committed ? "Manage commitment" : "Set commitment"} onClick={() => onCommitment(message)}>
@@ -92,6 +108,9 @@ function AttentionPriorityRow({
           <details className="relative">
             <summary aria-label="More email actions" className="flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-md hover:bg-zinc-100 [&::-webkit-details-marker]:hidden"><MoreHorizontal className="h-5 w-5" /></summary>
             <div className="absolute right-0 top-11 z-30 min-w-44 rounded-xl border border-white/80 bg-white/95 p-1 shadow-xl">
+              {category === "interest" ? <button className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-sm hover:bg-zinc-100" onClick={() => onReturnInterest(message)} type="button"><RotateCcw className="h-4 w-4" />Return</button> : null}
+              {category === "interest" && (message.interestFreshness?.state === "review" || message.interestFreshness?.state === "stale") ? <button className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-sm hover:bg-zinc-100" onClick={() => onStillInterested(message)} type="button"><Check className="h-4 w-4" />Still interested</button> : null}
+              {message.attention.quickWin?.isQuickWin ? <button className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-sm hover:bg-zinc-100" onClick={() => onNotQuickWin(message)} type="button"><XCircle className="h-4 w-4" />Not a Quick Win</button> : null}
               <button className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-sm hover:bg-zinc-100" onClick={() => onArchive(message)} type="button"><Archive className="h-4 w-4" />Archive</button>
               <button className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-sm text-red-700 hover:bg-red-50" onClick={() => onTrash(message)} type="button"><Trash2 className="h-4 w-4" />Move to Trash</button>
             </div>
@@ -100,6 +119,39 @@ function AttentionPriorityRow({
       ) : null}
     </article>
   );
+}
+
+function InterestDoneMenu({ disabled, message, onArchive, onCommitment, onReturn, onTrash }: {
+  disabled: boolean;
+  message: AttentionMessage;
+  onArchive: (message: AttentionMessage) => void;
+  onCommitment: (message: AttentionMessage) => void;
+  onReturn: (message: AttentionMessage) => void;
+  onTrash: (message: AttentionMessage) => void;
+}) {
+  return (
+    <details className="relative">
+      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1.5 rounded-md px-3 text-sm font-medium text-violet-700 hover:bg-violet-50 [&::-webkit-details-marker]:hidden"><Check className="h-4 w-4" />Done</summary>
+      <div className="absolute right-0 top-10 z-30 min-w-48 rounded-xl border border-white/80 bg-white/95 p-1 shadow-xl">
+        <MenuAction icon={<RotateCcw className="h-4 w-4" />} label="Return" onClick={() => onReturn(message)} />
+        <MenuAction disabled={disabled} icon={<Archive className="h-4 w-4" />} label="Archive" onClick={() => onArchive(message)} />
+        <MenuAction icon={<Gem className="h-4 w-4" />} label="Create Commitment" onClick={() => onCommitment(message)} />
+        <MenuAction className="text-red-700 hover:bg-red-50" disabled={disabled} icon={<Trash2 className="h-4 w-4" />} label="Move to Trash" onClick={() => onTrash(message)} />
+      </div>
+    </details>
+  );
+}
+
+function MenuAction({ className, disabled, icon, label, onClick }: { className?: string; disabled?: boolean; icon: ReactNode; label: string; onClick: () => void }) {
+  return <button className={cn("flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-left text-sm hover:bg-zinc-100", className)} disabled={disabled} onClick={onClick} type="button">{icon}{label}</button>;
+}
+
+function freshnessBorderClass(state?: "fresh" | "cooling" | "review" | "stale") {
+  if (state === "fresh") return "border-l-4 border-l-emerald-400";
+  if (state === "cooling") return "border-l-4 border-l-amber-400";
+  if (state === "review") return "border-l-4 border-l-orange-400";
+  if (state === "stale") return "border-l-4 border-l-zinc-400";
+  return "";
 }
 
 function ActionButton({ children, disabled = false, label, onClick }: { children: ReactNode; disabled?: boolean; label: string; onClick: () => void }) {

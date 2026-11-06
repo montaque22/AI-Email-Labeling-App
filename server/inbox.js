@@ -1,4 +1,5 @@
 import { resolveRequestUser } from "./session.js";
+import { clearAttentionBookmarks } from "./attention-dashboard.js";
 import { dbPool } from "./db.js";
 import {
   getConnectedEmailAccounts,
@@ -1131,6 +1132,7 @@ async function deleteInboxMessages(userId, messages, { backgroundTaskId = "" } =
         item.providerDeleted = true;
       }
       await deleteEmailIndexEntries(userId, [item.message]);
+      await clearAttentionBookmarks(userId, [item.message]);
     },
     onProgress: async (completed) => {
       if (!backgroundTaskId) return;
@@ -1209,6 +1211,7 @@ async function archiveInboxMessages(userId, messages) {
     error: archivedKeys.has(`${message.accountId}:${message.emailId}:${message.mailbox ?? ""}`) ? undefined : "Message was not found",
   }));
   const archived = results.filter((result) => result.ok).length;
+  await clearAttentionBookmarks(userId, results.filter((result) => result.ok));
   const failed = results.filter((result) => !result.ok);
   for (const result of results) {
     const account = accountsById.get(result.accountId);
@@ -1928,7 +1931,7 @@ function parseInboxDetailQuery(query) {
   };
 }
 
-function parseCommitmentInput(body) {
+export function parseCommitmentInput(body) {
   const bulk = parseBulkMessageInput(body);
   if (!bulk.ok) {
     return bulk;
@@ -1936,7 +1939,7 @@ function parseCommitmentInput(body) {
 
   const text = typeof body?.text === "string" ? body.text.trim() : "";
   const dueAtText = typeof body?.dueAt === "string" ? body.dueAt.trim() : "";
-  const dueAt = new Date(dueAtText);
+  const dueAt = dueAtText ? new Date(dueAtText) : null;
 
   if (!text) {
     return { ok: false, error: "Describe what needs to be done before this email can be archived." };
@@ -1944,10 +1947,10 @@ function parseCommitmentInput(body) {
   if (text.length > 500) {
     return { ok: false, error: "Commitment text must be 500 characters or less." };
   }
-  if (!dueAtText || Number.isNaN(dueAt.getTime())) {
-    return { ok: false, error: "Choose a valid commitment due date and time." };
+  if (dueAtText && Number.isNaN(dueAt.getTime())) {
+    return { ok: false, error: "Choose a valid commitment due date and time or leave it empty." };
   }
-  if (dueAt.getTime() < Date.now() - 60_000) {
+  if (dueAt && dueAt.getTime() < Date.now() - 60_000) {
     return { ok: false, error: "Commitment due date cannot be in the past." };
   }
 

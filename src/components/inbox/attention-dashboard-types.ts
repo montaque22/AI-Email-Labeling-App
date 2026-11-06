@@ -19,6 +19,11 @@ export type AttentionMessage = {
   hasAttachments: boolean;
   archived?: boolean;
   followed?: boolean;
+  interestFreshness?: {
+    days: number;
+    label: string;
+    state: "fresh" | "cooling" | "review" | "stale";
+  } | null;
   commitment?: {
     text: string;
     dueAt: string;
@@ -29,6 +34,14 @@ export type AttentionMessage = {
   attention: {
     category: string;
     explanation: string;
+    quickWin?: {
+      actionType?: string;
+      isQuickWin: boolean;
+      quickWinConfidence?: number;
+      requiredCapabilities?: string[];
+      requiresExternalWork?: boolean;
+      suggestedNextAction?: string;
+    };
     reasonCode: string;
   };
 };
@@ -50,8 +63,13 @@ export type AttentionPagination = {
 export type AttentionDashboardData = {
   counts: Record<AttentionCategory, number>;
   categories: Record<AttentionCategory, AttentionMessage[]>;
+  cleanupCounts?: { likelyClutter: number; needsReview: number };
+  cleanupReview?: AttentionMessage[];
+  commitments?: AttentionMessage[];
   cleanupGroups: AttentionCleanupGroup[];
   pagination: Record<"attention" | "interest", AttentionPagination>;
+  quickWinCount?: number;
+  quickWins?: AttentionMessage[];
 };
 
 export type AttentionDashboardProps = {
@@ -65,9 +83,12 @@ export type AttentionDashboardProps = {
   onDelete: (messages: AttentionMessage[]) => Promise<void> | void;
   onLoadMore: (category: "attention" | "interest") => Promise<void>;
   onOpen: (message: AttentionMessage) => void;
+  onNotQuickWin: (message: AttentionMessage) => Promise<void> | void;
+  onReturnInterest: (message: AttentionMessage) => Promise<void> | void;
   onSelectAllMatching: (category: "attention" | "interest") => Promise<AttentionMessage[]>;
   onSelectCategory: (category: AttentionCategory) => void;
   onSelectionChange: (messages: AttentionMessage[]) => void;
   onToggleFollow: (message: AttentionMessage) => Promise<void> | void;
+  onStillInterested: (message: AttentionMessage) => Promise<void> | void;
   selectedMessages: AttentionMessage[];
 };

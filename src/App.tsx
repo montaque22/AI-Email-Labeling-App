@@ -713,9 +713,11 @@ type InboxMessage = {
   aiActionSuggestionsCachedAt?: string | null;
   automationResultCount?: number;
   followed?: boolean;
+  interestFreshness?: AttentionMessage["interestFreshness"];
   attention?: {
     category: string;
     explanation: string;
+    quickWin?: AttentionMessage["attention"]["quickWin"];
     reasonCode: string;
   };
 };
@@ -2512,7 +2514,7 @@ function InboxPage({
       return;
     }
     if (typeof nextFollowed === "boolean" && !options.isUndo) {
-      showInboxToast(nextFollowed ? "Email followed." : "Email unfollowed.", "success", {
+      showInboxToast(nextFollowed ? "Email bookmarked." : "Bookmark removed.", "success", {
         actionLabel: "Undo",
         onAction: () => void updateAttentionPreference(message, nextFollowed ? "unfollow" : "follow", category, { isUndo: true }),
       });
@@ -2532,9 +2534,13 @@ function InboxPage({
   }
 
   async function revalidateAttentionAction(messagesToActOn: AttentionMessage[], category: AttentionCategory) {
-    const eligibleMessages = category === "cleanup"
-      ? (await loadAttentionDashboard())?.categories.cleanup ?? []
-      : await selectAllAttentionCategory(category);
+    let eligibleMessages: AttentionMessage[];
+    if (category === "cleanup") {
+      const refreshed = await loadAttentionDashboard();
+      eligibleMessages = [...(refreshed?.categories.cleanup ?? []), ...(refreshed?.cleanupReview ?? [])];
+    } else {
+      eligibleMessages = await selectAllAttentionCategory(category);
+    }
     const eligibleKeys = new Set(eligibleMessages.map((message) => getInboxMessageKey(message as InboxMessage)));
     const revalidated = messagesToActOn.filter((message) => eligibleKeys.has(getInboxMessageKey(message as InboxMessage)));
     if (revalidated.length !== messagesToActOn.length) {
@@ -2543,7 +2549,7 @@ function InboxPage({
     return revalidated;
   }
 
-  function recordAttentionEngagement(message: InboxMessage, eventType: "open" | "search_open" = "open") {
+  function recordAttentionEngagement(message: InboxMessage, eventType: "open" | "search_open" | "archive" | "delete" | "reply" = "open") {
     const sessionId = getAttentionEngagementSessionId();
     void fetchNoStore("/api/inbox/engagement", {
       method: "POST",
@@ -3273,21 +3279,33 @@ function InboxPage({
 
   function openAdjacentDashboardMessage(direction: -1 | 1) {
     if (!selectedMessage || !attentionDashboard) return;
-    const categoryMessages = attentionDashboard.categories[attentionCategory] as InboxMessage[];
+    const categoryMessages = attentionCategory === "cleanup" && selectedMessage.attention?.category === "review"
+      ? attentionDashboard.cleanupReview as InboxMessage[]
+      : attentionDashboard.categories[attentionCategory] as InboxMessage[];
     const currentIndex = categoryMessages.findIndex((message) => getInboxMessageKey(message) === getInboxMessageKey(selectedMessage));
     const nextMessage = categoryMessages[currentIndex + direction];
     if (nextMessage) void openMessage(nextMessage);
   }
 
   async function actOnDashboardMessage(message: InboxMessage, action: "archive" | "delete") {
-    const categoryMessages = attentionDashboard?.categories[attentionCategory] as InboxMessage[] | undefined;
+    const isCleanupReview = attentionCategory === "cleanup" && message.attention?.category === "review";
+    const categoryMessages = isCleanupReview
+      ? attentionDashboard?.cleanupReview as InboxMessage[] | undefined
+      : attentionDashboard?.categories[attentionCategory] as InboxMessage[] | undefined;
     const currentIndex = categoryMessages?.findIndex((item) => getInboxMessageKey(item) === getInboxMessageKey(message)) ?? -1;
     const result = action === "archive"
       ? await archiveSelectedMessages([message])
       : await deleteSelectedMessages([message], { source: "user" });
     if (result.succeeded === 0) return;
+    if (attentionCategory === "interest") {
+      await updateAttentionPreference(message, "return", "interest");
+    } else if (attentionCategory === "cleanup") {
+      recordAttentionEngagement(message, action);
+    }
     const refreshed = await loadAttentionDashboard();
-    const nextMessages = refreshed?.categories[attentionCategory] as InboxMessage[] | undefined;
+    const nextMessages = isCleanupReview
+      ? refreshed?.cleanupReview as InboxMessage[] | undefined
+      : refreshed?.categories[attentionCategory] as InboxMessage[] | undefined;
     const nextMessage = nextMessages?.[Math.max(0, currentIndex)] ?? nextMessages?.[Math.max(0, currentIndex - 1)];
     if (nextMessage) {
       await openMessage(nextMessage);
@@ -3447,10 +3465,9 @@ function InboxPage({
     }
 
     const existing = messagesToCommit.length === 1 ? messagesToCommit[0].commitment : null;
-    const defaultDueAt = new Date(Date.now() + 8 * 60 * 60 * 1000);
     setCommitmentDraftMessages(messagesToCommit);
-    setCommitmentText(existing?.text ?? "");
-    setCommitmentDueAt(formatDateTimeLocalInput(existing?.dueAt ? new Date(existing.dueAt) : defaultDueAt));
+    setCommitmentText(existing?.text ?? messagesToCommit[0]?.attention?.quickWin?.suggestedNextAction ?? messagesToCommit[0]?.subject ?? "Review this email");
+    setCommitmentDueAt(existing?.dueAt ? formatDateTimeLocalInput(new Date(existing.dueAt)) : "");
     setCommitmentError(null);
   }
 
@@ -3731,13 +3748,13 @@ function InboxPage({
     }
 
     const text = commitmentText.trim();
-    const dueAt = new Date(commitmentDueAt);
+    const dueAt = commitmentDueAt ? new Date(commitmentDueAt) : null;
     if (!text) {
       setCommitmentError("Describe what needs to be done before this email can be archived.");
       return;
     }
-    if (!commitmentDueAt || Number.isNaN(dueAt.getTime())) {
-      setCommitmentError("Choose a valid due date and time.");
+    if (dueAt && Number.isNaN(dueAt.getTime())) {
+      setCommitmentError("Choose a valid due date and time or leave it empty.");
       return;
     }
 
@@ -3749,7 +3766,7 @@ function InboxPage({
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          dueAt: dueAt.toISOString(),
+          dueAt: dueAt?.toISOString() ?? "",
           messages: commitmentDraftMessages.map(messageToBulkPayload),
           text,
         }),
@@ -3771,12 +3788,18 @@ function InboxPage({
           .map(getInboxMessageKey),
       );
       const commitment = data.results?.find((result: { ok: boolean; commitment?: InboxCommitment | null }) => result.ok && result.commitment)?.commitment ?? {
-        dueAt: dueAt.toISOString(),
+        dueAt: dueAt?.toISOString() ?? "",
         setAt: new Date().toISOString(),
         text,
       };
 
       updateMessagesWithCommitment(successfulKeys, commitment);
+      const bookmarkedMessages = commitmentDraftMessages.filter((message) => successfulKeys.has(getInboxMessageKey(message)) && message.followed);
+      await Promise.all(bookmarkedMessages.map((message) => fetchNoStore("/api/inbox/attention-preference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...messageToBulkPayload(message), action: "return", category: "interest" }),
+      })));
       setSelectedMessageKeys((current) => current.filter((key) => !successfulKeys.has(key)));
       setIsMobileEditMode(false);
       setCommitmentDraftMessages([]);
@@ -4305,45 +4328,48 @@ function InboxPage({
         </div>
       </div>
 
-      {!isMobileEditMode ? (
-        <LiquidActionBar
-          canArchive={inboxView === "dashboard"
-            ? !attentionSelectedMessages.some((message) => Boolean(message.commitment))
-            : !selectedHasCommitments}
-          canTrash={inboxView === "dashboard"
-            ? !attentionSelectedMessages.some((message) => Boolean(message.commitment))
-            : !selectedHasCommitments}
-          disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning}
-          isAiAvailable
-          labels={inboxView === "all-mail" ? labels : []}
-          onArchive={() => {
-            if (inboxView === "dashboard") {
-              void (async () => {
-                const eligible = await revalidateAttentionAction(attentionSelectedMessages, attentionCategory);
-                const result = await archiveSelectedMessages(eligible as InboxMessage[]);
-                if (result.failed === 0) setAttentionSelectedMessages([]);
-                await loadAttentionDashboard();
-              })();
-            } else {
-              void archiveSelectedMessages();
-            }
-          }}
-          onClearSelection={() => inboxView === "dashboard" ? setAttentionSelectedMessages([]) : setSelectedMessageKeys([])}
-          onCompose={() => openComposeDraft(null)}
-          onOpenAi={() => setIsAiHelperOpen(true)}
-          onSelectLabel={inboxView === "all-mail" && selectedMessages.length > 0
-            ? (labelId) => void setMessagesLabel(selectedMessages, labelId)
-            : undefined}
-          onSetCommitment={inboxView === "all-mail" && !selectedHasCompletedCommitments && selectedMessages.length > 0
-            ? () => openCommitmentModal(selectedMessages)
-            : undefined}
-          onTrash={() => inboxView === "dashboard"
-            ? setPendingAttentionTrash(attentionSelectedMessages)
-            : void deleteSelectedMessages()}
-          selectedCount={inboxView === "dashboard" ? attentionSelectedMessages.length : selectedMessages.length}
-          selectedLabelId={selectedMessagesLabelValue}
-        />
-      ) : null}
+      <LiquidActionBar
+        canArchive={inboxView === "dashboard"
+          ? !attentionSelectedMessages.some((message) => Boolean(message.commitment))
+          : !selectedHasCommitments}
+        canTrash={inboxView === "dashboard"
+          ? !attentionSelectedMessages.some((message) => Boolean(message.commitment))
+          : !selectedHasCommitments}
+        disabled={isBulkActionRunning || isLabelActionRunning || isCommitmentActionRunning}
+        isAiAvailable
+        labels={inboxView === "all-mail" ? labels : []}
+        onArchive={() => {
+          if (inboxView === "dashboard") {
+            void (async () => {
+              const eligible = await revalidateAttentionAction(attentionSelectedMessages, attentionCategory);
+              const result = await archiveSelectedMessages(eligible as InboxMessage[]);
+              if (attentionCategory === "interest" && result.failed === 0) {
+                await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest")));
+              } else if (attentionCategory === "cleanup" && result.succeeded > 0) {
+                eligible.forEach((message) => recordAttentionEngagement(message as InboxMessage, "archive"));
+              }
+              if (result.failed === 0) setAttentionSelectedMessages([]);
+              await loadAttentionDashboard();
+            })();
+          } else {
+            void archiveSelectedMessages();
+          }
+        }}
+        onClearSelection={() => inboxView === "dashboard" ? setAttentionSelectedMessages([]) : setSelectedMessageKeys([])}
+        onCompose={() => openComposeDraft(null)}
+        onOpenAi={() => setIsAiHelperOpen(true)}
+        onSelectLabel={inboxView === "all-mail" && selectedMessages.length > 0
+          ? (labelId) => void setMessagesLabel(selectedMessages, labelId)
+          : undefined}
+        onSetCommitment={inboxView === "all-mail" && !selectedHasCompletedCommitments && selectedMessages.length > 0
+          ? () => openCommitmentModal(selectedMessages)
+          : undefined}
+        onTrash={() => inboxView === "dashboard"
+          ? setPendingAttentionTrash(attentionSelectedMessages)
+          : void deleteSelectedMessages()}
+        selectedCount={inboxView === "dashboard" ? attentionSelectedMessages.length : selectedMessages.length}
+        selectedLabelId={selectedMessagesLabelValue}
+      />
       {accountsNeedingRefresh.length > 0 ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 shadow-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -4405,20 +4431,40 @@ function InboxPage({
           isLoading={isAttentionDashboardLoading}
           onArchive={async (dashboardMessages) => {
             const eligible = await revalidateAttentionAction(dashboardMessages, attentionCategory);
-            await archiveSelectedMessages(eligible as InboxMessage[]);
+            const result = await archiveSelectedMessages(eligible as InboxMessage[]);
+            if (attentionCategory === "cleanup" && result.succeeded > 0) {
+              eligible.forEach((message) => recordAttentionEngagement(message as InboxMessage, "archive"));
+            }
+            if (attentionCategory === "interest" && result.failed === 0) {
+              await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest")));
+            }
             await loadAttentionDashboard();
           }}
           onCommitment={(message) => openCommitmentModal([message as InboxMessage])}
           onDelete={async (dashboardMessages) => {
             const eligible = await revalidateAttentionAction(dashboardMessages, attentionCategory);
-            await deleteSelectedMessages(eligible as InboxMessage[], { source: "user" });
+            const result = await deleteSelectedMessages(eligible as InboxMessage[], { source: "user" });
+            if (attentionCategory === "interest" && result.failed === 0) {
+              await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest")));
+            } else if (attentionCategory === "cleanup" && result.succeeded > 0) {
+              eligible.forEach((message) => recordAttentionEngagement(message as InboxMessage, "delete"));
+            }
+            if (attentionCategory === "cleanup" && result.succeeded > 0) {
+              eligible.forEach((message) => recordAttentionEngagement(message as InboxMessage, "delete"));
+            }
+            if (attentionCategory === "interest" && result.failed === 0) {
+              await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest")));
+            }
             await loadAttentionDashboard();
           }}
           onLoadMore={async (category) => { await loadAttentionDashboard({ appendCategory: category }); }}
           onOpen={(message) => void openMessage(message as InboxMessage)}
+          onNotQuickWin={(message) => updateAttentionPreference(message, "not_quick_win", "attention")}
+          onReturnInterest={(message) => updateAttentionPreference(message, "return", "interest")}
           onSelectAllMatching={selectAllAttentionCategory}
           onSelectCategory={setAttentionCategory}
           onSelectionChange={setAttentionSelectedMessages}
+          onStillInterested={(message) => updateAttentionPreference(message, "still_interested", "interest")}
           onToggleFollow={(message) => updateAttentionPreference(message, message.followed ? "unfollow" : "follow")}
           selectedMessages={attentionSelectedMessages}
         />
@@ -6517,7 +6563,7 @@ function InboxMessagePushView({
         <div className="flex shrink-0 items-center gap-1">
           {onPrevious ? <Button aria-label="Previous email" onClick={onPrevious} size="icon" type="button" variant="ghost"><ChevronLeft className="h-4 w-4" /></Button> : null}
           {onNext ? <Button aria-label="Next email" onClick={onNext} size="icon" type="button" variant="ghost"><ChevronRight className="h-4 w-4" /></Button> : null}
-          <Button aria-label={summary.followed ? "Unfollow email" : "Follow email"} onClick={() => onToggleFollow(summary)} size="icon" type="button" variant="ghost">
+          <Button aria-label={summary.followed ? "Remove bookmark" : "Bookmark email"} onClick={() => onToggleFollow(summary)} size="icon" type="button" variant="ghost">
             <Bookmark className={cn("h-4 w-4", summary.followed && "fill-blue-600 text-blue-600")} />
           </Button>
           {commitment ? null : (
@@ -6809,8 +6855,8 @@ function InboxMessageModal({
                 onChange={(labelId) => onSetLabel(summary, labelId)}
                 value={currentLabelId}
               />
-              <Tooltip side="bottom" text={summary.followed ? "Unfollow email" : "Follow email"}>
-                <Button aria-label={summary.followed ? "Unfollow email" : "Follow email"} onClick={() => onToggleFollow(summary)} size="icon" type="button" variant="outline">
+              <Tooltip side="bottom" text={summary.followed ? "Remove bookmark" : "Bookmark email"}>
+                <Button aria-label={summary.followed ? "Remove bookmark" : "Bookmark email"} onClick={() => onToggleFollow(summary)} size="icon" type="button" variant="outline">
                   <Bookmark className={cn("h-4 w-4", summary.followed && "fill-blue-600 text-blue-600")} />
                 </Button>
               </Tooltip>
@@ -6943,7 +6989,7 @@ function InboxCommitmentModal({
             <div>
               <h3 className="text-lg font-semibold text-zinc-950">Set commitment</h3>
               <p className="mt-1 text-sm text-zinc-500">
-                Define what must happen before {count === 1 ? "this email can" : `${count} emails can`} be archived.
+                Save the intention now. You can add details or a deadline later.
               </p>
             </div>
             <Button aria-label="Close commitment modal" disabled={isSaving} onClick={onClose} size="icon" type="button" variant="ghost">
@@ -6955,7 +7001,7 @@ function InboxCommitmentModal({
 
           <div className="mt-5 space-y-4">
             <label className="block space-y-2">
-              <span className="text-sm font-medium text-zinc-700">What needs to be done?</span>
+              <span className="text-sm font-medium text-zinc-700">Suggested commitment</span>
               <textarea
                 className="min-h-28 w-full resize-y rounded-md border border-zinc-200 bg-white/70 px-3 py-2 text-sm outline-none transition-colors focus:border-zinc-400"
                 disabled={isSaving}
@@ -6967,7 +7013,7 @@ function InboxCommitmentModal({
               <span className="block text-right text-xs text-zinc-500">{text.length}/500</span>
             </label>
             <label className="block space-y-2">
-              <span className="text-sm font-medium text-zinc-700">Commitment due</span>
+              <span className="text-sm font-medium text-zinc-700">Deadline <span className="font-normal text-zinc-400">(optional)</span></span>
               <input
                 className="h-11 w-full rounded-md border border-zinc-200 bg-white/70 px-3 text-sm outline-none transition-colors focus:border-zinc-400"
                 disabled={isSaving}
@@ -6983,9 +7029,9 @@ function InboxCommitmentModal({
             <Button disabled={isSaving} onClick={onClose} type="button" variant="outline">
               Cancel
             </Button>
-            <Button disabled={isSaving || !text.trim() || !dueAt} onClick={onSave} type="button">
+            <Button disabled={isSaving || !text.trim()} onClick={onSave} type="button">
               {isSaving ? <Loader /> : <Gem className="h-4 w-4" />}
-              Save commitment
+              Create commitment
             </Button>
           </div>
         </div>
