@@ -76,6 +76,7 @@ import { PwaUpdatePrompt } from "./components/PwaUpdatePrompt";
 import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/rules/RuleProviderApplyNotice";
 import { InboxSelectAllBanner } from "./components/inbox/InboxSelectAllBanner";
 import { InboxViewToggle } from "./components/inbox/InboxViewToggle";
+import { shouldLockInboxPageScroll } from "./components/inbox/inbox-scroll-lock";
 import { AiHelperSessionResetButton } from "./components/inbox/AiHelperSessionResetButton";
 import { AttentionDashboard, type AttentionCategory, type AttentionDashboardData, type AttentionMessage } from "./components/inbox/AttentionDashboard";
 import { AttentionTrashConfirmation } from "./components/inbox/AttentionTrashConfirmation";
@@ -2626,16 +2627,17 @@ function InboxPage({
     return () => window.removeEventListener("emailable:polling-complete", refreshAfterPolling);
   }, [inboxMode, selectedLabelId, selectedAccountIds.join(","), labels.length]);
 
-  useBodyScrollLock(Boolean(
-    selectedMessage ||
-      ruleEditorMessage ||
-      isComposeOpen ||
-      commitmentDraftOpen ||
-      commitmentConfirm ||
-      isMobileFilterOpen ||
-      isMobileLabelPickerOpen ||
-      (isAiHelperOpen && isMobileViewport),
-  ));
+  useBodyScrollLock(shouldLockInboxPageScroll({
+    hasCommitmentConfirmation: Boolean(commitmentConfirm),
+    hasOpenMessage: Boolean(selectedMessage),
+    hasRuleEditor: Boolean(ruleEditorMessage),
+    isAiHelperOpen,
+    isCommitmentDraftOpen: commitmentDraftOpen,
+    isComposeOpen,
+    isMobileFilterOpen,
+    isMobileLabelPickerOpen,
+    isMobileViewport,
+  }));
 
   useEffect(() => {
     function refreshWhenVisible() {
