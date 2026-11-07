@@ -63,6 +63,21 @@ describe("inbox agent policy", () => {
     expect(prompt).toContain("message-1");
   });
 
+  it("requires a structured draft artifact before claiming a Work mode draft exists", () => {
+    const prompt = buildAiHelperSystemPrompt([], {
+      accountId: "account-1",
+      emailId: "message-1",
+      from: "sender@example.com",
+      subject: "Project update",
+      threadId: "thread-1",
+    });
+
+    expect(prompt).toContain("call prepare_reply_draft with the complete actual draft");
+    expect(prompt).toContain("Do not call create_draft_reply merely to prepare UI content");
+    expect(prompt).toContain("Never say a reply draft was created or revised unless prepare_reply_draft succeeded");
+    expect(prompt).toContain("Applying the artifact to the composer and sending it are separate");
+  });
+
   it("requires clarification before uncertain label-scoped actions", () => {
     const prompt = buildAiHelperSystemPrompt([{ name: "Archive Later", description: "Low-priority mail." }]);
 

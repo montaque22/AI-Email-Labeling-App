@@ -147,6 +147,23 @@ const AI_EMAIL_ACTION_RESULT_SUMMARY_SCHEMA = {
 const SYSTEM_MCP_CLIENT_ID = "system";
 const SYSTEM_MCP_TOOLS = [
   {
+    name: "prepare_reply_draft",
+    description: "Prepare a complete, reviewable reply draft artifact for the open Read/Work email. This has no provider side effects: it does not open the composer, create a remote draft, or send email. Use it for both initial drafts and conversational refinements.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        accountId: { type: "string", description: "Account id from the current email context." },
+        emailId: { type: "string", description: "Source email id from the current email context." },
+        threadId: { type: "string", description: "Source thread id from the current email context." },
+        to: { type: "string", description: "Reply recipient, normally the sender of the open email." },
+        subject: { type: "string", description: "Reply subject." },
+        bodyText: { type: "string", description: "Complete non-empty reply body that the user can review and edit." },
+      },
+      required: ["accountId", "emailId", "threadId", "to", "subject", "bodyText"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "create_draft_reply",
     description: "Create a draft reply in the connected account that owns the message.",
     inputSchema: {
@@ -824,6 +841,7 @@ export function registerByoAiRoutes(app) {
       res.write(`${JSON.stringify({
         affectedEmails: result.affectedEmails,
         affectedTasks: result.affectedTasks,
+        artifact: result.artifact,
         proposedBulkAction: result.proposedBulkAction,
         type: "done",
       })}\n`);
@@ -1606,6 +1624,7 @@ async function generateAiHelperChat(userId, request) {
   const affectedEmails = extractAffectedEmailsFromAiHelperToolResults(toolResults);
   const affectedTasks = extractAffectedTasksFromAiHelperToolResults(toolResults);
   const proposedBulkAction = extractProposedBulkActionFromAiHelperToolResults(toolResults);
+  const artifact = extractPreparedReplyDraftFromAiHelperToolResults(toolResults);
   updateAiHelperSessionMemory(userId, request.sessionId, [
     ...previousHistory,
     { role: "user", text: request.prompt },
@@ -1619,6 +1638,7 @@ async function generateAiHelperChat(userId, request) {
     message,
     affectedEmails: affectedEmails.length > 0 ? affectedEmails : [],
     affectedTasks: affectedTasks.length > 0 ? affectedTasks : [],
+    artifact,
     proposedBulkAction,
   };
 }
@@ -1665,6 +1685,24 @@ function extractProposedBulkActionFromAiHelperToolResults(toolResults = []) {
     scopeSummary: typeof entry.input.scopeSummary === "string" ? entry.input.scopeSummary : "matching emails",
     state: typeof entry.input.state === "string" ? entry.input.state : "",
     subject: typeof entry.input.subject === "string" ? entry.input.subject : "",
+  };
+}
+
+export function extractPreparedReplyDraftFromAiHelperToolResults(toolResults = []) {
+  const entry = [...toolResults].reverse().find((result) => result?.toolName === "prepare_reply_draft");
+  const parsed = parseToolResultPayload(entry?.result);
+  const artifact = parsed?.artifact;
+  if (!artifact || artifact.type !== "email_draft" || typeof artifact.bodyText !== "string" || !artifact.bodyText.trim()) {
+    return null;
+  }
+  return {
+    accountId: String(artifact.accountId || ""),
+    bodyText: artifact.bodyText.trim(),
+    emailId: String(artifact.emailId || ""),
+    subject: String(artifact.subject || ""),
+    threadId: String(artifact.threadId || ""),
+    to: String(artifact.to || ""),
+    type: "email_draft",
   };
 }
 

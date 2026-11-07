@@ -37,6 +37,11 @@ import {
 const MCP_KEY_PREFIX = "mcp";
 export const SYSTEM_MCP_TOOL_DEFINITIONS = [
   {
+    name: "prepare_reply_draft",
+    title: "Prepare Reply Draft",
+    description: "Prepare a structured reply draft artifact for review in Work mode without creating or sending provider email.",
+  },
+  {
     name: "create_draft_reply",
     title: "Create Draft Reply",
     description: "Create a draft reply in the connected account that owns the message, using the same behavior as the REST Create Draft Reply API.",
@@ -241,6 +246,25 @@ function createMcpServer(userId) {
     name: "emailable",
     version: "1.0.0",
   });
+
+  server.registerTool(
+    "prepare_reply_draft",
+    {
+      title: "Prepare Reply Draft",
+      description: "Prepare a complete reply draft for the Work mode UI. This is side-effect-free and does not create a provider draft or send email.",
+      inputSchema: {
+        accountId: z.string().min(1),
+        emailId: z.string().min(1),
+        threadId: z.string().min(1),
+        to: z.string(),
+        subject: z.string(),
+        bodyText: z.string().trim().min(1),
+      },
+    },
+    async (input) => loggedMcpToolResult(userId, "prepare_reply_draft", input, "internal:prepare-reply-draft", async () => ({
+      artifact: { ...input, type: "email_draft" },
+    })),
+  );
 
   server.registerTool(
     "create_draft_reply",

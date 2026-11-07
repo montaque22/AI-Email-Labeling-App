@@ -83,6 +83,16 @@ import { AttentionTrashConfirmation } from "./components/inbox/AttentionTrashCon
 import { LiquidActionBar } from "./components/inbox/LiquidActionBar";
 import { EmailReaderModeSwitch, EmailReaderWorkspace, type EmailReaderMode } from "./components/inbox/EmailReaderWorkspace";
 import { InterestCompletionActions } from "./components/inbox/InterestCompletionActions";
+import { ReplyDraftArtifactCard } from "./components/inbox/ReplyDraftArtifactCard";
+import {
+  buildReplyComposerFields,
+  createReplyDraftArtifact,
+  formatReplyDraftForAgent,
+  isPreparedReplyDraft,
+  isReplyDraftArtifact,
+  restorePreviousReplyDraftVersion,
+  type ReplyDraftArtifact,
+} from "./components/inbox/work-artifacts";
 import { AttentionDashboardSettingsPage } from "./components/settings/AttentionDashboardSettingsPage";
 import { authClient } from "./lib/auth-client";
 import { fetchNoStore } from "./lib/http";
@@ -391,6 +401,11 @@ type AiMcpClientConfig = {
 
 const SYSTEM_MCP_CLIENT_ID = "system";
 const SYSTEM_MCP_TOOLS: AiMcpTool[] = [
+  {
+    name: "prepare_reply_draft",
+    description: "Prepare a structured reply draft artifact for review in Work mode without creating or sending provider email.",
+    inputSchema: null,
+  },
   {
     name: "create_draft_reply",
     description: "Create a draft reply in the connected account that owns the message.",
@@ -885,6 +900,7 @@ type InboxAiChatMessage = {
   pendingBulkAction?: "archive" | "delete";
   draftBody?: string;
   subjectSuggestion?: string;
+  artifact?: ReplyDraftArtifact;
   options?: Array<{
     label: string;
     sublabel?: string;
@@ -4966,21 +4982,24 @@ function InboxAiHelperPanel({
   const historyStorageKey = `${INBOX_AI_HELPER_SESSION_KEY}${storageSuffix}`;
   const idStorageKey = `${INBOX_AI_HELPER_SESSION_ID_KEY}${storageSuffix}`;
   const createdStorageKey = `${INBOX_AI_HELPER_SESSION_CREATED_KEY}${storageSuffix}`;
+  const agentStorage = variant === "workspace" ? window.localStorage : window.sessionStorage;
+  const sessionTtlMs = variant === "workspace" ? 30 * 24 * 60 * 60 * 1000 : INBOX_AI_HELPER_SESSION_TTL_MS;
   const [messages, setMessages] = useState<InboxAiChatMessage[]>(() => {
     try {
-      const createdAt = Number(window.sessionStorage.getItem(createdStorageKey) || "0");
-      if (!createdAt || Date.now() - createdAt > INBOX_AI_HELPER_SESSION_TTL_MS) {
-        window.sessionStorage.removeItem(historyStorageKey);
-        window.sessionStorage.removeItem(idStorageKey);
-        window.sessionStorage.setItem(createdStorageKey, String(Date.now()));
+      const createdAt = Number(agentStorage.getItem(createdStorageKey) || "0");
+      if (!createdAt || Date.now() - createdAt > sessionTtlMs) {
+        agentStorage.removeItem(historyStorageKey);
+        agentStorage.removeItem(idStorageKey);
+        agentStorage.setItem(createdStorageKey, String(Date.now()));
       }
-      const stored = window.sessionStorage.getItem(historyStorageKey);
+      const stored = agentStorage.getItem(historyStorageKey);
       const parsed = stored ? JSON.parse(stored) : null;
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed
           .filter((message) => message && (message.role === "assistant" || message.role === "user") && typeof message.text === "string")
           .slice(-INBOX_AI_HELPER_HISTORY_LIMIT)
           .map((message, index) => ({
+            artifact: isReplyDraftArtifact(message.artifact) ? message.artifact : undefined,
             draftBody: typeof message.draftBody === "string" ? message.draftBody : undefined,
             id: typeof message.id === "number" ? message.id : Date.now() + index,
             role: message.role,
@@ -4993,18 +5012,18 @@ function InboxAiHelperPanel({
           }));
       }
     } catch {
-      window.sessionStorage.removeItem(historyStorageKey);
+      agentStorage.removeItem(historyStorageKey);
     }
     return [INBOX_AI_HELPER_INTRO_MESSAGE];
   });
   const [sessionId, setSessionId] = useState(() => {
-    const existing = window.sessionStorage.getItem(idStorageKey);
+    const existing = agentStorage.getItem(idStorageKey);
     if (existing) {
       return existing;
     }
     const next = window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    window.sessionStorage.setItem(idStorageKey, next);
-    window.sessionStorage.setItem(createdStorageKey, String(Date.now()));
+    agentStorage.setItem(idStorageKey, next);
+    agentStorage.setItem(createdStorageKey, String(Date.now()));
     return next;
   });
   const [input, setInput] = useState("");
@@ -5019,6 +5038,7 @@ function InboxAiHelperPanel({
   const [isThinking, setIsThinking] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const activeContext = selectedMessages.length > 0 ? selectedMessages : contextMessages;
   const selectedContextText = selectedMessages.length > 0
@@ -5031,9 +5051,9 @@ function InboxAiHelperPanel({
 
   function resetAgentSession() {
     const nextSessionId = window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    window.sessionStorage.removeItem(historyStorageKey);
-    window.sessionStorage.setItem(idStorageKey, nextSessionId);
-    window.sessionStorage.setItem(createdStorageKey, String(Date.now()));
+    agentStorage.removeItem(historyStorageKey);
+    agentStorage.setItem(idStorageKey, nextSessionId);
+    agentStorage.setItem(createdStorageKey, String(Date.now()));
     setSessionId(nextSessionId);
     setMessages([{ ...INBOX_AI_HELPER_INTRO_MESSAGE, id: Date.now() }]);
     setInput("");
@@ -5044,6 +5064,7 @@ function InboxAiHelperPanel({
   useEffect(() => {
     const persisted = messages.slice(-INBOX_AI_HELPER_HISTORY_LIMIT).map((message) => ({
       affectedEmails: message.affectedEmails,
+      artifact: message.artifact,
       draftBody: message.draftBody,
       id: message.id,
       pendingBulkAction: message.pendingBulkAction,
@@ -5051,8 +5072,8 @@ function InboxAiHelperPanel({
       subjectSuggestion: message.subjectSuggestion,
       text: message.text,
     }));
-    window.sessionStorage.setItem(historyStorageKey, JSON.stringify(persisted));
-  }, [historyStorageKey, messages]);
+    agentStorage.setItem(historyStorageKey, JSON.stringify(persisted));
+  }, [agentStorage, historyStorageKey, messages]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -5353,7 +5374,7 @@ function InboxAiHelperPanel({
       body: JSON.stringify({
         conversationHistory: conversationHistory.slice(-INBOX_AI_HELPER_HISTORY_LIMIT).map((message) => ({
           role: message.role,
-          text: message.text,
+          text: message.artifact ? `${message.text}\n\n${formatReplyDraftForAgent(message.artifact)}` : message.text,
         })),
         emailContext: emailContext ? {
           accountId: emailContext.accountId,
@@ -5430,7 +5451,8 @@ function InboxAiHelperPanel({
     const proposedBulkAction = rawBulkAction?.action && ["archive", "delete"].includes(rawBulkAction.action)
       ? rawBulkAction as InboxAiBulkActionProposal
       : null;
-    return { affectedEmails, message: streamedText.trim(), proposedBulkAction };
+    const artifact = isPreparedReplyDraft(data.artifact) ? data.artifact : null;
+    return { affectedEmails, artifact, message: streamedText.trim(), proposedBulkAction };
   }
 
   async function resolveAgentBulkActionProposal(proposal: InboxAiBulkActionProposal, fallbackEmails: InboxMessage[]) {
@@ -5469,7 +5491,7 @@ function InboxAiHelperPanel({
       return;
     }
 
-    if (workflow.step === "recipient") {
+    if (variant !== "workspace" && workflow.step === "recipient") {
       const typedEmail = extractEmailAddressFromText(prompt) || (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(prompt.trim()) ? prompt.trim() : "");
       if (typedEmail) {
         const nextDraft = openComposeWithDraft({ ...workflow.draft, to: typedEmail });
@@ -5493,7 +5515,7 @@ function InboxAiHelperPanel({
       return;
     }
 
-    if (workflow.step === "account") {
+    if (variant !== "workspace" && workflow.step === "account") {
       const numberMatch = prompt.trim().match(/^\d+$/);
       const account = numberMatch
         ? accounts[Number(numberMatch[0]) - 1]
@@ -5512,7 +5534,7 @@ function InboxAiHelperPanel({
       return;
     }
 
-    if (workflow.step === "body") {
+    if (variant !== "workspace" && workflow.step === "body") {
       setIsThinking(true);
       try {
         const bodyText = await draftEmailBody(prompt, workflow.draft);
@@ -5535,7 +5557,7 @@ function InboxAiHelperPanel({
 
     const isReplyIntent = /\b(reply|respond|response|answer)\b/.test(normalizedPrompt)
       && !/\b(new email|new message|compose new|start a new)\b/.test(normalizedPrompt);
-    if (isReplyIntent) {
+    if (variant !== "workspace" && isReplyIntent) {
       const target = findReplyTarget(prompt);
       if (!target) {
         addMessage({
@@ -5554,7 +5576,7 @@ function InboxAiHelperPanel({
       return;
     }
 
-    if (/\b(compose|write|new email|send an email|draft an email)\b/.test(normalizedPrompt)) {
+    if (variant !== "workspace" && /\b(compose|write|new email|send an email|draft an email)\b/.test(normalizedPrompt)) {
       const nextDraft = openComposeWithDraft(null);
       setWorkflow({ draft: nextDraft, step: "recipient" });
       addMessage({ role: "assistant", text: "I opened a new compose window. Who should this email go to? You can type a name from the current emails or a full email address." });
@@ -5586,9 +5608,23 @@ function InboxAiHelperPanel({
         });
         return;
       }
-      setMessages((current) => current.map((message) => message.id === streamingMessageId
-        ? { ...message, affectedEmails: answer.affectedEmails, text: answer.message }
-        : message));
+      setMessages((current) => {
+        const previousArtifact = [...current].reverse().find((message) => message.artifact?.status !== "superseded")?.artifact;
+        const nextArtifact = answer.artifact ? createReplyDraftArtifact(answer.artifact, previousArtifact) : undefined;
+        return current.map((message) => {
+          if (message.id === streamingMessageId) {
+            return {
+              ...message,
+              affectedEmails: answer.affectedEmails,
+              artifact: nextArtifact,
+              text: answer.message || (nextArtifact ? "Here’s a reply draft based on your request." : "I completed that request."),
+            };
+          }
+          return nextArtifact && message.artifact
+            ? { ...message, artifact: { ...message.artifact, status: "superseded" as const } }
+            : message;
+        });
+      });
     } catch (error) {
       setMessages((current) => current.map((message) => message.id === streamingMessageId
         ? { ...message, text: error instanceof Error ? error.message : "AI Helper could not answer that." }
@@ -5632,6 +5668,39 @@ function InboxAiHelperPanel({
     setWorkflow({ draft: nextDraft, step: "body" });
   }
 
+  function refineDraftArtifact() {
+    setInput("Refine the current reply draft: ");
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(inputRef.current.value.length, inputRef.current.value.length);
+    });
+  }
+
+  function restoreDraftArtifact(messageId: number) {
+    setMessages((current) => current.map((message) => message.id === messageId && message.artifact
+      ? { ...message, artifact: restorePreviousReplyDraftVersion(message.artifact) }
+      : message));
+  }
+
+  function useDraftArtifactInReply(messageId: number, artifact: ReplyDraftArtifact) {
+    const source = selectedMessages.find((message) => message.accountId === artifact.accountId && message.id === artifact.emailId)
+      ?? selectedMessages.find((message) => message.accountId === artifact.accountId && (message.threadId || message.id) === artifact.threadId)
+      ?? selectedMessages[0];
+    if (!source) {
+      addMessage({ role: "assistant", text: "I could not match this draft to the source email. Reopen that email and try Use in Reply again." });
+      return;
+    }
+    const baseDraft = createReplyDraftFromMessage(source);
+    const composerFields = buildReplyComposerFields(artifact, baseDraft);
+    openComposeWithDraft({
+      ...baseDraft,
+      ...composerFields,
+    });
+    setMessages((current) => current.map((message) => message.id === messageId && message.artifact
+      ? { ...message, artifact: { ...message.artifact, status: "applied" as const, updatedAt: new Date().toISOString() } }
+      : message));
+  }
+
   function submitPrompt(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const prompt = input.trim();
@@ -5654,8 +5723,11 @@ function InboxAiHelperPanel({
     )} data-state={isClosing ? "closing" : "open"}>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-zinc-950">AI Helper</p>
-          <p className="truncate text-xs text-zinc-500">{selectedContextText}</p>
+          <p className="text-sm font-semibold text-zinc-950">{variant === "workspace" ? "AI Assistant" : "AI Helper"}</p>
+          <p className="flex items-center gap-1.5 truncate text-xs text-zinc-500">
+            {variant === "workspace" ? <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" /> : null}
+            {variant === "workspace" ? "Working with this email" : selectedContextText}
+          </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {variant === "workspace" ? (
@@ -5680,8 +5752,17 @@ function InboxAiHelperPanel({
               "min-w-0 max-w-[88%] rounded-xl border border-white/70 bg-white/65 px-3 py-2 text-sm leading-6 shadow-sm backdrop-blur-xl [overflow-wrap:anywhere]",
               message.role === "user" && "bg-zinc-950/85 text-white",
               message.draftBody && "cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/80",
+              message.artifact && "max-w-full",
             )} onClick={() => applyDraftMessage(message)} role={message.draftBody ? "button" : undefined} tabIndex={message.draftBody ? 0 : undefined}>
               <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{message.text}</p>
+              {message.artifact && message.artifact.status !== "superseded" ? (
+                <ReplyDraftArtifactCard
+                  artifact={message.artifact}
+                  onRefine={refineDraftArtifact}
+                  onRestorePrevious={() => restoreDraftArtifact(message.id)}
+                  onUseInReply={() => useDraftArtifactInReply(message.id, message.artifact!)}
+                />
+              ) : null}
               {message.affectedEmails?.length ? (
                 <div className="mt-3 space-y-2">
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
@@ -5775,6 +5856,7 @@ function InboxAiHelperPanel({
               }
             }}
             placeholder="Ask about email..."
+            ref={inputRef}
             rows={1}
             value={input}
           />
