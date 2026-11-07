@@ -1583,7 +1583,7 @@ async function generateAiHelperChat(userId, request) {
   const toolResults = [];
   const labels = await getAiHelperLabelCatalog(userId);
   const aiResponse = await callBestAvailableAi(userId, {
-    systemPrompt: buildAiHelperSystemPrompt(labels),
+    systemPrompt: buildAiHelperSystemPrompt(labels, request.emailContext),
     messages: buildAiHelperMessages(previousHistory, request.prompt),
     responseShape: "text",
     toolChoice: "auto",
@@ -2977,6 +2977,7 @@ function parseAiHelperChatInput(body) {
         text: typeof message.text === "string" ? message.text.trim().slice(0, 4000) : "",
       })).filter((message) => message.text)
     : [];
+  const emailContext = sanitizeAiHelperEmailContext(body?.emailContext);
   if (!prompt) {
     return { ok: false, error: "Ask the AI Helper a question." };
   }
@@ -2984,7 +2985,28 @@ function parseAiHelperChatInput(body) {
     return { ok: false, error: "AI Helper prompt must be 2,000 characters or less." };
   }
 
-  return { ok: true, request: { conversationHistory, prompt, sessionId } };
+  return { ok: true, request: { conversationHistory, emailContext, prompt, sessionId } };
+}
+
+function sanitizeAiHelperEmailContext(value) {
+  if (!value || typeof value !== "object") return null;
+  const text = (field, limit) => typeof value[field] === "string" ? value[field].trim().slice(0, limit) : "";
+  const labels = Array.isArray(value.labels)
+    ? value.labels.filter((label) => typeof label === "string").slice(0, 20).map((label) => label.trim().slice(0, 100)).filter(Boolean)
+    : [];
+  const context = {
+    accountId: text("accountId", 200),
+    date: text("date", 100),
+    emailId: text("emailId", 500),
+    from: text("from", 500),
+    labels,
+    mailbox: text("mailbox", 100),
+    subject: text("subject", 500),
+    text: text("text", 12000),
+    threadId: text("threadId", 500),
+    to: text("to", 1000),
+  };
+  return context.emailId || context.subject || context.text ? context : null;
 }
 
 function parseEmailActionInput(body) {

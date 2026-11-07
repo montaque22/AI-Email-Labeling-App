@@ -116,6 +116,24 @@ describe("AttentionDashboard", () => {
     expect(cardGrid?.classList.contains("overflow-x-auto")).toBe(false);
   });
 
+  it("wraps row actions based on the message-list width instead of the viewport", () => {
+    const { container } = renderDashboard();
+    const row = container.querySelector("[data-attention-row]");
+    const actions = container.querySelector("[data-attention-row-actions]");
+    expect(row?.className).toContain("@container/priority-row");
+    expect(actions?.className).toContain("row-start-2");
+    expect(actions?.className).toContain("@[40rem]/priority-row:row-start-1");
+    expect(actions?.className).toContain("flex-wrap");
+  });
+
+  it("keeps the inbox view toggle in the dashboard title header", () => {
+    renderDashboard("attention", { headerAction: <button type="button">All Mail</button> });
+    const heading = screen.getByRole("heading", { name: "Your Inbox" });
+    const header = heading.closest("header");
+    expect(header?.textContent).toContain("All Mail");
+    expect(header?.className).toContain("flex-wrap");
+  });
+
   it("filters Needs Attention to confident Quick Wins and records corrections", () => {
     const { props } = renderDashboard();
     fireEvent.click(screen.getByRole("tab", { name: "Quick Wins 1" }));

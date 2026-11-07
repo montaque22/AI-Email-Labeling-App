@@ -76,6 +76,7 @@ export type AttentionDashboardProps = {
   category: AttentionCategory;
   data: AttentionDashboardData | null;
   detailPanel?: ReactNode;
+  headerAction?: ReactNode;
   isActionRunning?: boolean;
   isLoading: boolean;
   onArchive: (messages: AttentionMessage[]) => Promise<void> | void;

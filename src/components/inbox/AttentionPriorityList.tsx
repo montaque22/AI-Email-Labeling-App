@@ -1,4 +1,4 @@
-import { Archive, Bookmark, Check, Clock3, Gem, MoreHorizontal, RotateCcw, ShieldCheck, Sparkles, Trash2, XCircle } from "lucide-react";
+import { Archive, Bookmark, Check, Clock3, Gem, RotateCcw, ShieldCheck, Sparkles, Trash2, XCircle } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -55,10 +55,10 @@ function AttentionPriorityRow({
   const committed = hasActiveCommitment(message);
   return (
     <article className={cn(
-      "group relative flex items-center gap-2 border-b border-white/70 px-3 py-3 last:border-b-0 md:gap-3 md:px-5 md:py-4",
+      "@container/priority-row group relative grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1 border-b border-white/70 px-3 py-3 last:border-b-0 md:gap-x-3 md:px-5 md:py-4 @[40rem]/priority-row:grid-cols-[auto_minmax(0,1fr)_auto]",
       selected && "bg-violet-50/60",
       category === "interest" && freshnessBorderClass(message.interestFreshness?.state),
-    )}>
+    )} data-attention-row>
       <input
         aria-label={`Select ${message.subject || "email"}`}
         checked={selected}
@@ -74,22 +74,28 @@ function AttentionPriorityRow({
             {!message.isRead ? <span aria-label="Unread" className="h-2 w-2 shrink-0 rounded-full bg-blue-600" /> : null}
           </span>
           <span className="block truncate text-sm font-medium text-zinc-800">{message.subject || "No subject"}</span>
-          <span className="mt-0.5 block truncate text-xs text-zinc-500 sm:hidden">{message.snippet}</span>
+          <span className="mt-0.5 block truncate text-xs text-zinc-500 @[40rem]/priority-row:hidden">{message.snippet}</span>
           <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
             {message.labels[0] ? <Badge>{message.labels[0]}</Badge> : null}
             {message.attention.quickWin?.isQuickWin ? <Badge className="gap-1 border-violet-200 bg-violet-50 text-violet-700"><Sparkles className="h-3 w-3" />Quick Win</Badge> : null}
             {category === "interest" && message.interestFreshness ? <span title={`${message.interestFreshness.days} days since meaningful interest activity`}>{message.interestFreshness.label}</span> : committed ? <><Gem className="h-3.5 w-3.5 fill-violet-100 text-violet-600" />Commitment</> : message.attention.reasonCode === "security_notice" ? <><ShieldCheck className="h-3.5 w-3.5 text-orange-500" />Security notice</> : <><Clock3 className="h-3.5 w-3.5 text-blue-600" /><span className="max-w-52 truncate">{message.attention.explanation}</span></>}
           </span>
         </span>
-        <span className="shrink-0 self-start pt-1 text-xs text-zinc-500 sm:self-center sm:pt-0 sm:text-sm">{formatAttentionDate(message.date)}</span>
+        <span className="shrink-0 self-start pt-1 text-xs text-zinc-500 @[40rem]/priority-row:self-center @[40rem]/priority-row:pt-0 @[40rem]/priority-row:text-sm">{formatAttentionDate(message.date)}</span>
       </button>
-      <div className="hidden shrink-0 items-center md:flex">
+      <div className={cn(
+        "col-start-2 row-start-2 flex min-w-0 flex-wrap items-center justify-end @[40rem]/priority-row:col-start-3 @[40rem]/priority-row:row-start-1 @[40rem]/priority-row:flex-nowrap",
+        isMobileSelectionMode && "hidden @[40rem]/priority-row:flex",
+      )} data-attention-row-actions>
+        <ActionButton label={message.followed ? "Remove bookmark" : "Bookmark email"} onClick={() => onToggleFollow(message)}>
+          <Bookmark className={cn("h-4 w-4", message.followed && "fill-blue-600 text-blue-600")} />
+        </ActionButton>
         {category === "interest" ? (
           <>
             {message.interestFreshness?.state === "review" || message.interestFreshness?.state === "stale" ? <Button onClick={() => onStillInterested(message)} size="sm" type="button" variant="ghost">Still interested</Button> : null}
             <InterestDoneMenu disabled={isActionRunning} message={message} onArchive={onArchive} onCommitment={onCommitment} onReturn={onReturnInterest} onTrash={onTrash} />
           </>
-        ) : <ActionButton label={message.followed ? "Remove bookmark" : "Bookmark email"} onClick={() => onToggleFollow(message)}><Bookmark className={cn("h-4 w-4", message.followed && "fill-blue-600 text-blue-600")} /></ActionButton>}
+        ) : null}
         <ActionButton label={committed ? "Manage commitment" : "Set commitment"} onClick={() => onCommitment(message)}>
           <Gem className={cn("h-4 w-4", committed && "fill-violet-200 text-violet-700")} />
         </ActionButton>
@@ -97,26 +103,6 @@ function AttentionPriorityRow({
         <ActionButton disabled={isActionRunning} label="Archive email" onClick={() => onArchive(message)}><Archive className="h-4 w-4" /></ActionButton>
         <ActionButton disabled={isActionRunning} label="Move email to Trash" onClick={() => onTrash(message)}><Trash2 className="h-4 w-4 text-red-600" /></ActionButton>
       </div>
-      {!isMobileSelectionMode ? (
-        <div className="flex shrink-0 items-center md:hidden">
-          <ActionButton label={message.followed ? "Remove bookmark" : "Bookmark email"} onClick={() => onToggleFollow(message)}>
-            <Bookmark className={cn("h-4 w-4", message.followed && "fill-blue-600 text-blue-600")} />
-          </ActionButton>
-          <ActionButton label={committed ? "Manage commitment" : "Set commitment"} onClick={() => onCommitment(message)}>
-            <Gem className={cn("h-4 w-4", committed && "fill-violet-200 text-violet-700")} />
-          </ActionButton>
-          <details className="relative">
-            <summary aria-label="More email actions" className="flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-md hover:bg-zinc-100 [&::-webkit-details-marker]:hidden"><MoreHorizontal className="h-5 w-5" /></summary>
-            <div className="absolute right-0 top-11 z-30 min-w-44 rounded-xl border border-white/80 bg-white/95 p-1 shadow-xl">
-              {category === "interest" ? <button className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-sm hover:bg-zinc-100" onClick={() => onReturnInterest(message)} type="button"><RotateCcw className="h-4 w-4" />Return</button> : null}
-              {category === "interest" && (message.interestFreshness?.state === "review" || message.interestFreshness?.state === "stale") ? <button className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-sm hover:bg-zinc-100" onClick={() => onStillInterested(message)} type="button"><Check className="h-4 w-4" />Still interested</button> : null}
-              {message.attention.quickWin?.isQuickWin ? <button className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-sm hover:bg-zinc-100" onClick={() => onNotQuickWin(message)} type="button"><XCircle className="h-4 w-4" />Not a Quick Win</button> : null}
-              <button className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-sm hover:bg-zinc-100" onClick={() => onArchive(message)} type="button"><Archive className="h-4 w-4" />Archive</button>
-              <button className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-sm text-red-700 hover:bg-red-50" onClick={() => onTrash(message)} type="button"><Trash2 className="h-4 w-4" />Move to Trash</button>
-            </div>
-          </details>
-        </div>
-      ) : null}
     </article>
   );
 }

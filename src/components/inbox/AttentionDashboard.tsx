@@ -14,7 +14,7 @@ import { attentionMessageKey } from "./attention-dashboard-utils";
 export type { AttentionCategory, AttentionDashboardData, AttentionMessage } from "./attention-dashboard-types";
 
 export function AttentionDashboard({
-  category, data, detailPanel, isActionRunning = false, isLoading, onArchive, onCommitment, onDelete,
+  category, data, detailPanel, headerAction, isActionRunning = false, isLoading, onArchive, onCommitment, onDelete,
   onLoadMore, onNotQuickWin, onOpen, onReturnInterest, onSelectAllMatching, onSelectCategory, onSelectionChange,
   onStillInterested, onToggleFollow, selectedMessages,
 }: AttentionDashboardProps) {
@@ -130,9 +130,12 @@ export function AttentionDashboard({
 
   return (
     <section className="space-y-5" aria-label="Attention Dashboard">
-      <header className="flex items-start gap-3 px-1">
-        <div className="rounded-2xl bg-violet-100 p-2.5 text-violet-600"><Sparkles className="h-6 w-6" /></div>
-        <div><h1 className="text-2xl font-bold tracking-tight text-zinc-950 md:text-3xl">Your Inbox</h1><p className="text-sm text-zinc-500 md:text-base">Find what matters. Clear the rest.</p></div>
+      <header className="flex flex-wrap items-start justify-between gap-3 px-1">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="rounded-2xl bg-violet-100 p-2.5 text-violet-600"><Sparkles className="h-6 w-6" /></div>
+          <div><h1 className="text-2xl font-bold tracking-tight text-zinc-950 md:text-3xl">Your Inbox</h1><p className="text-sm text-zinc-500 md:text-base">Find what matters. Clear the rest.</p></div>
+        </div>
+        {headerAction ? <div className="w-full sm:w-auto">{headerAction}</div> : null}
       </header>
 
       <AttentionCategoryCards category={category} counts={data?.counts} isLoading={isLoading} onSelect={onSelectCategory} />

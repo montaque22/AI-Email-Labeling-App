@@ -72,12 +72,16 @@ import type { AiUsageSeries, AlarmGranularity, AlarmSimulationPoint, LogAlarm, L
 import { CalendarPage } from "./components/calendar/CalendarPage";
 import { TasksPage } from "./components/tasks/TasksPage";
 import { BackgroundTaskDrawer } from "./components/background-tasks/BackgroundTaskDrawer";
+import { PwaUpdatePrompt } from "./components/PwaUpdatePrompt";
 import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/rules/RuleProviderApplyNotice";
 import { InboxSelectAllBanner } from "./components/inbox/InboxSelectAllBanner";
+import { InboxViewToggle } from "./components/inbox/InboxViewToggle";
 import { AiHelperSessionResetButton } from "./components/inbox/AiHelperSessionResetButton";
 import { AttentionDashboard, type AttentionCategory, type AttentionDashboardData, type AttentionMessage } from "./components/inbox/AttentionDashboard";
 import { AttentionTrashConfirmation } from "./components/inbox/AttentionTrashConfirmation";
 import { LiquidActionBar } from "./components/inbox/LiquidActionBar";
+import { EmailReaderModeSwitch, EmailReaderWorkspace, type EmailReaderMode } from "./components/inbox/EmailReaderWorkspace";
+import { InterestCompletionActions } from "./components/inbox/InterestCompletionActions";
 import { AttentionDashboardSettingsPage } from "./components/settings/AttentionDashboardSettingsPage";
 import { authClient } from "./lib/auth-client";
 import { fetchNoStore } from "./lib/http";
@@ -87,7 +91,6 @@ import {
   INBOX_AI_HELPER_SESSION_ID_KEY,
   INBOX_AI_HELPER_SESSION_KEY,
   INBOX_AI_HELPER_SESSION_TTL_MS,
-  resetInboxAiHelperSession,
 } from "./lib/inbox-ai-helper-session";
 import { useLocalDevelopmentSession } from "./hooks/useLocalDevelopmentSession";
 import { clearPwaUnreadBadge, refreshPwaUnreadBadge } from "./lib/pwa-badge";
@@ -1194,6 +1197,7 @@ export function App() {
 
 function usePwaUpdatePrompt() {
   const [isUpdateAvailable, setIsUpdateAvailable] = useState(false);
+  const [isUpdateCollapsed, setIsUpdateCollapsed] = useState(false);
   const [isOffline, setIsOffline] = useState(() => typeof navigator !== "undefined" ? !navigator.onLine : false);
   const [isUpdating, setIsUpdating] = useState(false);
   const updateServiceWorkerRef = useRef<ReturnType<typeof registerSW> | null>(null);
@@ -1224,6 +1228,7 @@ function usePwaUpdatePrompt() {
       immediate: true,
       onNeedRefresh() {
         setIsUpdateAvailable(true);
+        setIsUpdateCollapsed(false);
       },
       onRegisteredSW(_swUrl, registration) {
         if (!registration) {
@@ -1265,67 +1270,13 @@ function usePwaUpdatePrompt() {
 
   return {
     applyUpdate,
-    dismissUpdate: () => setIsUpdateAvailable(false),
+    collapseUpdate: () => setIsUpdateCollapsed(true),
+    expandUpdate: () => setIsUpdateCollapsed(false),
     isOffline,
     isUpdateAvailable,
+    isUpdateCollapsed,
     isUpdating,
   };
-}
-
-function PwaUpdatePrompt({
-  applyUpdate,
-  dismissUpdate,
-  isOffline,
-  isUpdateAvailable,
-  isUpdating,
-}: {
-  applyUpdate: () => Promise<void>;
-  dismissUpdate: () => void;
-  isOffline: boolean;
-  isUpdateAvailable: boolean;
-  isUpdating: boolean;
-}) {
-  if (!isOffline && !isUpdateAvailable) {
-    return null;
-  }
-
-  return (
-    <div className="fixed inset-x-3 bottom-4 z-[80] mx-auto max-w-md rounded-2xl border border-white/70 bg-white/85 p-3 text-sm text-zinc-700 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:bottom-6 md:right-6 md:left-auto md:mx-0">
-      {isUpdateAvailable ? (
-        <div className="flex items-start gap-3">
-          <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-          <div className="min-w-0 flex-1">
-            <p className="font-semibold text-zinc-950">Update available</p>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">A newer version of Emailable is ready. Refresh to stay in sync.</p>
-            <div className="mt-3 flex flex-wrap justify-end gap-2">
-              <Button disabled={isUpdating} onClick={dismissUpdate} size="sm" type="button" variant="ghost">
-                Later
-              </Button>
-              <Button disabled={isUpdating} onClick={() => void applyUpdate()} size="sm" type="button">
-                {isUpdating ? "Updating..." : "Reload"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-start gap-3">
-          <WifiOffIcon />
-          <div>
-            <p className="font-semibold text-zinc-950">You are offline</p>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">Some inbox and API actions may be out of sync until the connection returns.</p>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function WifiOffIcon() {
-  return (
-    <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-300 bg-amber-100 text-[10px] font-bold text-amber-700">
-      !
-    </span>
-  );
 }
 
 function HomePage({ hideAuth = false, onAuthSuccess }: { hideAuth?: boolean; onAuthSuccess: () => Promise<unknown> }) {
@@ -2354,6 +2305,7 @@ function InboxPage({
   const [messageLoadProgress, setMessageLoadProgress] = useState({ completed: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
   const [selectedMessage, setSelectedMessage] = useState<InboxMessage | null>(null);
+  const [readerMode, setReaderMode] = useState<EmailReaderMode>("read");
   const [messageDetail, setMessageDetail] = useState<InboxMessageDetail | null>(null);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -3218,6 +3170,8 @@ function InboxPage({
   }
 
   async function openMessage(message: InboxMessage) {
+    const savedMode = window.localStorage.getItem(`emailable.reader.mode.${getInboxMessageKey(message)}`);
+    setReaderMode(savedMode === "work" ? "work" : "read");
     if (inboxMode !== "drafts") recordAttentionEngagement(message);
     if (inboxMode !== "drafts") {
       setSelectedMessage(message);
@@ -3275,6 +3229,35 @@ function InboxPage({
     } finally {
       setIsDetailLoading(false);
     }
+  }
+
+  function updateReaderMode(mode: EmailReaderMode) {
+    setReaderMode(mode);
+    if (selectedMessage) {
+      window.localStorage.setItem(`emailable.reader.mode.${getInboxMessageKey(selectedMessage)}`, mode);
+    }
+  }
+
+  function renderEmailWorkPane(message: InboxMessage) {
+    return (
+      <InboxAiHelperPanel
+        activeTools={activeAiTools}
+        accounts={accounts}
+        contextMessages={[message]}
+        emailContext={messageDetail}
+        inboxMode={inboxMode}
+        key={`email-work-${getInboxMessageKey(message)}`}
+        labels={labels}
+        onArchiveMessages={archiveSelectedMessages}
+        onDeleteMessages={deleteSelectedMessages}
+        onOpenComposeDraft={openComposeDraft}
+        onOpenMessage={(target) => void openMessage(target)}
+        privacyMode={privacyMode}
+        selectedMessages={[message]}
+        sessionScope={getInboxMessageKey(message)}
+        variant="workspace"
+      />
+    );
   }
 
   function openAdjacentDashboardMessage(direction: -1 | 1) {
@@ -4389,17 +4372,13 @@ function InboxPage({
         </div>
       ) : null}
 
-      <div className="flex justify-end">
-        <div className="inline-flex rounded-full border border-white/80 bg-white/65 p-1 shadow-sm backdrop-blur-xl" role="group" aria-label="Inbox view">
-          <button className={cn("rounded-full px-5 py-2 text-sm font-medium transition", inboxView === "dashboard" ? "bg-violet-100 text-violet-700 shadow-sm" : "text-zinc-600 hover:text-zinc-950")} onClick={() => { setSelectedMessage(null); setMessageDetail(null); setInboxView("dashboard"); }} type="button">Dashboard</button>
-          <button className={cn("rounded-full px-5 py-2 text-sm font-medium transition", inboxView === "all-mail" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-600 hover:text-zinc-950")} onClick={() => { setSelectedMessage(null); setMessageDetail(null); setInboxView("all-mail"); }} type="button">All Mail</button>
-        </div>
-      </div>
+      {inboxView === "all-mail" ? <div className="flex justify-end"><InboxViewToggle onChange={(view) => { setSelectedMessage(null); setMessageDetail(null); setInboxView(view); }} value={inboxView} /></div> : null}
 
       {inboxView === "dashboard" ? (
         <AttentionDashboard
           category={attentionCategory}
           data={attentionDashboard}
+          headerAction={<InboxViewToggle className="w-full justify-stretch sm:w-auto" onChange={(view) => { setSelectedMessage(null); setMessageDetail(null); setInboxView(view); }} value={inboxView} />}
           detailPanel={selectedMessage ? (
             <InboxMessageModal
               detail={messageDetail}
@@ -4409,6 +4388,7 @@ function InboxPage({
               isLoading={isDetailLoading}
               isLabelActionRunning={isLabelActionRunning}
               labels={labels}
+              mode={readerMode}
               onClose={() => { setSelectedMessage(null); setMessageDetail(null); }}
               onDelete={(message) => void actOnDashboardMessage(message, "delete")}
               onNext={() => openAdjacentDashboardMessage(1)}
@@ -4418,6 +4398,8 @@ function InboxPage({
               onCompleteCommitment={(message) => setCommitmentConfirm({ kind: "complete", messages: [message] })}
               onRenegeCommitment={(message) => setCommitmentConfirm({ kind: "renege", messages: [message] })}
               onEditRule={(message) => setRuleEditorMessage(message)}
+              onModeChange={updateReaderMode}
+              onReturnInterest={(message) => void updateAttentionPreference(message, "return", "interest")}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
               onReply={(detail, summary) => openReplyComposer(detail, summary)}
               onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
@@ -4425,6 +4407,7 @@ function InboxPage({
               privacyMode={privacyMode}
               summary={selectedMessage}
               variant="embedded"
+              workPane={renderEmailWorkPane(selectedMessage)}
             />
           ) : null}
           isActionRunning={isBulkActionRunning || isCommitmentActionRunning}
@@ -4738,6 +4721,7 @@ function InboxPage({
 
       {isAiHelperOpen ? (
         <InboxAiHelperPanel
+          activeTools={activeAiTools}
           accounts={accounts}
           contextMessages={filteredMessages.slice(0, 30)}
           inboxMode={inboxMode}
@@ -4778,6 +4762,7 @@ function InboxPage({
               isLoading={isDetailLoading}
               isLabelActionRunning={isLabelActionRunning}
               labels={labels}
+              mode={readerMode}
               onClose={() => {
                 setSelectedMessage(null);
                 setMessageDetail(null);
@@ -4790,12 +4775,15 @@ function InboxPage({
               onCompleteCommitment={(message) => setCommitmentConfirm({ kind: "complete", messages: [message] })}
               onRenegeCommitment={(message) => setCommitmentConfirm({ kind: "renege", messages: [message] })}
               onEditRule={(message) => setRuleEditorMessage(message)}
+              onModeChange={updateReaderMode}
+              onReturnInterest={(message) => void updateAttentionPreference(message, "return", "interest")}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
               onReply={(detail, summary) => openReplyComposer(detail, summary)}
               onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
               onToggleFollow={(message) => void updateAttentionPreference(message, message.followed ? "unfollow" : "follow")}
               privacyMode={privacyMode}
               summary={selectedMessage}
+              workPane={renderEmailWorkPane(selectedMessage)}
             />
           </div>
           <div className={cn("hidden md:block", inboxView === "dashboard" && "md:hidden")}>
@@ -4807,6 +4795,7 @@ function InboxPage({
               isLoading={isDetailLoading}
               isLabelActionRunning={isLabelActionRunning}
               labels={labels}
+              mode={readerMode}
               onClose={() => {
                 setSelectedMessage(null);
                 setMessageDetail(null);
@@ -4817,12 +4806,15 @@ function InboxPage({
               onCompleteCommitment={(message) => setCommitmentConfirm({ kind: "complete", messages: [message] })}
               onRenegeCommitment={(message) => setCommitmentConfirm({ kind: "renege", messages: [message] })}
               onEditRule={(message) => setRuleEditorMessage(message)}
+              onModeChange={updateReaderMode}
+              onReturnInterest={(message) => void updateAttentionPreference(message, "return", "interest")}
               onSetLabel={(message, labelId) => void setMessagesLabel([message], labelId)}
               onReply={(detail, summary) => openReplyComposer(detail, summary)}
               onShowReplies={(detail, summary) => showRepliesForMessage(detail, summary)}
               onToggleFollow={(message) => void updateAttentionPreference(message, message.followed ? "unfollow" : "follow")}
               privacyMode={privacyMode}
               summary={selectedMessage}
+              workPane={renderEmailWorkPane(selectedMessage)}
             />
           </div>
         </>
@@ -4933,8 +4925,10 @@ function InboxPage({
 }
 
 function InboxAiHelperPanel({
+  activeTools = [],
   accounts,
   contextMessages,
+  emailContext = null,
   inboxMode,
   labels,
   onClose,
@@ -4944,12 +4938,16 @@ function InboxAiHelperPanel({
   onOpenMessage,
   privacyMode,
   selectedMessages,
+  sessionScope = "",
+  variant = "floating",
 }: {
+  activeTools?: AiMcpTool[];
   accounts: EmailAccount[];
   contextMessages: InboxMessage[];
+  emailContext?: InboxMessageDetail | null;
   inboxMode: InboxMode;
   labels: Label[];
-  onClose: () => void;
+  onClose?: () => void;
   onArchiveMessages: (messages: InboxMessage[]) => Promise<{ failed: number; succeeded: number }>;
   onDeleteMessages: (
     messages: InboxMessage[],
@@ -4959,16 +4957,22 @@ function InboxAiHelperPanel({
   onOpenMessage: (message: InboxMessage) => Promise<void> | void;
   privacyMode: boolean;
   selectedMessages: InboxMessage[];
+  sessionScope?: string;
+  variant?: "floating" | "workspace";
 }) {
+  const storageSuffix = sessionScope ? `.${sessionScope}` : "";
+  const historyStorageKey = `${INBOX_AI_HELPER_SESSION_KEY}${storageSuffix}`;
+  const idStorageKey = `${INBOX_AI_HELPER_SESSION_ID_KEY}${storageSuffix}`;
+  const createdStorageKey = `${INBOX_AI_HELPER_SESSION_CREATED_KEY}${storageSuffix}`;
   const [messages, setMessages] = useState<InboxAiChatMessage[]>(() => {
     try {
-      const createdAt = Number(window.sessionStorage.getItem(INBOX_AI_HELPER_SESSION_CREATED_KEY) || "0");
+      const createdAt = Number(window.sessionStorage.getItem(createdStorageKey) || "0");
       if (!createdAt || Date.now() - createdAt > INBOX_AI_HELPER_SESSION_TTL_MS) {
-        window.sessionStorage.removeItem(INBOX_AI_HELPER_SESSION_KEY);
-        window.sessionStorage.removeItem(INBOX_AI_HELPER_SESSION_ID_KEY);
-        window.sessionStorage.setItem(INBOX_AI_HELPER_SESSION_CREATED_KEY, String(Date.now()));
+        window.sessionStorage.removeItem(historyStorageKey);
+        window.sessionStorage.removeItem(idStorageKey);
+        window.sessionStorage.setItem(createdStorageKey, String(Date.now()));
       }
-      const stored = window.sessionStorage.getItem(INBOX_AI_HELPER_SESSION_KEY);
+      const stored = window.sessionStorage.getItem(historyStorageKey);
       const parsed = stored ? JSON.parse(stored) : null;
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed
@@ -4987,18 +4991,18 @@ function InboxAiHelperPanel({
           }));
       }
     } catch {
-      window.sessionStorage.removeItem(INBOX_AI_HELPER_SESSION_KEY);
+      window.sessionStorage.removeItem(historyStorageKey);
     }
     return [INBOX_AI_HELPER_INTRO_MESSAGE];
   });
   const [sessionId, setSessionId] = useState(() => {
-    const existing = window.sessionStorage.getItem(INBOX_AI_HELPER_SESSION_ID_KEY);
+    const existing = window.sessionStorage.getItem(idStorageKey);
     if (existing) {
       return existing;
     }
     const next = window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    window.sessionStorage.setItem(INBOX_AI_HELPER_SESSION_ID_KEY, next);
-    window.sessionStorage.setItem(INBOX_AI_HELPER_SESSION_CREATED_KEY, String(Date.now()));
+    window.sessionStorage.setItem(idStorageKey, next);
+    window.sessionStorage.setItem(createdStorageKey, String(Date.now()));
     return next;
   });
   const [input, setInput] = useState("");
@@ -5024,7 +5028,10 @@ function InboxAiHelperPanel({
   }
 
   function resetAgentSession() {
-    const nextSessionId = resetInboxAiHelperSession(window.sessionStorage);
+    const nextSessionId = window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    window.sessionStorage.removeItem(historyStorageKey);
+    window.sessionStorage.setItem(idStorageKey, nextSessionId);
+    window.sessionStorage.setItem(createdStorageKey, String(Date.now()));
     setSessionId(nextSessionId);
     setMessages([{ ...INBOX_AI_HELPER_INTRO_MESSAGE, id: Date.now() }]);
     setInput("");
@@ -5042,8 +5049,8 @@ function InboxAiHelperPanel({
       subjectSuggestion: message.subjectSuggestion,
       text: message.text,
     }));
-    window.sessionStorage.setItem(INBOX_AI_HELPER_SESSION_KEY, JSON.stringify(persisted));
-  }, [messages]);
+    window.sessionStorage.setItem(historyStorageKey, JSON.stringify(persisted));
+  }, [historyStorageKey, messages]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -5056,7 +5063,7 @@ function InboxAiHelperPanel({
   }, []);
 
   function closeWithAnimation() {
-    if (isClosing) {
+    if (isClosing || !onClose) {
       return;
     }
 
@@ -5346,6 +5353,18 @@ function InboxAiHelperPanel({
           role: message.role,
           text: message.text,
         })),
+        emailContext: emailContext ? {
+          accountId: emailContext.accountId,
+          date: emailContext.date,
+          emailId: emailContext.id,
+          from: emailContext.from,
+          labels: selectedMessages[0]?.labels ?? [],
+          mailbox: emailContext.mailbox,
+          subject: emailContext.subject,
+          text: emailContext.bodyText,
+          threadId: emailContext.threadId,
+          to: emailContext.to,
+        } : null,
         prompt,
         sessionId,
       }),
@@ -5625,17 +5644,30 @@ function InboxAiHelperPanel({
   }
 
   return (
-    <aside className="inbox-ai-helper fixed inset-0 z-[120] flex h-[100dvh] w-screen flex-col rounded-none border-0 border-white/70 bg-white/95 shadow-2xl shadow-slate-900/20 backdrop-blur-2xl md:inset-x-auto md:bottom-24 md:right-5 md:top-20 md:h-auto md:w-[420px] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:bg-white/70" data-state={isClosing ? "closing" : "open"}>
+    <aside className={cn(
+      "inbox-ai-helper flex min-h-0 flex-col border-white/70 bg-white/95 backdrop-blur-2xl",
+      variant === "floating"
+        ? "fixed inset-0 z-[120] h-[100dvh] w-screen rounded-none border-0 shadow-2xl shadow-slate-900/20 md:inset-x-auto md:bottom-24 md:right-5 md:top-20 md:h-auto md:w-[420px] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:bg-white/70"
+        : "h-full min-h-[560px] w-full bg-white/45 md:min-h-0",
+    )} data-state={isClosing ? "closing" : "open"}>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-zinc-950">AI Helper</p>
           <p className="truncate text-xs text-zinc-500">{selectedContextText}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {variant === "workspace" ? (
+            <details className="relative">
+              <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1.5 rounded-full border border-white/80 bg-white/70 px-3 text-xs font-semibold text-zinc-700 shadow-sm [&::-webkit-details-marker]:hidden">
+                <ListChecks className="h-3.5 w-3.5" />Tools ({activeTools.length})
+              </summary>
+              <div className="absolute right-0 top-11 z-40 max-h-64 w-64 overflow-y-auto rounded-xl border border-white/80 bg-white/95 p-2 shadow-xl">
+                {activeTools.length ? activeTools.map((tool) => <div className="rounded-lg px-2 py-2 text-xs" key={tool.name}><p className="font-semibold text-zinc-900">{tool.name}</p><p className="mt-0.5 line-clamp-2 text-zinc-500">{tool.description}</p></div>) : <p className="px-2 py-3 text-xs text-zinc-500">No connected tools are currently active.</p>}
+              </div>
+            </details>
+          ) : null}
           <AiHelperSessionResetButton disabled={isThinking} onReset={resetAgentSession} />
-          <Button aria-label="Close AI helper" onClick={closeWithAnimation} size="icon" type="button" variant="ghost">
-            <X className="h-4 w-4" />
-          </Button>
+          {variant === "floating" ? <Button aria-label="Close AI helper" onClick={closeWithAnimation} size="icon" type="button" variant="ghost"><X className="h-4 w-4" /></Button> : null}
         </div>
       </div>
 
@@ -6508,21 +6540,25 @@ function InboxMessagePushView({
   isLoading,
   isLabelActionRunning,
   labels,
+  mode,
   onArchive,
   onClose,
   onCommitment,
   onCompleteCommitment,
   onDelete,
   onEditRule,
+  onModeChange,
   onNext,
   onPrevious,
   onRenegeCommitment,
+  onReturnInterest,
   onSetLabel,
   onReply,
   onShowReplies,
   onToggleFollow,
   privacyMode,
   summary,
+  workPane,
 }: {
   detail: InboxMessageDetail | null;
   error: string | null;
@@ -6531,21 +6567,25 @@ function InboxMessagePushView({
   isLoading: boolean;
   isLabelActionRunning: boolean;
   labels: Label[];
+  mode: EmailReaderMode;
   onArchive: (message: InboxMessage) => void;
   onClose: () => void;
   onCommitment: (message: InboxMessage) => void;
   onCompleteCommitment: (message: InboxMessage) => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
+  onModeChange: (mode: EmailReaderMode) => void;
   onNext?: () => void;
   onPrevious?: () => void;
   onRenegeCommitment: (message: InboxMessage) => void;
+  onReturnInterest: (message: InboxMessage) => void;
   onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
   onShowReplies: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
   onToggleFollow: (message: InboxMessage) => void;
   privacyMode: boolean;
   summary: InboxMessage;
+  workPane: ReactNode;
 }) {
   const rule = detail?.rule ?? summary.rule ?? null;
   const commitment = detail?.commitment ?? summary.commitment ?? null;
@@ -6586,8 +6626,11 @@ function InboxMessagePushView({
           </Button>
         </div>
       </div>
+      <div className="flex shrink-0 justify-center border-b border-zinc-200 bg-white/55 px-3 py-2">
+        <EmailReaderModeSwitch mode={mode} onModeChange={onModeChange} />
+      </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-4">
+      {mode === "work" ? workPane : <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-4">
         <div className="mx-auto max-w-2xl space-y-4">
           <div>
             <div className="mb-2 flex items-center justify-between gap-3">
@@ -6622,8 +6665,9 @@ function InboxMessagePushView({
           ) : null}
 
           {detail ? <InboxThreadConversation detail={detail} onLinkAction={setLinkAction} privacyMode={privacyMode} /> : null}
+          {summary.followed ? <InterestCompletionActions disabled={isArchiving || isDeleting} onArchive={() => onArchive(summary)} onCommitment={() => onCommitment(summary)} onDelete={() => onDelete(summary)} onReturn={() => onReturnInterest(summary)} /> : null}
         </div>
-      </div>
+      </div>}
       {linkAction ? <EmailLinkActionSheet link={linkAction} onClose={() => setLinkAction(null)} /> : null}
     </section>
   );
@@ -6766,15 +6810,18 @@ function InboxMessageModal({
   isLoading,
   isLabelActionRunning,
   labels,
+  mode,
   onArchive,
   onClose,
   onCommitment,
   onCompleteCommitment,
   onDelete,
   onEditRule,
+  onModeChange,
   onNext,
   onPrevious,
   onRenegeCommitment,
+  onReturnInterest,
   onSetLabel,
   onReply,
   onShowReplies,
@@ -6782,6 +6829,7 @@ function InboxMessageModal({
   privacyMode,
   summary,
   variant = "modal",
+  workPane,
 }: {
   detail: InboxMessageDetail | null;
   error: string | null;
@@ -6790,15 +6838,18 @@ function InboxMessageModal({
   isLoading: boolean;
   isLabelActionRunning: boolean;
   labels: Label[];
+  mode: EmailReaderMode;
   onArchive: (message: InboxMessage) => void;
   onClose: () => void;
   onCommitment: (message: InboxMessage) => void;
   onCompleteCommitment: (message: InboxMessage) => void;
   onDelete: (message: InboxMessage) => void;
   onEditRule: (message: InboxMessage) => void;
+  onModeChange: (mode: EmailReaderMode) => void;
   onNext?: () => void;
   onPrevious?: () => void;
   onRenegeCommitment: (message: InboxMessage) => void;
+  onReturnInterest: (message: InboxMessage) => void;
   onSetLabel: (message: InboxMessage, labelId: string) => void;
   onReply: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
   onShowReplies: (detail: InboxMessageDetail | null, summary: InboxMessage) => void;
@@ -6806,6 +6857,7 @@ function InboxMessageModal({
   privacyMode: boolean;
   summary: InboxMessage;
   variant?: "embedded" | "modal";
+  workPane: ReactNode;
 }) {
   const rule = detail?.rule ?? summary.rule ?? null;
   const commitment = detail?.commitment ?? summary.commitment ?? null;
@@ -6820,7 +6872,7 @@ function InboxMessageModal({
     )}>
       <div className={cn(
         "flex max-h-[92vh] w-full items-stretch justify-center gap-3 transition-[max-width] duration-300",
-        variant === "modal" ? "max-w-4xl" : "max-w-none",
+        variant === "modal" ? mode === "work" ? "max-w-[1500px]" : "max-w-4xl" : "max-w-none",
       )}>
       <LiquidGlassCard
         borderRadius="8px"
@@ -6828,7 +6880,7 @@ function InboxMessageModal({
         glowIntensity="none"
         shadowIntensity="xs"
       >
-        <div className="max-h-[calc(92vh-2rem)] overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
+        <div className="flex max-h-[calc(92vh-2rem)] min-h-[540px] flex-col overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
           <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
             <div className="min-w-0">
               <h3 className="mt-1 truncate text-lg font-semibold text-zinc-950">{detail?.subject || summary.subject || "(no subject)"}</h3>
@@ -6891,7 +6943,7 @@ function InboxMessageModal({
               </Button>
             </div>
           </div>
-          <div className="max-h-[calc(92vh-112px)] overflow-y-auto px-5 pb-10 pt-5">
+          <EmailReaderWorkspace mode={mode} onModeChange={onModeChange} workPane={workPane} readPane={<div className="max-h-[calc(92vh-164px)] overflow-y-auto px-5 pb-10 pt-5">
           {isLoading ? <p className="text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           <InboxAttachedAutomations results={detail?.automationResults ?? []} />
@@ -6907,7 +6959,8 @@ function InboxMessageModal({
           {detail ? (
             <InboxThreadConversation detail={detail} onLinkAction={setLinkAction} privacyMode={privacyMode} />
           ) : null}
-          </div>
+          {summary.followed ? <InterestCompletionActions disabled={isArchiving || isDeleting} onArchive={() => onArchive(summary)} onCommitment={() => onCommitment(summary)} onDelete={() => onDelete(summary)} onReturn={() => onReturnInterest(summary)} /> : null}
+          </div>} />
         </div>
       </LiquidGlassCard>
       </div>
