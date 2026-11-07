@@ -127,6 +127,8 @@ describe("AttentionDashboard", () => {
     expect(actions?.className).toContain("@[40rem]/priority-row:row-start-1");
     expect(actions?.className).toContain("flex-nowrap");
     expect(actions?.className).toContain("w-full");
+    expect(actions?.className).toContain("justify-evenly");
+    expect(actions?.className).toContain("@[40rem]/priority-row:justify-end");
   });
 
   it("keeps the inbox view toggle in the dashboard title header", () => {

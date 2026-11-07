@@ -84,7 +84,7 @@ function AttentionPriorityRow({
         <span className="shrink-0 self-start pt-1 text-xs text-zinc-500 @[40rem]/priority-row:self-center @[40rem]/priority-row:pt-0 @[40rem]/priority-row:text-sm">{formatAttentionDate(message.date)}</span>
       </button>
       <div className={cn(
-        "col-start-2 row-start-2 flex w-full min-w-0 flex-nowrap items-center justify-end @[40rem]/priority-row:col-start-3 @[40rem]/priority-row:row-start-1 @[40rem]/priority-row:w-auto",
+        "col-start-2 row-start-2 flex w-full min-w-0 flex-nowrap items-center justify-evenly @[40rem]/priority-row:col-start-3 @[40rem]/priority-row:row-start-1 @[40rem]/priority-row:w-auto @[40rem]/priority-row:justify-end",
         isMobileSelectionMode && "hidden @[40rem]/priority-row:flex",
       )} data-attention-row-actions>
         <ActionButton label={message.followed ? "Remove bookmark" : "Bookmark email"} onClick={() => onToggleFollow(message)}>
