@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { dbPool } from "./db.js";
 import { createTaskQueue } from "./concurrency.js";
 import { fetchWithTimeout } from "./http.js";
@@ -33,8 +34,8 @@ const dispatchQueue = createTaskQueue({
  * @param {unknown} payload
  * @returns {void}
  */
-export function emitWebhookEventDetached(userId, eventName, payload) {
-  dispatchQueue.push(() => emitWebhookEvent(userId, eventName, payload));
+export function emitWebhookEventDetached(userId, eventName, payload, options = {}) {
+  dispatchQueue.push(() => emitWebhookEvent(userId, eventName, payload, options));
 }
 
 /**
@@ -48,21 +49,25 @@ export async function waitForPendingWebhookDeliveries() {
   await dispatchQueue.drain();
 }
 
-export async function emitWebhookEvent(userId, eventName, payload) {
+export async function emitWebhookEvent(userId, eventName, payload, options = {}) {
   if (!dbPool) {
     return;
   }
 
   const settings = await getWebhookSettings(userId);
   if (!settings?.url) {
+    await options.onDelivery?.({ status: "skipped" });
     return;
   }
 
   const event = {
+    event_id: options.eventId || crypto.randomUUID(),
     event_name: eventName,
+    schema_version: options.schemaVersion || "1.0",
     payload,
     timestamp: new Date().toISOString(),
   };
+  const loggedEvent = redactWebhookEvent(event);
 
   try {
     const response = await fetchWithTimeout(
@@ -85,17 +90,19 @@ export async function emitWebhookEvent(userId, eventName, payload) {
         eventName,
         status: "error",
         message: `Webhook ${eventName} failed with ${response.status}.`,
-        payload: { event, response: text.slice(0, 500) },
+        payload: { event: loggedEvent, response: eventName === "email.ready_for_processing" ? "[redacted]" : text.slice(0, 500) },
       });
       console.warn(`Webhook ${eventName} failed with ${response.status}: ${text.slice(0, 300)}`);
+      await options.onDelivery?.({ status: "failed", httpStatus: response.status });
     } else {
       await logSystemEvent(userId, {
         category: "webhook",
         eventName,
         status: "success",
         message: `Webhook ${eventName} delivered.`,
-        payload: event,
+        payload: loggedEvent,
       });
+      await options.onDelivery?.({ status: "delivered" });
     }
   } catch (error) {
     await logSystemEvent(userId, {
@@ -103,10 +110,26 @@ export async function emitWebhookEvent(userId, eventName, payload) {
       eventName,
       status: "error",
       message: `Webhook ${eventName} delivery failed: ${error.message}`,
-      payload: event,
+      payload: loggedEvent,
     });
     console.warn(`Webhook ${eventName} delivery failed:`, error.message);
+    await options.onDelivery?.({ status: "failed", error: error.message });
   }
+}
+
+function redactWebhookEvent(event) {
+  if (event.event_name !== "email.ready_for_processing") return event;
+  return {
+    ...event,
+    payload: {
+      ...event.payload,
+      activity_callback: event.payload?.activity_callback ? { ...event.payload.activity_callback, url: "[redacted]" } : undefined,
+      email: event.payload?.email ? {
+        ...event.payload.email,
+        attachments: (event.payload.email.attachments ?? []).map(({ content_base64: _content, ...attachment }) => attachment),
+      } : undefined,
+    },
+  };
 }
 
 async function getWebhookSettings(userId) {

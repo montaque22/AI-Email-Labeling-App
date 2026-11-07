@@ -6,6 +6,7 @@ import { toNodeHandler } from "better-auth/node";
 import { auth, googleOAuthEnabled } from "./auth.js";
 import { ensureAiPromptsTable, registerAiPromptRoutes } from "./ai-prompts.js";
 import { ensureAttentionDashboardTables, registerAttentionDashboardRoutes } from "./attention-dashboard.js";
+import { ensureAutomationActivityTables, registerAutomationActivityRoutes } from "./automation-activity.js";
 import { registerBackgroundTaskRoutes } from "./background-tasks.js";
 import { ensureByoAiTables, registerByoAiRoutes } from "./byoai.js";
 import { ensureCalendarSubscriptionTables, registerCalendarSubscriptionRoutes } from "./calendar-subscriptions.js";
@@ -182,6 +183,7 @@ app.get("/api/db/health", async (_req, res) => {
 
 registerLabelRoutes(app);
 registerSettingsRoutes(app);
+registerAutomationActivityRoutes(app);
 registerBackgroundTaskRoutes(app);
 registerEmailAccountRoutes(app);
 registerInboxRoutes(app);
@@ -267,6 +269,7 @@ async function startServer() {
     await ensureEmailIndexTable();
     await ensureLabelsTable();
     await ensureSettingsTable();
+    await ensureAutomationActivityTables();
     await ensureAttentionDashboardTables();
     await ensureIntegrationTables();
     await ensureSystemLogsTable();

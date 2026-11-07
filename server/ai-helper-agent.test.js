@@ -63,6 +63,15 @@ describe("inbox agent policy", () => {
     expect(prompt).toContain("message-1");
   });
 
+  it("treats callback activity as externally reported rather than independently verified", () => {
+    const prompt = buildAiHelperSystemPrompt([], {
+      emailId: "message-1",
+      automationActivities: [{ source: "n8n", status: "completed", title: "Calendar event created" }],
+    });
+    expect(prompt).toContain("reported by external systems");
+    expect(prompt).toContain("Never claim Emailable performed or verified an external action");
+  });
+
   it("requires a structured draft artifact before claiming a Work mode draft exists", () => {
     const prompt = buildAiHelperSystemPrompt([], {
       accountId: "account-1",

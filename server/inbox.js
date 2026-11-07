@@ -39,6 +39,7 @@ import { modifyGmailMessageLabels } from "./integrations.js";
 import { UNEMAILABLE_SYSTEM_LABEL_KEY, UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
 import { emitWebhookEvent } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
+import { listAutomationActivities } from "./automation-activity.js";
 import { generateAiLabel, isAiActiveForUser } from "./byoai.js";
 import { getPollingProcessingJob } from "./polling.js";
 import { completeBackgroundTask, createBackgroundTask, failBackgroundTask, updateBackgroundTask, warnBackgroundTask } from "./background-tasks.js";
@@ -752,19 +753,22 @@ async function attachSingleRuleStatus(userId, message) {
 }
 
 async function attachSingleMessageMetadata(userId, message) {
-  const [messageWithRule, automationResults] = await Promise.all([
+  const [messageWithRule, automationResults, automationActivities] = await Promise.all([
     attachSingleRuleStatus(userId, message),
     listEmailAutomationResultsForMessage(userId, {
       accountEmail: message.accountEmail,
       accountId: message.accountId,
       emailId: message.id,
     }),
+    listAutomationActivities(userId, { accountId: message.accountId, emailId: message.id }),
   ]);
 
   return {
     ...messageWithRule,
     automationResults,
     automationResultCount: automationResults.length,
+    automationActivities,
+    automationActivityCount: automationActivities.length,
   };
 }
 

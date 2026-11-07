@@ -6,6 +6,7 @@ import nodemailer from "nodemailer";
 const DEFAULT_IMAP_MAILBOX = "INBOX";
 const DEFAULT_DRAFTS_MAILBOX = "Drafts";
 const DEFAULT_SENT_MAILBOX = "Sent";
+const POST_PROCESSING_ATTACHMENT_MAX_BYTES = Number(process.env.POST_PROCESSING_ATTACHMENT_MAX_BYTES) || 1_000_000;
 
 export async function withImapClient(account, fn, oauthAccessToken = "") {
   const metadata = account.metadata ?? {};
@@ -611,7 +612,19 @@ async function buildImapEmailContextInSession(client, account, found) {
     return null;
   }
 
-  const bodyText = extractTextFromRawMessage(message.source?.toString() ?? "");
+  const rawMessage = message.source?.toString() ?? "";
+  const parsedMessage = await simpleParser(rawMessage);
+  const bodyText = parsedMessage.text || extractTextFromRawMessage(rawMessage);
+  const attachments = collectImapAttachments(message.bodyStructure);
+  let remainingAttachmentBytes = POST_PROCESSING_ATTACHMENT_MAX_BYTES;
+  const postProcessingAttachments = (parsedMessage.attachments ?? []).map((attachment) => {
+    const size = attachment.size ?? attachment.content?.length ?? 0;
+    if (!attachment.content || size > remainingAttachmentBytes) {
+      return { filename: attachment.filename || "", type: attachment.contentType || "application/octet-stream", size, available: false, unavailableReason: "Attachment exceeds the configured post-processing payload limit." };
+    }
+    remainingAttachmentBytes -= size;
+    return { filename: attachment.filename || "", type: attachment.contentType || "application/octet-stream", size, available: true, contentBase64: attachment.content.toString("base64") };
+  });
   return {
     emailId: String(message.uid),
     threadId: String(message.uid),
@@ -623,9 +636,12 @@ async function buildImapEmailContextInSession(client, account, found) {
     subject: message.envelope?.subject ?? "",
     snippet: bodyText.slice(0, 300),
     bodyText,
+    bodyHtml: typeof parsedMessage.html === "string" ? parsedMessage.html : "",
+    headers: {},
+    attachments: postProcessingAttachments,
     receivedAt: (message.internalDate ?? message.envelope?.date ?? new Date()).toISOString(),
     isRead: hasImapFlag(message.flags, "\\Seen"),
-    hasAttachments: collectImapAttachments(message.bodyStructure).length > 0,
+    hasAttachments: attachments.length > 0,
   };
 }
 

@@ -32,6 +32,7 @@ import { deleteAllSystemLogs, exportSystemLogs, listSystemLogs, logSystemEvent }
 
 const API_KEY_PREFIX = "n8n";
 const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
+const POST_PROCESSING_ATTACHMENT_MAX_BYTES = Number(process.env.POST_PROCESSING_ATTACHMENT_MAX_BYTES) || 1_000_000;
 // One page of rules is the most the review page can select at once.
 const BULK_RULE_REVIEW_LIMIT = 50;
 // Rules reviewed in parallel. Each one is a provider round-trip (a Gmail modify call or an
@@ -2157,6 +2158,7 @@ async function probeAccountsForMessage(accounts, emailId, subject, includeThread
         const message = await fetchGmailMessageFullByAnyId(accessToken, emailId);
         const headers = getGmailHeaders(message);
         const bodyText = extractGmailTextBody(message.payload) || message.snippet || "";
+        const bodyHtml = extractGmailHtmlBody(message.payload);
         const receivedAt = message.internalDate
           ? new Date(Number(message.internalDate)).toISOString()
           : new Date(headers.date || Date.now()).toISOString();
@@ -2174,9 +2176,14 @@ async function probeAccountsForMessage(accounts, emailId, subject, includeThread
             fromEmail: extractEmailAddress(headers.from || ""),
             fromName: extractDisplayName(headers.from || "") || extractEmailAddress(headers.from || ""),
             to: formatEmailList(headers.to || ""),
+            cc: formatEmailList(headers.cc || ""),
+            bcc: formatEmailList(headers.bcc || ""),
             subject: headers.subject || "",
             snippet: bodyText.slice(0, 300),
             bodyText,
+            bodyHtml,
+            headers,
+            attachments: await collectGmailAttachmentsForPostProcessing(accessToken, message.id, message.payload),
             threadMessages,
             receivedAt,
             isRead: !Array.isArray(message.labelIds) || !message.labelIds.includes("UNREAD"),
@@ -4755,6 +4762,55 @@ function extractGmailTextBody(part) {
   }
 
   return "";
+}
+
+function extractGmailHtmlBody(part) {
+  if (!part) return "";
+  if (part.mimeType === "text/html" && part.body?.data) return decodeBase64Url(part.body.data);
+  for (const childPart of part.parts ?? []) {
+    const body = extractGmailHtmlBody(childPart);
+    if (body) return body;
+  }
+  return "";
+}
+
+function collectGmailAttachmentMetadata(part, attachments = []) {
+  if (!part) return attachments;
+  if (part.filename && part.body?.attachmentId) {
+    attachments.push({
+      attachmentId: part.body.attachmentId,
+      filename: part.filename,
+      type: part.mimeType || "application/octet-stream",
+      size: part.body.size ?? null,
+    });
+  }
+  for (const childPart of part.parts ?? []) collectGmailAttachmentMetadata(childPart, attachments);
+  return attachments;
+}
+
+async function collectGmailAttachmentsForPostProcessing(accessToken, emailId, payload) {
+  const attachments = collectGmailAttachmentMetadata(payload);
+  let remaining = POST_PROCESSING_ATTACHMENT_MAX_BYTES;
+  const results = [];
+  for (const attachment of attachments) {
+    if (!attachment.size || attachment.size > remaining) {
+      results.push({ ...attachment, available: false, unavailableReason: attachment.size > remaining ? "Attachment exceeds the configured post-processing payload limit." : "Attachment size is unavailable." });
+      continue;
+    }
+    try {
+      const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(emailId)}/attachments/${encodeURIComponent(attachment.attachmentId)}`;
+      const response = await providerFetch(url, accessToken, { method: "GET" });
+      const body = await response.json();
+      const contentBase64 = String(body.data || "").replace(/-/g, "+").replace(/_/g, "/");
+      const byteLength = Buffer.byteLength(contentBase64, "base64");
+      if (!contentBase64 || byteLength > remaining) throw new Error("Attachment content exceeds the configured payload limit.");
+      remaining -= byteLength;
+      results.push({ ...attachment, available: true, contentBase64 });
+    } catch (error) {
+      results.push({ ...attachment, available: false, unavailableReason: error.message || "Attachment content could not be retrieved." });
+    }
+  }
+  return results;
 }
 
 function decodeBase64Url(value) {

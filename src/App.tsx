@@ -73,8 +73,10 @@ import { CalendarPage } from "./components/calendar/CalendarPage";
 import { TasksPage } from "./components/tasks/TasksPage";
 import { BackgroundTaskDrawer } from "./components/background-tasks/BackgroundTaskDrawer";
 import { PwaUpdatePrompt } from "./components/PwaUpdatePrompt";
+import { ActivityCallbackSettings } from "./components/settings/ActivityCallbackSettings";
 import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/rules/RuleProviderApplyNotice";
 import { InboxSelectAllBanner } from "./components/inbox/InboxSelectAllBanner";
+import { AutomationActivityPanel, type AutomationActivity } from "./components/inbox/AutomationActivityPanel";
 import { InboxViewToggle } from "./components/inbox/InboxViewToggle";
 import { shouldLockInboxPageScroll } from "./components/inbox/inbox-scroll-lock";
 import { AiHelperSessionResetButton } from "./components/inbox/AiHelperSessionResetButton";
@@ -774,6 +776,8 @@ type InboxMessageDetail = {
   rule?: InboxRuleStatus | null;
   automationResults?: InboxAutomationResult[];
   automationResultCount?: number;
+  automationActivities?: AutomationActivity[];
+  automationActivityCount?: number;
 };
 
 type InboxThreadMessage = {
@@ -990,7 +994,6 @@ const configurationNavItems = navItems.filter((item) => item.id === "settings");
 const aiPromptSubItems = [
   { id: "ai-byoai" as const, label: "BYOAI" },
   { id: "ai-draft-reply" as const, label: "Reply Prompt" },
-  { id: "ai-prompt-library" as const, label: "Prompts" },
 ];
 
 const settingsSubItems = [
@@ -5387,6 +5390,16 @@ function InboxAiHelperPanel({
           text: emailContext.bodyText,
           threadId: emailContext.threadId,
           to: emailContext.to,
+          automationActivities: (emailContext.automationActivities ?? []).slice(0, 20).map((activity) => ({
+            source: activity.source,
+            status: activity.status,
+            title: activity.title,
+            description: activity.description,
+            details: activity.details,
+            error: activity.error,
+            reportedStartedAt: activity.reportedStartedAt,
+            reportedEndedAt: activity.reportedEndedAt,
+          })),
         } : null,
         prompt,
         sessionId,
@@ -6738,7 +6751,7 @@ function InboxMessagePushView({
 
           {isLoading ? <p className="rounded-xl border border-white/70 bg-white/60 p-4 text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-          <InboxAttachedAutomations results={detail?.automationResults ?? []} />
+          {detail ? <AutomationActivityPanel accountId={detail.accountId} emailId={detail.id} initialActivities={detail.automationActivities} /> : null}
           {commitment ? (
             <InboxCommitmentPanel
               commitment={commitment}
@@ -7030,7 +7043,7 @@ function InboxMessageModal({
           <EmailReaderWorkspace mode={mode} onModeChange={onModeChange} workPane={workPane} readPane={<div className="max-h-[calc(92vh-164px)] overflow-y-auto px-5 pb-10 pt-5">
           {isLoading ? <p className="text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-          <InboxAttachedAutomations results={detail?.automationResults ?? []} />
+          {detail ? <AutomationActivityPanel accountId={detail.accountId} emailId={detail.id} initialActivities={detail.automationActivities} /> : null}
           {summary.attention?.explanation ? <p className="mb-4 rounded-xl border border-violet-100 bg-violet-50/70 px-4 py-3 text-sm text-violet-900">{summary.attention.explanation}</p> : null}
           {commitment ? (
             <InboxCommitmentPanel
@@ -11399,7 +11412,7 @@ function AiPromptsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
       <Card>
         <CardHeader>
           <CardTitle>Artificial Intelligence</CardTitle>
-          <CardDescription>Configure Emailable's AI providers, tools, and custom automations.</CardDescription>
+          <CardDescription>Configure Emailable's AI providers and reply behavior. External post-processing is configured under Settings → Webhooks.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="divide-y divide-zinc-200 rounded-md border border-zinc-200">
@@ -11412,19 +11425,6 @@ function AiPromptsPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
                 <p className="text-sm font-medium text-zinc-950">BYOAI</p>
                 <p className="mt-1 text-sm text-zinc-500">
                   Add AI platforms and enable Emailable-managed labeling and reply drafting.
-                </p>
-              </div>
-              <ChevronRight className="h-4 w-4 text-zinc-400" />
-            </button>
-            <button
-              className="flex w-full cursor-pointer items-center justify-between gap-4 px-4 py-4 text-left hover:bg-zinc-50"
-              onClick={() => onNavigate("ai-prompt-library")}
-              type="button"
-            >
-              <div>
-                <p className="text-sm font-medium text-zinc-950">Prompts</p>
-                <p className="mt-1 text-sm text-zinc-500">
-                  Create custom AI system messages that can run after emails are labeled.
                 </p>
               </div>
               <ChevronRight className="h-4 w-4 text-zinc-400" />
@@ -13546,8 +13546,15 @@ function WebhookPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <pre className="overflow-x-auto rounded-md bg-zinc-950 p-3 text-xs text-white">
-            {JSON.stringify({ event_name: "string", payload: {}, timestamp: new Date().toISOString() }, null, 2)}
+            {JSON.stringify({ event_id: "uuid", event_name: "string", schema_version: "1.0", payload: {}, timestamp: new Date().toISOString() }, null, 2)}
           </pre>
+          <EndpointDoc
+            method="EVENT"
+            path="email.ready_for_processing"
+            title="Email Ready for Processing"
+            notes={["Fired once an email has been ingested, classified, and its labels have been committed.", "Includes the available body, headers, attachment availability, classification, and the per-user activity callback URL. Delivery is asynchronous and attempted once."]}
+            response={{ event_id: "event-uuid", event_name: "email.ready_for_processing", schema_version: "1.0", payload: { email: { id: "message-id", body: { text: "Complete email text", html: "<p>Complete email HTML</p>" }, attachments: [{ filename: "invoice.pdf", available: false, unavailable_reason: "Attachment content was not loaded during processing." }] }, classification: { labels: ["Finance"], attention: null }, activity_callback: { url: "https://emailable.example/api/v1/activity-callbacks/secret", schema_version: "1.0" } }, timestamp: "2026-11-07T18:14:02.000Z" }}
+          />
           <EndpointDoc
             method="EVENT"
             path="email.drafted"
@@ -13614,6 +13621,8 @@ function WebhookPage() {
           />
         </CardContent>
       </Card>
+
+      <ActivityCallbackSettings />
     </div>
   );
 }
