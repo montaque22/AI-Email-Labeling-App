@@ -66,7 +66,7 @@ function AttentionPriorityRow({
         onChange={() => onToggleSelection(message)}
         type="checkbox"
       />
-      <button className="flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500" onClick={() => onOpen(message)} type="button">
+      <button className="col-start-2 row-start-1 flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500" data-attention-row-content onClick={() => onOpen(message)} type="button">
         <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-sm font-medium">{attentionSenderInitial(message)}</span>
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
@@ -84,7 +84,7 @@ function AttentionPriorityRow({
         <span className="shrink-0 self-start pt-1 text-xs text-zinc-500 @[40rem]/priority-row:self-center @[40rem]/priority-row:pt-0 @[40rem]/priority-row:text-sm">{formatAttentionDate(message.date)}</span>
       </button>
       <div className={cn(
-        "col-start-2 row-start-2 flex min-w-0 flex-wrap items-center justify-end @[40rem]/priority-row:col-start-3 @[40rem]/priority-row:row-start-1 @[40rem]/priority-row:flex-nowrap",
+        "col-start-2 row-start-2 flex w-full min-w-0 flex-nowrap items-center justify-end @[40rem]/priority-row:col-start-3 @[40rem]/priority-row:row-start-1 @[40rem]/priority-row:w-auto",
         isMobileSelectionMode && "hidden @[40rem]/priority-row:flex",
       )} data-attention-row-actions>
         <ActionButton label={message.followed ? "Remove bookmark" : "Bookmark email"} onClick={() => onToggleFollow(message)}>

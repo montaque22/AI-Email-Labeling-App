@@ -119,11 +119,14 @@ describe("AttentionDashboard", () => {
   it("wraps row actions based on the message-list width instead of the viewport", () => {
     const { container } = renderDashboard();
     const row = container.querySelector("[data-attention-row]");
+    const content = container.querySelector("[data-attention-row-content]");
     const actions = container.querySelector("[data-attention-row-actions]");
     expect(row?.className).toContain("@container/priority-row");
+    expect(content?.className).toContain("col-start-2");
     expect(actions?.className).toContain("row-start-2");
     expect(actions?.className).toContain("@[40rem]/priority-row:row-start-1");
-    expect(actions?.className).toContain("flex-wrap");
+    expect(actions?.className).toContain("flex-nowrap");
+    expect(actions?.className).toContain("w-full");
   });
 
   it("keeps the inbox view toggle in the dashboard title header", () => {
