@@ -30,6 +30,7 @@ import { logSystemEvent } from "./system-logs.js";
 import { emitReadyForProcessingEvent } from "./automation-activity.js";
 import { upsertEmailAutomationResult } from "./email-index.js";
 import {
+  buildAiHelperExecutionContext,
   buildAiHelperMessages,
   buildAiHelperSystemPrompt,
   buildAiHelperVerificationPrompt,
@@ -69,6 +70,8 @@ const AI_LABEL_NAME_MAX_LENGTH = 25;
 const AI_LABEL_REASON_MAX_LENGTH = 200;
 const AI_HELPER_HISTORY_LIMIT = 60;
 const AI_HELPER_MEMORY_TTL_MS = 24 * 60 * 60 * 1000;
+const AI_AGENT_MAX_STEPS = 15;
+const AI_AGENT_TIMEOUT_MS = 90_000;
 const CUSTOM_PROMPT_AUTOMATION_CONCURRENCY = 2;
 const aiHelperMemory = new Map();
 const DEFAULT_DRAFT_REPLY_SYSTEM_PROMPT = `You are an email reply assistant.
@@ -833,7 +836,13 @@ export function registerByoAiRoutes(app) {
       res.flushHeaders?.();
       res.write(`${JSON.stringify({ type: "working" })}\n`);
       res.flush?.();
-      const result = await generateAiHelperChat(req.user.id, input.request);
+      const result = await generateAiHelperChat(req.user.id, input.request, {
+        onExecutionEvent: (event) => {
+          if (res.writableEnded || res.destroyed) return;
+          res.write(`${JSON.stringify({ event, type: "execution" })}\n`);
+          res.flush?.();
+        },
+      });
       for (const delta of chunkTextForStreaming(result.message)) {
         res.write(`${JSON.stringify({ delta, type: "text-delta" })}\n`);
         res.flush?.();
@@ -1610,7 +1619,7 @@ function filterMcpClientsForPrompt(clients, selectedTools) {
     .filter(Boolean);
 }
 
-async function generateAiHelperChat(userId, request) {
+async function generateAiHelperChat(userId, request, options = {}) {
   await assertAiEnabled(userId);
   pruneAiHelperMemory();
   const memory = getAiHelperSessionMemory(userId, request.sessionId);
@@ -1620,13 +1629,21 @@ async function generateAiHelperChat(userId, request) {
   const previousHistory = currentMessageIsInHistory ? history.slice(0, -1) : history;
   const toolResults = [];
   const labels = await getAiHelperLabelCatalog(userId);
+  const mcpClients = await buildAiHelperMcpClients(userId);
+  const executionContext = buildAiHelperExecutionContext({
+    applicationContext: request.applicationContext,
+    emailContext: request.emailContext,
+    sessionId: request.sessionId,
+    toolCatalog: buildAiHelperToolCatalog(mcpClients),
+  });
   const aiResponse = await callBestAvailableAi(userId, {
-    systemPrompt: buildAiHelperSystemPrompt(labels, request.emailContext),
+    systemPrompt: buildAiHelperSystemPrompt(labels, executionContext),
     messages: buildAiHelperMessages(previousHistory, request.prompt),
     responseShape: "text",
     toolChoice: "auto",
   }, {
-    mcpClients: await buildAiHelperMcpClients(userId),
+    mcpClients,
+    onToolEvent: options.onExecutionEvent,
     onToolResult: (result) => toolResults.push(result),
     toolExecutionContext: {
       defaultTaskSourceEmailId: "",
@@ -1661,6 +1678,19 @@ async function generateAiHelperChat(userId, request) {
     artifact,
     proposedBulkAction,
   };
+}
+
+function buildAiHelperToolCatalog(clients) {
+  return clients.flatMap((client) => {
+    const selected = new Set(client.selectedTools ?? []);
+    return (client.tools ?? [])
+      .filter((entry) => selected.has(entry.name))
+      .map((entry) => ({
+        description: entry.description || "",
+        name: entry.name,
+        source: client.isSystem ? "emailable" : client.name || "connected-mcp",
+      }));
+  });
 }
 
 async function getAiHelperLabelCatalog(userId) {
@@ -2387,6 +2417,7 @@ export async function callBestAvailableAi(userId, prompt, options = {}) {
     try {
       return await callAiPlatformWithMetrics(userId, platform, prompt, {
         mcpClients,
+        onToolEvent: options.onToolEvent,
         onToolResult: options.onToolResult,
         toolExecutionContext: { ...(options.toolExecutionContext ?? {}), userId },
         toolChoice: options.toolChoice,
@@ -2462,7 +2493,7 @@ async function callAiPlatformWithMetrics(userId, platform, prompt, options = {})
 
 async function callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, responseShape, responseSchema, messages }, options = {}) {
   const model = createSdkModel(platform);
-  const tools = buildSdkTools(options.mcpClients ?? [], options.onToolResult, options.toolExecutionContext);
+  const tools = buildSdkTools(options.mcpClients ?? [], options.onToolResult, options.toolExecutionContext, options.onToolEvent);
   const hasTools = Object.keys(tools).length > 0;
   const promptInput = messages?.length
     ? { messages: normalizeSdkMessages(messages) }
@@ -2482,6 +2513,7 @@ async function callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, respo
   }
 
   const result = await generateText({
+    abortSignal: AbortSignal.timeout(AI_AGENT_TIMEOUT_MS),
     model,
     system: systemPrompt,
     ...promptInput,
@@ -2494,14 +2526,14 @@ async function callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, respo
             : { toolChoice: "auto" },
         }
       : {}),
-    stopWhen: stepCountIs(10),
+    stopWhen: stepCountIs(AI_AGENT_MAX_STEPS),
     temperature: 0.2,
   });
 
-  if (Array.isArray(result.steps) && result.steps.length >= 10) {
+  if (Array.isArray(result.steps) && result.steps.length >= AI_AGENT_MAX_STEPS) {
     const lastStep = result.steps[result.steps.length - 1];
     if (Array.isArray(lastStep.toolCalls) && lastStep.toolCalls.length > 0) {
-      return "I am having trouble completing this because it requires more than 10 tool calls. Please narrow the request with a sender, label, date range, or account so I can finish it accurately.";
+      return `I reached the ${AI_AGENT_MAX_STEPS}-step execution limit before I could verify completion. I preserved the results gathered so far, but I cannot claim the remaining work is complete.`;
     }
   }
 
@@ -2547,9 +2579,16 @@ function normalizeSdkMessages(messages = []) {
     .filter((message) => message.content.trim());
 }
 
-function buildSdkTools(clients, onToolResult, executionContext = {}) {
+function buildSdkTools(clients, onToolResult, executionContext = {}, onToolEvent) {
   const tools = {};
   const usedNames = new Set();
+  const notifyToolEvent = (event) => {
+    try {
+      onToolEvent?.(event);
+    } catch {
+      // UI progress reporting must never interrupt the agent's actual tool work.
+    }
+  };
   const addTool = ({ name, description, inputSchema, execute, useSystemDefaults = false }) => {
     const sdkName = uniqueSdkToolName(name, usedNames);
     tools[sdkName] = tool({
@@ -2569,6 +2608,7 @@ function buildSdkTools(clients, onToolResult, executionContext = {}) {
             payload: { input: normalizedInput, toolName: name },
           });
         }
+        notifyToolEvent({ input: normalizedInput, phase: "started", toolName: name });
         try {
           const result = await execute(normalizedInput);
           if (typeof onToolResult === "function") {
@@ -2583,8 +2623,13 @@ function buildSdkTools(clients, onToolResult, executionContext = {}) {
               payload: { input: normalizedInput, result, toolName: name },
             });
           }
+          notifyToolEvent({ phase: "completed", toolName: name });
           return result;
         } catch (error) {
+          const failure = { error: error.message || "Tool execution failed.", ok: false, toolName: name };
+          if (typeof onToolResult === "function") {
+            onToolResult({ input: normalizedInput, result: failure, toolName: name });
+          }
           if (auditUserId) {
             await logSystemEvent(auditUserId, {
               category: "ai",
@@ -2594,7 +2639,8 @@ function buildSdkTools(clients, onToolResult, executionContext = {}) {
               payload: { error: error.message, input: normalizedInput, toolName: name },
             });
           }
-          throw error;
+          notifyToolEvent({ error: error.message, phase: "failed", toolName: name });
+          return failure;
         }
       },
     });
@@ -3036,6 +3082,7 @@ function parseAiHelperChatInput(body) {
       })).filter((message) => message.text)
     : [];
   const emailContext = sanitizeAiHelperEmailContext(body?.emailContext);
+  const applicationContext = sanitizeAiHelperApplicationContext(body?.applicationContext);
   if (!prompt) {
     return { ok: false, error: "Ask the AI Helper a question." };
   }
@@ -3043,7 +3090,22 @@ function parseAiHelperChatInput(body) {
     return { ok: false, error: "AI Helper prompt must be 2,000 characters or less." };
   }
 
-  return { ok: true, request: { conversationHistory, emailContext, prompt, sessionId } };
+  return { ok: true, request: { applicationContext, conversationHistory, emailContext, prompt, sessionId } };
+}
+
+function sanitizeAiHelperApplicationContext(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { accountIds: [], mode: "work", selectedEmailIds: [], surface: "email-workspace" };
+  }
+  const strings = (items, limit) => Array.isArray(items)
+    ? items.filter((item) => typeof item === "string" && item.trim()).slice(0, limit).map((item) => item.trim().slice(0, 500))
+    : [];
+  return {
+    accountIds: strings(value.accountIds, 50),
+    mode: value.mode === "read" ? "read" : "work",
+    selectedEmailIds: strings(value.selectedEmailIds, 50),
+    surface: typeof value.surface === "string" ? value.surface.trim().slice(0, 80) : "email-workspace",
+  };
 }
 
 function sanitizeAiHelperEmailContext(value) {

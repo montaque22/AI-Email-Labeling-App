@@ -81,6 +81,7 @@ import { InboxViewToggle } from "./components/inbox/InboxViewToggle";
 import { InboxPageHeader } from "./components/inbox/InboxPageHeader";
 import { shouldLockInboxPageScroll } from "./components/inbox/inbox-scroll-lock";
 import { AiHelperSessionResetButton } from "./components/inbox/AiHelperSessionResetButton";
+import { AgentExecutionStatus, isAgentExecutionEvent, type AgentExecutionEvent } from "./components/inbox/AgentExecutionStatus";
 import { AttentionDashboard, type AttentionCategory, type AttentionDashboardData, type AttentionMessage } from "./components/inbox/AttentionDashboard";
 import { AttentionTrashConfirmation } from "./components/inbox/AttentionTrashConfirmation";
 import { LiquidActionBar } from "./components/inbox/LiquidActionBar";
@@ -2473,29 +2474,43 @@ function InboxPage({
     return null;
   }
 
+  function updateFollowedState(message: InboxMessage | AttentionMessage, followed: boolean) {
+    const messageKey = getInboxMessageKey(message as InboxMessage);
+    setAttentionDashboard((current) => current ? updateAttentionDashboardMessage(current, message, { followed }) : current);
+    setMessages((current) => current.map((item) => getInboxMessageKey(item) === messageKey ? { ...item, followed } : item));
+    setSelectedMessage((current) => current && getInboxMessageKey(current) === messageKey ? { ...current, followed } : current);
+    setAttentionSelectedMessages((current) => current.map((item) => getInboxMessageKey(item as InboxMessage) === messageKey ? { ...item, followed } : item));
+  }
+
   async function updateAttentionPreference(message: InboxMessage | AttentionMessage, action: string, category?: AttentionCategory, options: { isUndo?: boolean; refresh?: boolean } = {}) {
-    const nextFollowed = action === "follow" ? true : action === "unfollow" ? false : undefined;
-    if (typeof nextFollowed === "boolean") {
-      setAttentionDashboard((current) => current ? updateAttentionDashboardMessage(current, message, { followed: nextFollowed }) : current);
-    }
-    const response = await fetchNoStore("/api/inbox/attention-preference", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...messageToBulkPayload(message as InboxMessage), action, category }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      showInboxToast(data.error ?? "Could not update that recommendation.", "error");
-      await loadAttentionDashboard();
-      return;
-    }
-    if (typeof nextFollowed === "boolean" && !options.isUndo) {
-      showInboxToast(nextFollowed ? "Email bookmarked." : "Bookmark removed.", "success", {
-        actionLabel: "Undo",
-        onAction: () => void updateAttentionPreference(message, nextFollowed ? "unfollow" : "follow", category, { isUndo: true }),
+    const nextFollowed = action === "follow" ? true : action === "unfollow" || action === "return" ? false : undefined;
+    const previousFollowed = Boolean(message.followed);
+    if (typeof nextFollowed === "boolean") updateFollowedState(message, nextFollowed);
+    try {
+      const response = await fetchNoStore("/api/inbox/attention-preference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...messageToBulkPayload(message as InboxMessage), action, category }),
       });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (typeof nextFollowed === "boolean") updateFollowedState(message, previousFollowed);
+        showInboxToast(data.error ?? "Could not update that recommendation.", "error");
+        await loadAttentionDashboard();
+        return;
+      }
+      if ((action === "follow" || action === "unfollow") && typeof nextFollowed === "boolean" && !options.isUndo) {
+        showInboxToast(nextFollowed ? "Email bookmarked." : "Bookmark removed.", "success", {
+          actionLabel: "Undo",
+          onAction: () => void updateAttentionPreference(message, nextFollowed ? "unfollow" : "follow", category, { isUndo: true }),
+        });
+      }
+      if (options.refresh !== false) await loadAttentionDashboard();
+    } catch {
+      if (typeof nextFollowed === "boolean") updateFollowedState(message, previousFollowed);
+      showInboxToast("Could not update that recommendation.", "error");
+      await loadAttentionDashboard();
     }
-    if (options.refresh !== false) await loadAttentionDashboard();
   }
 
   async function selectAllAttentionCategory(category: "attention" | "interest") {
@@ -5041,6 +5056,7 @@ function InboxAiHelperPanel({
     messages: InboxMessage[];
   } | null>(null);
   const [isThinking, setIsThinking] = useState(false);
+  const [executionEvent, setExecutionEvent] = useState<AgentExecutionEvent | null>(null);
   const [isClosing, setIsClosing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -5371,12 +5387,19 @@ function InboxAiHelperPanel({
     prompt: string,
     conversationHistory: InboxAiChatMessage[],
     onText: (text: string) => void,
+    onExecutionEvent: (event: AgentExecutionEvent) => void,
   ) {
     const response = await fetch("/api/byoai/helper-chat", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        applicationContext: {
+          accountIds: accounts.map((account) => account.id),
+          mode: variant === "workspace" ? "work" : "read",
+          selectedEmailIds: selectedMessages.map((message) => message.id),
+          surface: variant === "workspace" ? "email-workspace" : `inbox-${inboxMode}`,
+        },
         conversationHistory: conversationHistory.slice(-INBOX_AI_HELPER_HISTORY_LIMIT).map((message) => ({
           role: message.role,
           text: message.artifact ? `${message.text}\n\n${formatReplyDraftForAgent(message.artifact)}` : message.text,
@@ -5428,6 +5451,8 @@ function InboxAiHelperPanel({
         const event = JSON.parse(line) as Record<string, unknown>;
         if (event.type === "working") {
           onText("Working…");
+        } else if (event.type === "execution" && isAgentExecutionEvent(event.event)) {
+          onExecutionEvent(event.event);
         } else if (event.type === "text-delta" && typeof event.delta === "string") {
           streamedText += event.delta;
           onText(streamedText);
@@ -5494,7 +5519,7 @@ function InboxAiHelperPanel({
     }
 
     const latestAffectedMessages = getLatestAffectedMessagesFromChat();
-    if (latestAffectedMessages.length === 1 && shouldOpenLatestAffectedEmail(prompt)) {
+    if (variant !== "workspace" && latestAffectedMessages.length === 1 && shouldOpenLatestAffectedEmail(prompt)) {
       const target = latestAffectedMessages[0];
       void onOpenMessage(target);
       addMessage({
@@ -5598,12 +5623,13 @@ function InboxAiHelperPanel({
     }
 
     setIsThinking(true);
+    setExecutionEvent(null);
     const streamingMessageId = Date.now() + conversationHistory.length + 1;
     setMessages((current) => [...current, { id: streamingMessageId, role: "assistant", text: "" }]);
     try {
       const answer = await askAiHelper(prompt, conversationHistory, (text) => {
         setMessages((current) => current.map((message) => message.id === streamingMessageId ? { ...message, text } : message));
-      });
+      }, setExecutionEvent);
       if (answer.proposedBulkAction) {
         setMessages((current) => current.filter((message) => message.id !== streamingMessageId));
         const fallbackEmails = answer.affectedEmails.map(affectedEmailToInboxMessage);
@@ -5645,6 +5671,7 @@ function InboxAiHelperPanel({
         : message));
     } finally {
       setIsThinking(false);
+      setExecutionEvent(null);
     }
   }
 
@@ -5849,10 +5876,12 @@ function InboxAiHelperPanel({
         ))}
         {isThinking ? (
           <div className="flex justify-start">
-            <div className="inline-flex items-center gap-2 rounded-xl border border-white/70 bg-white/65 px-3 py-2 text-sm text-zinc-600 shadow-sm backdrop-blur-xl">
-              <Loader />
-              Thinking...
-            </div>
+            {executionEvent ? <AgentExecutionStatus event={executionEvent} /> : (
+              <div className="inline-flex items-center gap-2 rounded-xl border border-white/70 bg-white/65 px-3 py-2 text-sm text-zinc-600 shadow-sm backdrop-blur-xl">
+                <Loader />
+                Thinking...
+              </div>
+            )}
           </div>
         ) : null}
         <div ref={messagesEndRef} />

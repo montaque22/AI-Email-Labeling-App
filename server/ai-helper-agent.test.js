@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAiHelperExecutionContext,
   buildAiHelperMessages,
   buildAiHelperSystemPrompt,
   buildAiHelperVerificationPrompt,
@@ -30,6 +31,44 @@ describe("inbox agent policy", () => {
     expect(prompt).toContain("You decide which tool properties and filters are needed");
     expect(prompt).toContain("Use the calculate tool whenever the answer requires arithmetic");
     expect(prompt).toContain("inspect your tool results again");
+    expect(prompt).toContain("not a command classifier");
+    expect(prompt).toContain("Discover capabilities from their names, descriptions, and schemas");
+    expect(prompt).toContain("Before asking the user a question");
+  });
+
+  it("builds structured runtime context without adding it to the user message", () => {
+    const context = buildAiHelperExecutionContext({
+      applicationContext: {
+        accountIds: ["account-1"],
+        mode: "work",
+        selectedEmailIds: ["message-1"],
+        surface: "email-workspace",
+      },
+      emailContext: { emailId: "message-1", subject: "Proposal" },
+      sessionId: "session-1",
+      toolCatalog: [
+        { name: "find_email", source: "emailable" },
+        { name: "search_web", source: "research-server" },
+      ],
+    });
+
+    expect(context.immediate).toMatchObject({
+      accountIds: ["account-1"],
+      mode: "work",
+      selectedEmailIds: ["message-1"],
+      surface: "email-workspace",
+    });
+    expect(context.immediate.activeEmail).toMatchObject({ emailId: "message-1" });
+    expect(context.capabilities).toMatchObject({ toolCount: 2, webResearchAvailable: true });
+    expect(buildAiHelperMessages([], "Research the sender")).toEqual([{ role: "user", content: "Research the sender" }]);
+  });
+
+  it("does not claim web research when no registered tool provides it", () => {
+    const context = buildAiHelperExecutionContext({ toolCatalog: [{ name: "find_email", source: "emailable" }] });
+    const prompt = buildAiHelperSystemPrompt([], context);
+
+    expect(prompt).toContain("No web-research capability is registered");
+    expect(prompt).toContain("Do not claim to browse the public internet");
   });
 
   it("does not contain user-specific accounts or labels", () => {
