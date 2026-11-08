@@ -5,7 +5,7 @@ import { runDetachedTask, runGuardedStep } from "./detached-tasks.js";
 import { searchPollingCandidates } from "./integrations.js";
 import { requireSession } from "./session.js";
 import { logSystemEvent } from "./system-logs.js";
-import { emitWebhookEvent } from "./webhooks.js";
+import { emitWebhookEventDetached } from "./webhooks.js";
 
 const POLLING_WORKER_INTERVAL_MS = 60_000;
 const activePollingUsers = new Set();
@@ -352,7 +352,7 @@ async function pollUser(settings, trigger, options = {}) {
     });
 
     if (uniqueCandidates.length > 0) {
-      await emitWebhookEvent(settings.userId, "email.received", {
+      emitWebhookEventDetached(settings.userId, "email.received", {
         emails: uniqueCandidates.map(({ account, email }) => ({
           accountEmail: account.email,
           to: email.to || account.email,

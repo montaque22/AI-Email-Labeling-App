@@ -25,7 +25,7 @@ import {
   tryApplyUnemailableLabel,
 } from "./integrations.js";
 import { UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
-import { emitWebhookEvent } from "./webhooks.js";
+import { emitWebhookEventDetached } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import { emitReadyForProcessingEvent } from "./automation-activity.js";
 import { upsertEmailAutomationResult } from "./email-index.js";
@@ -1061,7 +1061,7 @@ async function generateAiReply(userId, request) {
     ? await getValidEmailAccountAccessToken(target.account)
     : await getImapAccessToken(target.account);
   const draft = await createProviderReplyDraft({ accessToken, account: target.account, input });
-  await emitWebhookEvent(userId, "email.drafted", buildDraftWebhookPayload({ account: target.account, input, draft }));
+  emitWebhookEventDetached(userId, "email.drafted", buildDraftWebhookPayload({ account: target.account, input, draft }));
 
   return {
     action: "draft_created",

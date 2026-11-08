@@ -11,7 +11,7 @@ import {
   syncLabelToConnectedAccounts,
   tryDeleteLabelEverywhere,
 } from "./label-sync.js";
-import { emitWebhookEvent } from "./webhooks.js";
+import { emitWebhookEventDetached } from "./webhooks.js";
 
 export const SYSTEM_LABEL_KEY = "processed";
 export const UNEMAILABLE_SYSTEM_LABEL_KEY = "unemailable";
@@ -64,7 +64,7 @@ export function registerLabelRoutes(app) {
     try {
       const label = await createLabel(req.user.id, input.name, input.description);
       await syncLabelToConnectedAccounts(req.user.id, label, "create");
-      await emitWebhookEvent(req.user.id, "label.created", { label });
+      emitWebhookEventDetached(req.user.id, "label.created", { label });
       res.status(201).json({ label });
     } catch (error) {
       handleDbError(res, error);
@@ -84,7 +84,7 @@ export function registerLabelRoutes(app) {
 
       for (const label of labels) {
         await syncLabelToConnectedAccounts(req.user.id, label, "create");
-        await emitWebhookEvent(req.user.id, "label.created", { label });
+        emitWebhookEventDetached(req.user.id, "label.created", { label });
       }
 
       res.status(201).json({ imported: labels.length, labels });
@@ -134,7 +134,7 @@ export function registerLabelRoutes(app) {
 
       for (const label of labels) {
         await syncLabelToConnectedAccounts(req.user.id, label, "create");
-        await emitWebhookEvent(req.user.id, "label.created", { label, source: "provider" });
+        emitWebhookEventDetached(req.user.id, "label.created", { label, source: "provider" });
       }
 
       res.status(201).json({ imported: labels.length, labels });
@@ -166,7 +166,7 @@ export function registerLabelRoutes(app) {
         await renameLabelInEmailRules(req.user.id, existingLabel.name, label.name);
       }
 
-      await emitWebhookEvent(req.user.id, "label.modified", {
+      emitWebhookEventDetached(req.user.id, "label.modified", {
         label,
         changes: buildChangedFields(existingLabel, label, ["name", "description"]),
         previous: existingLabel,
@@ -193,7 +193,7 @@ export function registerLabelRoutes(app) {
         const result = await tryDeleteLabelEverywhere(req.user.id, id);
         if (result.deleted && label?.name) {
           await removeLabelFromEmailRules(req.user.id, label.name);
-          await emitWebhookEvent(req.user.id, "label.deleted", { label });
+          emitWebhookEventDetached(req.user.id, "label.deleted", { label });
         }
         results.push(result);
       }
@@ -220,7 +220,7 @@ export function registerLabelRoutes(app) {
 
       if (result.deleted && label?.name) {
         await removeLabelFromEmailRules(req.user.id, label.name);
-        await emitWebhookEvent(req.user.id, "label.deleted", { label });
+        emitWebhookEventDetached(req.user.id, "label.deleted", { label });
       }
 
       res.json(result);

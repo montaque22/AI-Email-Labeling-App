@@ -37,7 +37,7 @@ import {
 } from "./imap-provider.js";
 import { modifyGmailMessageLabels } from "./integrations.js";
 import { UNEMAILABLE_SYSTEM_LABEL_KEY, UNEMAILABLE_SYSTEM_LABEL_NAME } from "./labels.js";
-import { emitWebhookEvent } from "./webhooks.js";
+import { emitWebhookEventDetached } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import { listAutomationActivities } from "./automation-activity.js";
 import { generateAiLabel, isAiActiveForUser } from "./byoai.js";
@@ -800,7 +800,7 @@ async function createInboxDraft(userId, compose) {
     throw error;
   }
 
-  await emitWebhookEvent(userId, "email.drafted", {
+  emitWebhookEventDetached(userId, "email.drafted", {
     to: splitAddressList(compose.to),
     from: account.email,
     subject: compose.subject,
@@ -900,7 +900,7 @@ async function sendInboxEmail(userId, compose) {
     },
   });
 
-  await emitWebhookEvent(userId, "email.sent", {
+  emitWebhookEventDetached(userId, "email.sent", {
     to: splitAddressList(compose.to),
     from: account.email,
     subject: compose.subject,
@@ -983,7 +983,7 @@ async function relabelInboxMessages(userId, action) {
         throw new Error(`${account.provider} relabel is not implemented yet`);
       }
 
-      await emitWebhookEvent(userId, "email.labels_updated", {
+      emitWebhookEventDetached(userId, "email.labels_updated", {
         emailId: message.emailId,
         accountEmail: account.email,
         added: [targetLabel.name],
@@ -1083,7 +1083,7 @@ async function setInboxMessagesLabel(userId, action) {
         throw new Error(`${account.provider} label updates are not implemented yet`);
       }
 
-      await emitWebhookEvent(userId, "email.labels_updated", {
+      emitWebhookEventDetached(userId, "email.labels_updated", {
         emailId: message.emailId,
         accountEmail: account.email,
         added: targetLabel ? [targetLabel.name] : [],
@@ -1272,7 +1272,7 @@ async function archiveProviderMessage(userId, account, message) {
     throw new Error(`${account.provider} archive is not implemented yet`);
   }
 
-  await emitWebhookEvent(userId, "email.archived", {
+  emitWebhookEventDetached(userId, "email.archived", {
     emailId: message.emailId,
     accountEmail: account.email,
     provider: account.provider,
@@ -1362,7 +1362,7 @@ async function deleteProviderMessage(userId, account, message) {
     throw new Error(`${account.provider} delete is not implemented yet`);
   }
 
-  await emitWebhookEvent(userId, "email.deleted", {
+  emitWebhookEventDetached(userId, "email.deleted", {
     emailId: message.emailId,
     accountEmail: account.email,
     provider: account.provider,

@@ -19,7 +19,7 @@ import {
   parseQueryLimit,
   recordMetricEvent,
 } from "./integrations.js";
-import { emitWebhookEvent } from "./webhooks.js";
+import { emitWebhookEventDetached } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import { calculateInboxAgentValues } from "./ai-helper-agent.js";
 import {
@@ -557,7 +557,7 @@ async function createDraftReplyTool(userId, payload) {
     accountEmail: account.email,
     metadata: { provider: account.provider, draftId: draft.id, source: "mcp" },
   });
-  await emitWebhookEvent(userId, "email.drafted", buildDraftWebhookPayload({ account, input, draft }));
+  emitWebhookEventDetached(userId, "email.drafted", buildDraftWebhookPayload({ account, input, draft }));
 
   return {
     accountEmail: account.email,

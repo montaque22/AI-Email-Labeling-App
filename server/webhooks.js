@@ -18,7 +18,7 @@ const WEBHOOK_DISPATCH_CONCURRENCY = 6;
 const dispatchQueue = createTaskQueue({
   limit: WEBHOOK_DISPATCH_CONCURRENCY,
   onError: (error) => {
-    // emitWebhookEvent already records delivery failures itself, so reaching here means the
+    // deliverWebhookEvent already records delivery failures itself, so reaching here means the
     // settings lookup or the log write failed. Swallow it: an unhandled rejection would
     // take the process down over a notification nobody is waiting on.
     console.warn("Webhook could not be dispatched:", error.message);
@@ -39,7 +39,7 @@ const dispatchQueue = createTaskQueue({
  * @returns {void}
  */
 export function emitWebhookEventDetached(userId, eventName, payload, options = {}) {
-  dispatchQueue.push(() => emitWebhookEvent(userId, eventName, payload, options));
+  dispatchQueue.push(() => deliverWebhookEvent(userId, eventName, payload, options));
 }
 
 /**
@@ -224,7 +224,7 @@ function httpError(status, message) {
   return error;
 }
 
-export async function emitWebhookEvent(userId, eventName, payload, options = {}) {
+async function deliverWebhookEvent(userId, eventName, payload, options = {}) {
   if (!dbPool) {
     return;
   }

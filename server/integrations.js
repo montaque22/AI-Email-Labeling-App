@@ -28,7 +28,6 @@ import { createDeadline, mapWithConcurrency } from "./concurrency.js";
 import { runDetachedTask, runGuardedStep } from "./detached-tasks.js";
 import { fetchWithTimeout } from "./http.js";
 import {
-  emitWebhookEvent,
   emitWebhookEventDetached,
   removeHomeAssistantWebhookDestination,
   upsertHomeAssistantWebhookDestination,
@@ -950,7 +949,7 @@ export function registerIntegrationRoutes(app) {
         messageId: draft.message?.id ?? draft.id ?? null,
         threadId: draft.message?.threadId ?? draft.conversationId ?? null,
       };
-      await emitWebhookEvent(req.integrationUser.id, "email.drafted", buildDraftWebhookPayload({ account, input, draft }));
+      emitWebhookEventDetached(req.integrationUser.id, "email.drafted", buildDraftWebhookPayload({ account, input, draft }));
       await logEndpointCall(req.integrationUser.id, "POST /api/integrations/email/drafts/reply", req.body, "success", draftResponse);
 
       res.status(201).json(draftResponse);
@@ -1079,7 +1078,7 @@ async function modifyMessageLabels(req, res, action) {
       emailId: input.emailId,
       [action === "add" ? "added" : "removed"]: labels.labels,
     };
-    await emitWebhookEvent(req.integrationUser.id, "email.labels_updated", {
+    emitWebhookEventDetached(req.integrationUser.id, "email.labels_updated", {
       emailId: input.emailId,
       accountEmail: account.email,
       added: action === "add" ? labels.labels.map((label) => label.name) : [],
@@ -2731,7 +2730,7 @@ async function sendIntegrationEmail(userId, input) {
     },
   });
 
-  await emitWebhookEvent(userId, "email.sent", {
+  emitWebhookEventDetached(userId, "email.sent", {
     accountEmail: account.email,
     body: { html: input.bodyHtml, text: input.bodyText },
     from: account.email,
@@ -3252,7 +3251,7 @@ export async function upsertEmailRule(userId, rule) {
 
 async function emitEmailRuleUpsertWebhook(userId, previousRule, rule, payload) {
   const eventName = previousRule ? "email_rule.modified" : "email_rule.created";
-  await emitWebhookEvent(userId, eventName, {
+  emitWebhookEventDetached(userId, eventName, {
     rule,
     payload,
     previous: previousRule,
