@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, Sparkles } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -8,6 +8,7 @@ import { AttentionCategoryCards, ATTENTION_CATEGORY_CARDS } from "./AttentionCat
 import { AttentionCleanupGroups } from "./AttentionCleanupGroups";
 import { AttentionPriorityList } from "./AttentionPriorityList";
 import { AttentionTrashConfirmation } from "./AttentionTrashConfirmation";
+import { InboxPageHeader } from "./InboxPageHeader";
 import type { AttentionCleanupGroup, AttentionDashboardProps, AttentionMessage } from "./attention-dashboard-types";
 import { attentionMessageKey } from "./attention-dashboard-utils";
 
@@ -49,6 +50,7 @@ export function AttentionDashboard({
           ? data?.cleanupCounts?.likelyClutter ?? 0
           : data?.counts[category] ?? 0;
   const card = ATTENTION_CATEGORY_CARDS.find((item) => item.id === category);
+  const showInitialLoading = isLoading && !data;
 
   useEffect(() => {
     onSelectionChange([]);
@@ -130,15 +132,9 @@ export function AttentionDashboard({
 
   return (
     <section className="space-y-5" aria-label="Attention Dashboard">
-      <header className="flex flex-wrap items-start justify-between gap-3 px-1">
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="rounded-2xl bg-violet-100 p-2.5 text-violet-600"><Sparkles className="h-6 w-6" /></div>
-          <div><h1 className="text-2xl font-bold tracking-tight text-zinc-950 md:text-3xl">Your Inbox</h1><p className="text-sm text-zinc-500 md:text-base">Find what matters. Clear the rest.</p></div>
-        </div>
-        {headerAction ? <div className="w-full sm:w-auto">{headerAction}</div> : null}
-      </header>
+      <InboxPageHeader action={headerAction} />
 
-      <AttentionCategoryCards category={category} counts={data?.counts} isLoading={isLoading} onSelect={onSelectCategory} />
+      <AttentionCategoryCards category={category} counts={data?.counts} isLoading={showInitialLoading} onSelect={onSelectCategory} />
 
       <div className={cn("min-w-0", detailPanel && "grid items-start gap-4 lg:grid-cols-[minmax(320px,0.8fr)_minmax(0,1.5fr)]")}>
         <Card className="min-w-0 overflow-visible bg-white/60">
@@ -163,7 +159,7 @@ export function AttentionDashboard({
             ]} value={cleanupView} />
           ) : null}
           <CardContent className="p-0">
-            {isLoading ? <DashboardSkeleton /> : (
+            {showInitialLoading ? <DashboardSkeleton /> : (
               <>
                 <AttentionSelectionHeader
                   allLoadedSelected={allLoadedSelected} allResultsSelected={allResultsSelected} categoryLabel={card?.label ?? "category"}

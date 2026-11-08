@@ -139,6 +139,13 @@ describe("AttentionDashboard", () => {
     expect(header?.className).toContain("flex-wrap");
   });
 
+  it("keeps populated rows visible during a background refresh", () => {
+    renderDashboard("attention", { isLoading: true });
+    expect(screen.queryByLabelText("Loading dashboard emails")).toBeNull();
+    expect(screen.getByText("Subject 1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Needs Attention/ }).textContent).toContain("12");
+  });
+
   it("filters Needs Attention to confident Quick Wins and records corrections", () => {
     const { props } = renderDashboard();
     fireEvent.click(screen.getByRole("tab", { name: "Quick Wins 1" }));

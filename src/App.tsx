@@ -78,6 +78,7 @@ import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/ru
 import { InboxSelectAllBanner } from "./components/inbox/InboxSelectAllBanner";
 import { AutomationActivityPanel, type AutomationActivity } from "./components/inbox/AutomationActivityPanel";
 import { InboxViewToggle } from "./components/inbox/InboxViewToggle";
+import { InboxPageHeader } from "./components/inbox/InboxPageHeader";
 import { shouldLockInboxPageScroll } from "./components/inbox/inbox-scroll-lock";
 import { AiHelperSessionResetButton } from "./components/inbox/AiHelperSessionResetButton";
 import { AttentionDashboard, type AttentionCategory, type AttentionDashboardData, type AttentionMessage } from "./components/inbox/AttentionDashboard";
@@ -2435,7 +2436,8 @@ function InboxPage({
 
   async function loadAttentionDashboard(options: { appendCategory?: "attention" | "interest" } = {}) {
     const appendCategory = options.appendCategory;
-    if (!appendCategory) setIsAttentionDashboardLoading(true);
+    const showInitialLoading = !appendCategory && attentionDashboard === null;
+    if (showInitialLoading) setIsAttentionDashboardLoading(true);
     try {
       const params = new URLSearchParams({ accountIds: selectedAccountIds.join(",") });
       if (appendCategory) {
@@ -2449,6 +2451,7 @@ function InboxPage({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Could not load the Attention Dashboard.");
       const next = data as AttentionDashboardData;
+      const scrollTop = !appendCategory && attentionDashboard ? getDocumentScrollTop() : null;
       if (appendCategory) {
         setAttentionDashboard((current) => current ? {
           ...next,
@@ -2460,16 +2463,17 @@ function InboxPage({
         return next;
       }
       setAttentionDashboard(next);
+      if (scrollTop !== null) restoreDocumentScrollTop(scrollTop);
       return next;
     } catch (dashboardError) {
       setError(dashboardError instanceof Error ? dashboardError.message : "Could not load the Attention Dashboard.");
     } finally {
-      if (!appendCategory) setIsAttentionDashboardLoading(false);
+      if (showInitialLoading) setIsAttentionDashboardLoading(false);
     }
     return null;
   }
 
-  async function updateAttentionPreference(message: InboxMessage | AttentionMessage, action: string, category?: AttentionCategory, options: { isUndo?: boolean } = {}) {
+  async function updateAttentionPreference(message: InboxMessage | AttentionMessage, action: string, category?: AttentionCategory, options: { isUndo?: boolean; refresh?: boolean } = {}) {
     const nextFollowed = action === "follow" ? true : action === "unfollow" ? false : undefined;
     if (typeof nextFollowed === "boolean") {
       setAttentionDashboard((current) => current ? updateAttentionDashboardMessage(current, message, { followed: nextFollowed }) : current);
@@ -2491,7 +2495,7 @@ function InboxPage({
         onAction: () => void updateAttentionPreference(message, nextFollowed ? "unfollow" : "follow", category, { isUndo: true }),
       });
     }
-    await loadAttentionDashboard();
+    if (options.refresh !== false) await loadAttentionDashboard();
   }
 
   async function selectAllAttentionCategory(category: "attention" | "interest") {
@@ -3302,7 +3306,7 @@ function InboxPage({
       : await deleteSelectedMessages([message], { source: "user" });
     if (result.succeeded === 0) return;
     if (attentionCategory === "interest") {
-      await updateAttentionPreference(message, "return", "interest");
+      await updateAttentionPreference(message, "return", "interest", { refresh: false });
     } else if (attentionCategory === "cleanup") {
       recordAttentionEngagement(message, action);
     }
@@ -4226,7 +4230,7 @@ function InboxPage({
 
   return (
     <div
-      className="space-y-6 pt-20 md:pt-0"
+      className="space-y-6 pt-[4.5rem] md:pt-0"
       onTouchCancel={handleMobilePullEnd}
       onTouchEnd={handleMobilePullEnd}
       onTouchMove={handleMobilePullMove}
@@ -4348,7 +4352,7 @@ function InboxPage({
               const eligible = await revalidateAttentionAction(attentionSelectedMessages, attentionCategory);
               const result = await archiveSelectedMessages(eligible as InboxMessage[]);
               if (attentionCategory === "interest" && result.failed === 0) {
-                await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest")));
+                await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest", { refresh: false })));
               } else if (attentionCategory === "cleanup" && result.succeeded > 0) {
                 eligible.forEach((message) => recordAttentionEngagement(message as InboxMessage, "archive"));
               }
@@ -4393,7 +4397,11 @@ function InboxPage({
         </div>
       ) : null}
 
-      {inboxView === "all-mail" ? <div className="flex justify-end"><InboxViewToggle onChange={(view) => { setSelectedMessage(null); setMessageDetail(null); setInboxView(view); }} value={inboxView} /></div> : null}
+      {inboxView === "all-mail" ? (
+        <InboxPageHeader
+          action={<InboxViewToggle className="w-full justify-stretch sm:w-auto" onChange={(view) => { setSelectedMessage(null); setMessageDetail(null); setInboxView(view); }} value={inboxView} />}
+        />
+      ) : null}
 
       {inboxView === "dashboard" ? (
         <AttentionDashboard
@@ -4440,7 +4448,7 @@ function InboxPage({
               eligible.forEach((message) => recordAttentionEngagement(message as InboxMessage, "archive"));
             }
             if (attentionCategory === "interest" && result.failed === 0) {
-              await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest")));
+              await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest", { refresh: false })));
             }
             await loadAttentionDashboard();
           }}
@@ -4449,15 +4457,9 @@ function InboxPage({
             const eligible = await revalidateAttentionAction(dashboardMessages, attentionCategory);
             const result = await deleteSelectedMessages(eligible as InboxMessage[], { source: "user" });
             if (attentionCategory === "interest" && result.failed === 0) {
-              await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest")));
+              await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest", { refresh: false })));
             } else if (attentionCategory === "cleanup" && result.succeeded > 0) {
               eligible.forEach((message) => recordAttentionEngagement(message as InboxMessage, "delete"));
-            }
-            if (attentionCategory === "cleanup" && result.succeeded > 0) {
-              eligible.forEach((message) => recordAttentionEngagement(message as InboxMessage, "delete"));
-            }
-            if (attentionCategory === "interest" && result.failed === 0) {
-              await Promise.all(eligible.map((message) => updateAttentionPreference(message, "return", "interest")));
             }
             await loadAttentionDashboard();
           }}
@@ -16590,6 +16592,14 @@ function getDocumentScrollTop() {
     document.body.scrollTop || 0,
     document.scrollingElement?.scrollTop || 0,
   );
+}
+
+function restoreDocumentScrollTop(scrollTop: number) {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ behavior: "auto", left: window.scrollX, top: scrollTop });
+    });
+  });
 }
 
 function formatInboxListDate(value: string) {

@@ -1,4 +1,5 @@
 import { Archive, Bookmark, Check, Clock3, Gem, RotateCcw, ShieldCheck, Sparkles, Trash2, XCircle } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReactNode } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -24,12 +25,15 @@ type AttentionPriorityListProps = {
 };
 
 export function AttentionPriorityList(props: AttentionPriorityListProps) {
+  const reduceMotion = useReducedMotion();
   if (props.messages.length === 0) return <AttentionEmptyCategory category={props.category} />;
   return (
     <div>
-      {props.messages.map((message) => (
-        <AttentionPriorityRow key={attentionMessageKey(message)} message={message} {...props} />
-      ))}
+      <AnimatePresence initial={false}>
+        {props.messages.map((message) => (
+          <AttentionPriorityRow key={attentionMessageKey(message)} message={message} reduceMotion={Boolean(reduceMotion)} {...props} />
+        ))}
+      </AnimatePresence>
     </div>
   );
 }
@@ -48,17 +52,25 @@ function AttentionPriorityRow({
   onToggleFollow,
   onToggleSelection,
   onTrash,
+  reduceMotion,
   selectedKeys,
-}: Omit<AttentionPriorityListProps, "messages"> & { message: AttentionMessage }) {
+}: Omit<AttentionPriorityListProps, "messages"> & { message: AttentionMessage; reduceMotion: boolean }) {
   const key = attentionMessageKey(message);
   const selected = selectedKeys.has(key);
   const committed = hasActiveCommitment(message);
   return (
-    <article className={cn(
+    <motion.article
+      animate={{ opacity: 1 }}
+      className={cn(
       "@container/priority-row group relative grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1 border-b border-white/70 px-3 py-3 last:border-b-0 md:gap-x-3 md:px-5 md:py-4 @[40rem]/priority-row:grid-cols-[auto_minmax(0,1fr)_auto]",
       selected && "bg-violet-50/60",
       category === "interest" && freshnessBorderClass(message.interestFreshness?.state),
-    )} data-attention-row>
+      )}
+      data-attention-row
+      exit={reduceMotion ? undefined : { height: 0, opacity: 0, paddingBottom: 0, paddingTop: 0 }}
+      layout={reduceMotion ? false : "position"}
+      transition={{ duration: reduceMotion ? 0 : 0.18, ease: "easeOut" }}
+    >
       <input
         aria-label={`Select ${message.subject || "email"}`}
         checked={selected}
@@ -103,7 +115,7 @@ function AttentionPriorityRow({
         <ActionButton disabled={isActionRunning} label="Archive email" onClick={() => onArchive(message)}><Archive className="h-4 w-4" /></ActionButton>
         <ActionButton disabled={isActionRunning} label="Move email to Trash" onClick={() => onTrash(message)}><Trash2 className="h-4 w-4 text-red-600" /></ActionButton>
       </div>
-    </article>
+    </motion.article>
   );
 }
 
