@@ -47,21 +47,21 @@ class EmailableApiClient:
     async def send_email(self, payload: dict) -> dict:
         return await self._request("POST", "/api/integrations/email/send", json=payload)
 
-    async def fetch_events(
-        self,
-        *,
-        cursor: str | None,
-        include_body: bool,
-        limit: int = 50,
-    ) -> dict:
-        params = {
-            "event_name": "email.ready_for_processing",
-            "limit": str(limit),
-            "include_body": "true" if include_body else "false",
-        }
-        if cursor:
-            params["cursor"] = cursor
-        return await self._request("GET", "/api/integrations/events", params=params)
+    async def register_home_assistant_webhook(self, payload: dict) -> dict:
+        return await self._request(
+            "POST",
+            "/api/integrations/home-assistant-webhook",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=10, connect=5),
+        )
+
+    async def remove_home_assistant_webhook(self, config_entry_id: str) -> dict:
+        return await self._request(
+            "DELETE",
+            "/api/integrations/home-assistant-webhook",
+            json={"config_entry_id": config_entry_id},
+            timeout=aiohttp.ClientTimeout(total=5, connect=3),
+        )
 
     async def report_activity(self, payload: dict) -> dict:
         return await self._request("POST", "/api/integrations/activity-callbacks", json=payload)

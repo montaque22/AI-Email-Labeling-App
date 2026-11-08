@@ -24,6 +24,7 @@ import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
 import { ensureSystemLogsTable, startSystemLogRetentionWorker } from "./system-logs.js";
 import { ensureTasksTable, registerTaskRoutes, startTaskMidnightWorker } from "./tasks.js";
 import { resolveHomeAssistantIngressUser } from "./session.js";
+import { ensureHomeAssistantWebhookDestinationsTable } from "./webhooks.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -269,6 +270,7 @@ async function startServer() {
     await ensureEmailIndexTable();
     await ensureLabelsTable();
     await ensureSettingsTable();
+    await ensureHomeAssistantWebhookDestinationsTable();
     await ensureAutomationActivityTables();
     await ensureAttentionDashboardTables();
     await ensureIntegrationTables();

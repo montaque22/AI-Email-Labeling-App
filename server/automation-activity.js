@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { dbPool } from "./db.js";
 import { requireSession } from "./session.js";
-import { emitWebhookEventDetached } from "./webhooks.js";
+import { emitHomeAssistantWebhookEventDetached, emitWebhookEventDetached } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import { parseActivityCallbackPayload, WEBHOOK_SCHEMA_VERSION } from "../shared/webhook-contracts.js";
 
@@ -11,11 +11,6 @@ const DAILY_LIMIT = numberFromEnv("ACTIVITY_CALLBACK_DAILY_LIMIT", 500);
 const RATE_PER_SECOND = numberFromEnv("ACTIVITY_CALLBACK_RATE_PER_SECOND", 5);
 const BURST_LIMIT = numberFromEnv("ACTIVITY_CALLBACK_BURST_LIMIT", 10);
 const MAX_CALLBACK_BYTES = numberFromEnv("ACTIVITY_CALLBACK_MAX_BYTES", 64 * 1024);
-const EVENT_RETENTION_DAYS = numberFromEnv("POST_PROCESSING_EVENT_RETENTION_DAYS", 14);
-const EVENT_BODY_MAX_LENGTH = numberFromEnv("POST_PROCESSING_EVENT_BODY_MAX_LENGTH", 12_000);
-const EVENT_FEED_MAX_LIMIT = 100;
-const EVENT_FEED_DEFAULT_LIMIT = 50;
-let lastRetentionCleanupAt = 0;
 
 export async function ensureAutomationActivityTables() {
   if (!dbPool) return;
@@ -33,14 +28,13 @@ export async function ensureAutomationActivityTables() {
       email_index_id uuid references email_index(id) on delete cascade,
       email_account_id uuid not null references email_accounts(id) on delete cascade,
       email_id text not null,
-      payload jsonb not null,
       delivery_status text not null default 'queued',
       created_at timestamptz not null default now(),
       delivered_at timestamptz
     );
     create index if not exists post_processing_events_owner_idx on post_processing_events(user_id, email_id, created_at desc);
-    create index if not exists post_processing_events_feed_idx on post_processing_events(user_id, created_at, id);
-    alter table post_processing_events alter column payload drop not null;
+    drop index if exists post_processing_events_feed_idx;
+    alter table post_processing_events drop column if exists payload;
 
     create table if not exists email_automation_activities (
       id uuid primary key,
@@ -158,7 +152,6 @@ export function registerAutomationActivityRoutes(app) {
 
 export async function emitReadyForProcessingEvent(userId, { target, labelsApplied = [] }) {
   if (!dbPool) return null;
-  await maybePruneExpiredPostProcessingEvents();
   const callback = await ensureCallbackCredential(userId);
   const normalizedLabels = normalizeLabels(labelsApplied);
   const [indexResult, labelResult] = await Promise.all([
@@ -190,16 +183,12 @@ export async function emitReadyForProcessingEvent(userId, { target, labelsApplie
     },
     activity_callback: { url: callback.callbackUrl, schema_version: AUTOMATION_SCHEMA_VERSION },
   };
-  const persistedPayload = {
-    ...payload,
-    activity_callback: { ...payload.activity_callback, url: "[redacted]" },
-    email: {
-      ...payload.email,
-      attachments: payload.email.attachments.map(({ content_base64: _content, ...attachment }) => attachment),
-    },
-  };
-  await dbPool.query(`insert into post_processing_events(id,user_id,event_id,email_index_id,email_account_id,email_id,payload) values($1,$2,$3,$4,$5,$6,$7::jsonb)`, [crypto.randomUUID(), userId, eventId, indexRow?.id ?? null, target.account.id, target.email.emailId, JSON.stringify(persistedPayload)]);
+  await dbPool.query(`insert into post_processing_events(id,user_id,event_id,email_index_id,email_account_id,email_id) values($1,$2,$3,$4,$5,$6)`, [crypto.randomUUID(), userId, eventId, indexRow?.id ?? null, target.account.id, target.email.emailId]);
   await logSystemEvent(userId, { category: "webhook", eventName: "post_processing.event_emitted", status: "success", message: "Email is ready for external post-processing.", payload: { eventId, emailId: target.email.emailId } });
+  emitHomeAssistantWebhookEventDetached(userId, READY_FOR_PROCESSING_EVENT, payload, {
+    eventId,
+    schemaVersion: AUTOMATION_SCHEMA_VERSION,
+  });
   emitWebhookEventDetached(userId, READY_FOR_PROCESSING_EVENT, payload, {
     eventId,
     schemaVersion: AUTOMATION_SCHEMA_VERSION,
@@ -224,118 +213,6 @@ export async function listAutomationActivities(userId, { accountId, emailId }) {
   const result = await dbPool.query(`select id, event_id as "eventId", activity_id as "activityId", source, status, title, description, details as data, error, reported_at as "reportedAt", received_at as "receivedAt", created_at as "createdAt", updated_at as "updatedAt" from email_automation_activities where user_id=$1 and email_account_id=$2 and email_id=$3 order by received_at desc`, [userId, accountId, emailId]);
   return result.rows.map((row) => ({ ...row, reportedByExternalSystem: true }));
 }
-
-export async function listIntegrationEvents(userId, options = {}) {
-  await maybePruneExpiredPostProcessingEvents();
-  const eventName = options.eventName || READY_FOR_PROCESSING_EVENT;
-  if (eventName !== READY_FOR_PROCESSING_EVENT) throw httpError(400, `Unsupported event_name: ${eventName}`);
-  const limit = parseEventLimit(options.limit);
-  const includeBody = options.includeBody === true;
-  const cutoff = new Date(Date.now() - EVENT_RETENTION_DAYS * 86_400_000);
-
-  if (options.cursor === "latest") {
-    const latest = await dbPool.query(
-      `select id,created_at from post_processing_events where user_id=$1 and payload is not null and created_at >= $2 order by created_at desc,id desc limit 1`,
-      [userId, cutoff],
-    );
-    const row = latest.rows[0];
-    return { events: [], next_cursor: row ? encodeEventCursor(userId, row) : null, has_more: false, cursor_expired: false, retention_days: EVENT_RETENTION_DAYS };
-  }
-
-  const position = options.cursor ? decodeEventCursor(userId, options.cursor) : null;
-  const oldestResult = await dbPool.query(
-    `select id,created_at from post_processing_events where user_id=$1 and payload is not null and created_at >= $2 order by created_at,id limit 1`,
-    [userId, cutoff],
-  );
-  const oldest = oldestResult.rows[0] ?? null;
-  const cursorExpired = Boolean(position && oldest && new Date(position.createdAt) < new Date(oldest.created_at));
-  const effectivePosition = cursorExpired ? null : position;
-  const values = [userId, cutoff];
-  let positionSql = "";
-  if (effectivePosition) {
-    values.push(effectivePosition.createdAt, effectivePosition.id);
-    positionSql = `and (created_at,id) > ($3::timestamptz,$4::uuid)`;
-  }
-  values.push(limit + 1);
-  const result = await dbPool.query(
-    `select id,event_id,created_at,payload from post_processing_events where user_id=$1 and payload is not null and created_at >= $2 ${positionSql} order by created_at,id limit $${values.length}`,
-    values,
-  );
-  const hasMore = result.rows.length > limit;
-  const rows = result.rows.slice(0, limit);
-  const events = rows.map((row) => ({
-    event_id: row.event_id,
-    event_name: READY_FOR_PROCESSING_EVENT,
-    created_at: new Date(row.created_at).toISOString(),
-    payload: buildEventFeedPayload(row.payload, includeBody),
-  }));
-  const last = rows.at(-1);
-  return {
-    events,
-    next_cursor: last ? encodeEventCursor(userId, last) : options.cursor && options.cursor !== "latest" ? options.cursor : null,
-    has_more: hasMore,
-    cursor_expired: cursorExpired,
-    retention_days: EVENT_RETENTION_DAYS,
-  };
-}
-
-export async function maybePruneExpiredPostProcessingEvents({ force = false } = {}) {
-  const now = Date.now();
-  if (!force && now - lastRetentionCleanupAt < 3_600_000) return;
-  const cutoff = new Date(now - EVENT_RETENTION_DAYS * 86_400_000);
-  await dbPool.query(`delete from post_processing_events event where event.created_at < $1 and not exists (select 1 from email_automation_activities activity where activity.event_id=event.event_id)`, [cutoff]);
-  await dbPool.query(`update post_processing_events set payload=null where created_at < $1 and payload is not null`, [cutoff]);
-  lastRetentionCleanupAt = now;
-}
-
-export function buildEventFeedPayload(payload, includeBody) {
-  const email = payload?.email && typeof payload.email === "object" ? payload.email : {};
-  const bodyText = typeof email.body?.text === "string" ? email.body.text.slice(0, EVENT_BODY_MAX_LENGTH) : "";
-  return {
-    email: {
-      id: email.id || "",
-      thread_id: email.thread_id || email.id || "",
-      account_id: email.account_id || "",
-      account_email: email.account_email || "",
-      provider: email.provider || "",
-      from: email.from || { email: "", name: "" },
-      subject: email.subject || "",
-      received_at: email.received_at || null,
-      attachments: (Array.isArray(email.attachments) ? email.attachments : []).map(({ content_base64: _content, ...attachment }) => attachment),
-      ...(includeBody ? { body: { text: bodyText } } : {}),
-    },
-    classification: payload?.classification || { labels: [], attention: null },
-  };
-}
-
-function parseEventLimit(value) {
-  if (value === undefined || value === null || value === "") return EVENT_FEED_DEFAULT_LIMIT;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > EVENT_FEED_MAX_LIMIT) throw httpError(400, `limit must be an integer between 1 and ${EVENT_FEED_MAX_LIMIT}`);
-  return parsed;
-}
-
-function encodeEventCursor(userId, row) {
-  const payload = Buffer.from(JSON.stringify({ createdAt: new Date(row.created_at).toISOString(), id: row.id })).toString("base64url");
-  const signature = crypto.createHmac("sha256", eventCursorSecret()).update(`${userId}:${payload}`).digest("base64url");
-  return `${payload}.${signature}`;
-}
-
-function decodeEventCursor(userId, cursor) {
-  const [payload, signature, extra] = String(cursor).split(".");
-  if (!payload || !signature || extra) throw httpError(400, "cursor is invalid");
-  const expected = crypto.createHmac("sha256", eventCursorSecret()).update(`${userId}:${payload}`).digest("base64url");
-  if (!timingSafe(signature, expected)) throw httpError(400, "cursor is invalid");
-  try {
-    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    if (!isUuid(decoded.id) || Number.isNaN(Date.parse(decoded.createdAt))) throw new Error("invalid cursor payload");
-    return decoded;
-  } catch {
-    throw httpError(400, "cursor is invalid");
-  }
-}
-
-function eventCursorSecret() { return process.env.EVENT_CURSOR_SECRET || process.env.BETTER_AUTH_SECRET || "local-development-only-event-cursor-key"; }
 
 export async function ingestActivityCallback(userId, input) {
   const client = await dbPool.connect();

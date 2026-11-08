@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./db.js", () => ({ dbPool: { query: mocks.query, connect: mocks.connect } }));
 vi.mock("./session.js", () => ({ requireSession: (_req, _res, next) => next() }));
-vi.mock("./webhooks.js", () => ({ emitWebhookEventDetached: vi.fn() }));
+vi.mock("./webhooks.js", () => ({
+  emitHomeAssistantWebhookEventDetached: vi.fn(),
+  emitWebhookEventDetached: vi.fn(),
+}));
 vi.mock("./system-logs.js", () => ({ logSystemEvent: mocks.log }));
 
 const { ingestActivityCallback, parseActivityCallback } = await import("./automation-activity.js");

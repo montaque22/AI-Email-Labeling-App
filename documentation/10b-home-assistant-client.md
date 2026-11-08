@@ -41,7 +41,7 @@ After setup, Home Assistant can expose actions such as:
 
 The integration can also expose connected Emailable email accounts as Home Assistant entities. Those entities make it easier to choose the correct sending account in Home Assistant actions.
 
-It also checks Emailable every 15 seconds for newly processed-email events. This is an outbound connection from Home Assistant; no public Home Assistant webhook or inbound port is required.
+It also registers a private Home Assistant webhook. Emailable sends each newly processed-email event directly to that webhook without running a background poller in Home Assistant.
 
 ## What the HACS integration does not do
 
@@ -69,8 +69,11 @@ Those stay in the Emailable server you connect to.
 9. Add the **Emailable** integration.
 10. Paste the Emailable server URL.
 11. Paste the API key.
+12. If Home Assistant does not have an external URL configured, enter a public HTTPS Home Assistant base URL that the Emailable server can reach.
 
 Home Assistant validates the URL and key during setup. If validation fails, confirm that Home Assistant can reach the URL and that the key has not been revoked.
+
+The integration generates and stores its own unguessable webhook ID, registers the resulting URL with Emailable, and keeps that destination separate from **Settings > Webhooks**. Your existing n8n, Node-RED, or other outbound webhook remains unchanged.
 
 ## Setup with the local Home Assistant add-on
 
@@ -168,9 +171,7 @@ conditions:
          and 'Appointments and Events' in trigger.event.data.labels }}
 ```
 
-The integration stores an opaque cursor and resumes after ordinary restarts or temporary network failures. Emailable retains event-feed payloads for 14 days by default. If Home Assistant remains offline longer, the integration logs a warning and resumes from the oldest retained event.
-
-Delivery is at least once. A restart after an event fires but before its cursor is saved may deliver that event again. Automations with non-idempotent side effects should derive a stable operation ID from `event_id` or keep their own deduplication state.
+Delivery is one direct HTTP attempt. There is no polling, replay, retry queue, or fallback synchronization. If Home Assistant is unavailable when an email finishes processing, that event can be missed. This keeps delivery lightweight and prevents background event requests from affecting Home Assistant responsiveness.
 
 ### Report an external outcome
 
@@ -270,7 +271,16 @@ If setup fails:
 - Use the root Emailable app URL, not an individual endpoint path.
 - Make sure the URL includes `https://` or `http://`.
 - Create a fresh API key in **Settings > Endpoints** and try again.
+- Configure Home Assistant's external URL, or open the integration's **Configure** options and enter a public HTTPS base URL reachable from the Emailable server.
+- Do not use a private LAN address for a remotely hosted Emailable server. The backend rejects private and metadata-network webhook destinations.
 - Check **Metrics > Logs > Endpoints** in Emailable to see whether Home Assistant is reaching the server.
+
+If processed-email events do not arrive:
+
+- Check **Metrics > Logs > Webhook Events** for `home_assistant.email.ready_for_processing` delivery failures.
+- Confirm the public Home Assistant URL still reaches the same Home Assistant instance.
+- Reload the Emailable integration to register its destination again.
+- In **Developer Tools > Events**, listen for `emailable_email_ready`, then process a new incoming email in Emailable. Events missed while Home Assistant was unavailable are intentionally not replayed.
 
 If account entities do not show up:
 

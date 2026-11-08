@@ -6,11 +6,13 @@
         "description": "Connect Home Assistant to an Emailable server. This can be your primary VPS, Docker, Coolify, or local add-on instance. Create an API key in Emailable under Settings > Endpoints and paste it here.",
         "data": {
           "base_url": "Emailable server URL",
-          "api_key": "Integration API key"
+          "api_key": "Integration API key",
+          "webhook_base_url": "Public Home Assistant URL (optional)"
         },
         "data_description": {
           "base_url": "The root URL of the Emailable app, for example https://emailable.example.com or http://homeassistant.local:3000.",
-          "api_key": "A bearer API key created from the Emailable app. This lets Home Assistant call actions without duplicating Emailable setup."
+          "api_key": "A bearer API key created from the Emailable app. This lets Home Assistant call actions without duplicating Emailable setup.",
+          "webhook_base_url": "Leave blank to use Home Assistant's configured external URL. Otherwise enter a public HTTPS base URL that your Emailable server can reach."
         }
       },
       "reauth_confirm": {
@@ -28,10 +30,11 @@
   "options": {
     "step": {
       "init": {
-        "title": "Event privacy",
-        "description": "Processed-email events exclude message bodies by default. Enabling body inclusion exposes bounded plain-text content to Home Assistant automations and recorder history.",
+        "title": "Webhook delivery",
+        "description": "Emailable sends processed-email events directly to Home Assistant. Bodies are excluded by default. The public URL must be reachable from your Emailable server.",
         "data": {
-          "include_email_body": "Include plain-text email body in events"
+          "include_email_body": "Include plain-text email body in events",
+          "webhook_base_url": "Public Home Assistant URL (optional)"
         }
       }
     }

@@ -124,13 +124,13 @@ Finds an email, loads relevant rules, calls the active AI platform with structur
 
 This endpoint is only usable while BYOAI is active.
 
-### Processed Event Feed
+### Home Assistant Webhook Destination
 
-`GET /api/integrations/events` returns retained `email.ready_for_processing` events for the API-key owner. It supports `cursor`, `limit`, `event_name`, and `include_body` query parameters. Results use a signed opaque cursor, stable creation ordering, and pagination. Polling never changes outbound webhook delivery status.
+The HACS integration uses `POST /api/integrations/home-assistant-webhook` to register or update its private destination and `DELETE /api/integrations/home-assistant-webhook` when it unloads. Both endpoints use the existing integration API key and scope the destination to the authenticated user plus Home Assistant config-entry ID.
 
-Use `cursor=latest` to initialize a new consumer without replaying historical events. Event-feed payloads are retained for 14 days by default. When a cursor is older than retained history, the response sets `cursor_expired` and resumes from the oldest available event.
+This destination is independent of the general-purpose outbound webhook configured under Settings. Delivery is a single detached attempt with a bounded timeout. There is no polling endpoint, replay, or automatic retry. Webhook URLs must be public HTTPS destinations and must not resolve to private, loopback, link-local, or metadata networks.
 
-Bodies, HTML, raw headers, callback secrets, and attachment bytes are excluded by default. `include_body=true` adds only a bounded plain-text body.
+HTML, raw headers, callback secrets, and attachment bytes are never sent to the Home Assistant event bus. Body inclusion is an explicit integration option and sends only bounded plain text.
 
 ### Report Automation Activity
 

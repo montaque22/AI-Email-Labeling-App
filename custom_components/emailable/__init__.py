@@ -6,20 +6,23 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady, ServiceValidationError
 from homeassistant.helpers import aiohttp_client
 
-from .api import EmailableApiClient
+from .api import (
+    EmailableApiClient,
+    EmailableAuthenticationError,
+    EmailableValidationError,
+)
 from .const import (
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_CONFIG_ENTRY_ID,
     DATA_CLIENTS,
-    DATA_FEEDS,
     DATA_SERVICES_REGISTERED,
     DOMAIN,
 )
-from .event_feed import EmailableEventFeed
+from .webhook import async_register_webhook, async_unregister_webhook
 
 PLATFORMS: list[str] = ["sensor"]
 SERVICES = [
@@ -38,16 +41,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client = EmailableApiClient(session, entry.data[CONF_BASE_URL], entry.data[CONF_API_KEY])
     domain_data = hass.data.setdefault(
         DOMAIN,
-        {DATA_CLIENTS: {}, DATA_FEEDS: {}, DATA_SERVICES_REGISTERED: False},
+        {DATA_CLIENTS: {}, DATA_SERVICES_REGISTERED: False},
     )
     domain_data[DATA_CLIENTS][entry.entry_id] = client
     if not domain_data[DATA_SERVICES_REGISTERED]:
         _async_register_services(hass)
         domain_data[DATA_SERVICES_REGISTERED] = True
+    try:
+        await async_register_webhook(hass, entry, client)
+    except EmailableAuthenticationError as error:
+        domain_data[DATA_CLIENTS].pop(entry.entry_id, None)
+        _remove_services_if_unused(hass, domain_data)
+        await entry.async_start_reauth(hass)
+        raise ConfigEntryNotReady("Emailable API key was rejected") from error
+    except (EmailableValidationError, ValueError) as error:
+        domain_data[DATA_CLIENTS].pop(entry.entry_id, None)
+        _remove_services_if_unused(hass, domain_data)
+        raise ConfigEntryError(str(error)) from error
+    except Exception as error:
+        domain_data[DATA_CLIENTS].pop(entry.entry_id, None)
+        _remove_services_if_unused(hass, domain_data)
+        raise ConfigEntryNotReady(str(error)) from error
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    feed = EmailableEventFeed(hass, entry, client)
-    domain_data[DATA_FEEDS][entry.entry_id] = feed
-    await feed.async_start()
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
 
@@ -58,18 +73,32 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not unload_ok:
         return False
 
-    feed = domain_data[DATA_FEEDS].pop(entry.entry_id, None)
-    if feed:
-        await feed.async_stop()
+    client = domain_data[DATA_CLIENTS].pop(entry.entry_id, None)
+    if client:
+        await async_unregister_webhook(hass, entry, client)
 
-    domain_data[DATA_CLIENTS].pop(entry.entry_id, None)
-
-    if not domain_data[DATA_CLIENTS]:
-        for service in SERVICES:
-            hass.services.async_remove(DOMAIN, service)
-        hass.data.pop(DOMAIN, None)
+    _remove_services_if_unused(hass, domain_data)
 
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove a destination even when the entry could not finish loading."""
+    session = aiohttp_client.async_get_clientsession(hass)
+    client = EmailableApiClient(
+        session,
+        entry.data[CONF_BASE_URL],
+        entry.data[CONF_API_KEY],
+    )
+    await async_unregister_webhook(hass, entry, client)
+
+
+def _remove_services_if_unused(hass: HomeAssistant, domain_data: dict) -> None:
+    if domain_data[DATA_CLIENTS]:
+        return
+    for service in SERVICES:
+        hass.services.async_remove(DOMAIN, service)
+    hass.data.pop(DOMAIN, None)
 
 
 async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

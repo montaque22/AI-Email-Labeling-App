@@ -27,9 +27,14 @@ import { getConfidenceThreshold } from "./settings.js";
 import { createDeadline, mapWithConcurrency } from "./concurrency.js";
 import { runDetachedTask, runGuardedStep } from "./detached-tasks.js";
 import { fetchWithTimeout } from "./http.js";
-import { emitWebhookEvent, emitWebhookEventDetached } from "./webhooks.js";
+import {
+  emitWebhookEvent,
+  emitWebhookEventDetached,
+  removeHomeAssistantWebhookDestination,
+  upsertHomeAssistantWebhookDestination,
+} from "./webhooks.js";
 import { deleteAllSystemLogs, exportSystemLogs, listSystemLogs, logSystemEvent } from "./system-logs.js";
-import { emitReadyForProcessingEvent, ingestActivityCallback, listIntegrationEvents, parseActivityCallback } from "./automation-activity.js";
+import { emitReadyForProcessingEvent, ingestActivityCallback, parseActivityCallback } from "./automation-activity.js";
 
 const API_KEY_PREFIX = "n8n";
 const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
@@ -797,30 +802,51 @@ export function registerIntegrationRoutes(app) {
     }
   });
 
-  app.get("/api/integrations/events", requireApiKey, async (req, res) => {
+  app.post("/api/integrations/home-assistant-webhook", requireApiKey, async (req, res) => {
     try {
-      if (req.query.include_body !== undefined && !["true", "false"].includes(req.query.include_body)) {
-        res.status(400).json({ error: "include_body must be true or false" });
+      const configEntryId = stringValue(req.body?.config_entry_id, 200);
+      const webhookUrl = stringValue(req.body?.webhook_url, 2_000);
+      if (!configEntryId || !webhookUrl || typeof req.body?.include_body !== "boolean") {
+        res.status(400).json({ error: "config_entry_id, webhook_url, and include_body are required" });
         return;
       }
-      const result = await listIntegrationEvents(req.integrationUser.id, {
-        eventName: typeof req.query.event_name === "string" ? req.query.event_name.trim() : "",
-        cursor: typeof req.query.cursor === "string" ? req.query.cursor.trim() : "",
-        limit: req.query.limit,
-        includeBody: req.query.include_body === "true",
+      await upsertHomeAssistantWebhookDestination(req.integrationUser.id, {
+        configEntryId,
+        webhookUrl,
+        includeBody: req.body.include_body,
       });
-      if (result.events.length > 0 || result.cursor_expired) {
-        await logSystemEvent(req.integrationUser.id, {
-          category: "endpoints",
-          eventName: "GET /api/integrations/events",
-          status: result.cursor_expired ? "warning" : "success",
-          message: result.cursor_expired ? "Event-feed cursor expired; delivery resumed from the oldest retained event." : `Returned ${result.events.length} integration event(s).`,
-          payload: { count: result.events.length, cursorExpired: result.cursor_expired },
-        });
-      }
-      res.json(result);
+      await logSystemEvent(req.integrationUser.id, {
+        category: "webhook",
+        eventName: "home_assistant.destination_registered",
+        status: "success",
+        message: "Home Assistant webhook destination registered.",
+        payload: { configEntryId, includeBody: req.body.include_body },
+      });
+      res.json({ ok: true, config_entry_id: configEntryId });
     } catch (error) {
-      await logSystemEvent(req.integrationUser.id, { category: "endpoints", eventName: "GET /api/integrations/events", status: "error", message: error.message });
+      await logSystemEvent(req.integrationUser.id, {
+        category: "webhook",
+        eventName: "home_assistant.destination_rejected",
+        status: "error",
+        message: error.message,
+      });
+      handleError(res, error);
+    }
+  });
+
+  app.delete("/api/integrations/home-assistant-webhook", requireApiKey, async (req, res) => {
+    try {
+      const configEntryId = stringValue(req.body?.config_entry_id, 200);
+      if (!configEntryId) {
+        res.status(400).json({ error: "config_entry_id is required" });
+        return;
+      }
+      const removed = await removeHomeAssistantWebhookDestination(
+        req.integrationUser.id,
+        configEntryId,
+      );
+      res.json({ ok: true, removed });
+    } catch (error) {
       handleError(res, error);
     }
   });

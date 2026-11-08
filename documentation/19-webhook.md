@@ -155,6 +155,8 @@ Exact duplicate reports are idempotent. A contradictory outcome using the same a
 
 Home Assistant users can call `emailable.activity_completed` and `emailable.activity_failed` instead of constructing HTTP requests. Those native actions authenticate with the existing Emailable integration API key. Generic systems such as n8n and Node-RED should continue using the generated callback URL. Both methods use this same schema, quota, correlation, persistence, and logging behavior.
 
+The HACS integration also registers its own private inbound Home Assistant webhook for `email.ready_for_processing`. That destination is stored separately from the general-purpose outbound webhook on this page, so enabling Home Assistant does not replace an n8n, Node-RED, or custom destination. Emailable attempts Home Assistant delivery once and does not poll, retry, or replay missed events.
+
 ## Connecting an external workflow
 
 1. Save the external workflow's receiver under **Outbound Webhooks**.

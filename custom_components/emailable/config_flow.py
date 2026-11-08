@@ -10,6 +10,7 @@ from .const import (
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_INCLUDE_EMAIL_BODY,
+    CONF_WEBHOOK_BASE_URL,
     DEFAULT_BASE_URL,
     DEFAULT_INCLUDE_EMAIL_BODY,
     DOMAIN,
@@ -29,6 +30,7 @@ class EmailableConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             base_url = user_input[CONF_BASE_URL].rstrip("/")
             api_key = user_input[CONF_API_KEY].strip()
+            webhook_base_url = user_input.get(CONF_WEBHOOK_BASE_URL, "").strip().rstrip("/")
 
             try:
                 session = aiohttp_client.async_get_clientsession(self.hass)
@@ -37,12 +39,20 @@ class EmailableConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception:
                 errors["base"] = "cannot_connect"
             else:
-                return self.async_create_entry(title=f"Emailable ({base_url})", data={CONF_BASE_URL: base_url, CONF_API_KEY: api_key})
+                return self.async_create_entry(
+                    title=f"Emailable ({base_url})",
+                    data={
+                        CONF_BASE_URL: base_url,
+                        CONF_API_KEY: api_key,
+                        CONF_WEBHOOK_BASE_URL: webhook_base_url,
+                    },
+                )
 
         schema = vol.Schema(
             {
                 vol.Required(CONF_BASE_URL, default=DEFAULT_BASE_URL): str,
                 vol.Required(CONF_API_KEY): str,
+                vol.Optional(CONF_WEBHOOK_BASE_URL, default=""): str,
             }
         )
 
@@ -97,6 +107,13 @@ class EmailableOptionsFlow(config_entries.OptionsFlow):
                             DEFAULT_INCLUDE_EMAIL_BODY,
                         ),
                     ): bool,
+                    vol.Optional(
+                        CONF_WEBHOOK_BASE_URL,
+                        default=self.config_entry.options.get(
+                            CONF_WEBHOOK_BASE_URL,
+                            self.config_entry.data.get(CONF_WEBHOOK_BASE_URL, ""),
+                        ),
+                    ): str,
                 }
             ),
         )
