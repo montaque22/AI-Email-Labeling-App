@@ -3,6 +3,7 @@ import { dbPool } from "./db.js";
 import { createTaskQueue } from "./concurrency.js";
 import { fetchWithTimeout } from "./http.js";
 import { logSystemEvent } from "./system-logs.js";
+import { createWebhookEnvelope, WEBHOOK_SCHEMA_VERSION } from "../shared/webhook-contracts.js";
 
 const WEBHOOK_TIMEOUT_MS = 8000;
 // Detached deliveries allowed in flight at once. Sequential awaiting used to cap this at
@@ -60,13 +61,11 @@ export async function emitWebhookEvent(userId, eventName, payload, options = {})
     return;
   }
 
-  const event = {
-    event_id: options.eventId || crypto.randomUUID(),
-    event_name: eventName,
-    schema_version: options.schemaVersion || "1.0",
-    payload,
+  const event = createWebhookEnvelope(eventName, payload, {
+    eventId: options.eventId || crypto.randomUUID(),
+    schemaVersion: options.schemaVersion || WEBHOOK_SCHEMA_VERSION,
     timestamp: new Date().toISOString(),
-  };
+  });
   const loggedEvent = redactWebhookEvent(event);
 
   try {

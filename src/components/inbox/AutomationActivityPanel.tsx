@@ -10,9 +10,8 @@ export type AutomationActivity = {
   status: "started" | "completed" | "failed";
   title: string;
   description: string;
-  details?: Record<string, unknown>;
+  data?: Record<string, unknown>;
   error?: Record<string, unknown> | null;
-  resultUrl?: string | null;
   reportedStartedAt?: string | null;
   reportedEndedAt?: string | null;
   startedReceivedAt?: string | null;
@@ -65,17 +64,23 @@ function AutomationActivityRow({ activity }: { activity: AutomationActivity }) {
   const Icon = activity.status === "completed" ? CheckCircle2 : activity.status === "failed" ? AlertCircle : LoaderCircle;
   const statusStyle = activity.status === "completed" ? "bg-emerald-50 text-emerald-700" : activity.status === "failed" ? "bg-red-50 text-red-700" : "bg-blue-50 text-blue-700";
   const iconStyle = activity.status === "completed" ? "text-emerald-600" : activity.status === "failed" ? "text-red-600" : "animate-spin text-blue-600";
+  const resultUrl = getExternalResultUrl(activity.data);
+  const timingNote = activity.reportedStartedAt && !activity.reportedEndedAt
+    ? "Completion unknown"
+    : !activity.reportedStartedAt && activity.reportedEndedAt
+      ? "Start unknown"
+      : null;
   return (
     <article className="flex items-start gap-3 py-3">
       <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${iconStyle}`} />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-2"><p className="font-semibold text-zinc-950">{activity.title}</p><Badge className={statusStyle}>{formatStatus(activity.status)}</Badge></div>
-        <p className="mt-0.5 text-xs text-zinc-500">{activity.source}{activity.reportedStartedAt ? ` · ${formatDate(activity.reportedStartedAt)}` : ""}{activity.durationMs != null ? ` · ${formatDuration(activity.durationMs)}` : ""}</p>
+        <p className="mt-0.5 text-xs text-zinc-500">{activity.source}{activity.reportedStartedAt ? ` · ${formatDate(activity.reportedStartedAt)}` : activity.reportedEndedAt ? ` · ${formatDate(activity.reportedEndedAt)}` : ""}{activity.durationMs != null ? ` · ${formatDuration(activity.durationMs)}` : timingNote ? ` · ${timingNote}` : ""}</p>
         {activity.description ? <p className="mt-1 text-sm text-zinc-700">{activity.description}</p> : null}
         {activity.status === "failed" && activity.error ? <p className="mt-1 text-sm text-red-700">{String(activity.error.message || activity.error.code || "External automation failed")}</p> : null}
         <div className="mt-2 flex items-center gap-3 text-xs">
-          {activity.resultUrl ? <a className="inline-flex items-center gap-1 font-medium text-blue-700 underline underline-offset-4" href={activity.resultUrl} rel="noreferrer" target="_blank">View details<ExternalLink className="h-3 w-3" /></a> : null}
-          {Object.keys(activity.details ?? {}).length > 0 ? <details><summary className="cursor-pointer text-zinc-600 underline underline-offset-4">Technical details</summary><pre className="mt-2 max-w-full overflow-x-auto rounded-md bg-zinc-950 p-2 text-[11px] text-white">{JSON.stringify(activity.details, null, 2)}</pre></details> : null}
+          {resultUrl ? <a className="inline-flex items-center gap-1 font-medium text-blue-700 underline underline-offset-4" href={resultUrl} rel="noreferrer" target="_blank">View details<ExternalLink className="h-3 w-3" /></a> : null}
+          {Object.keys(activity.data ?? {}).length > 0 ? <details><summary className="cursor-pointer text-zinc-600 underline underline-offset-4">Technical details</summary><pre className="mt-2 max-w-full overflow-x-auto rounded-md bg-zinc-950 p-2 text-[11px] text-white">{JSON.stringify(activity.data, null, 2)}</pre></details> : null}
         </div>
         <p className="mt-2 text-[11px] text-zinc-400">Reported by {activity.source}; Emailable does not independently verify external outcomes.</p>
       </div>
@@ -86,3 +91,4 @@ function AutomationActivityRow({ activity }: { activity: AutomationActivity }) {
 function formatStatus(status: AutomationActivity["status"]) { return status === "started" ? "In progress" : status.charAt(0).toUpperCase() + status.slice(1); }
 function formatDate(value: string) { return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
 function formatDuration(value: number) { return value < 1000 ? `${value}ms` : `${Math.round(value / 100) / 10}s`; }
+function getExternalResultUrl(data?: Record<string, unknown>) { const value = data?.url; if (typeof value !== "string") return null; try { const url = new URL(value); return url.protocol === "https:" || url.protocol === "http:" ? value : null; } catch { return null; } }

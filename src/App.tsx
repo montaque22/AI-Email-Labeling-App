@@ -73,7 +73,7 @@ import { CalendarPage } from "./components/calendar/CalendarPage";
 import { TasksPage } from "./components/tasks/TasksPage";
 import { BackgroundTaskDrawer } from "./components/background-tasks/BackgroundTaskDrawer";
 import { PwaUpdatePrompt } from "./components/PwaUpdatePrompt";
-import { ActivityCallbackSettings } from "./components/settings/ActivityCallbackSettings";
+import { WebhookSettingsPage } from "./components/settings/WebhookSettingsPage";
 import { RuleProviderApplyNotice, type RuleProviderApply } from "./components/rules/RuleProviderApplyNotice";
 import { InboxSelectAllBanner } from "./components/inbox/InboxSelectAllBanner";
 import { AutomationActivityPanel, type AutomationActivity } from "./components/inbox/AutomationActivityPanel";
@@ -2045,7 +2045,7 @@ function AuthenticatedLayout({
           {activePage === "confidence-threshold" && <ConfidenceThresholdPage />}
           {activePage === "email-accounts" && <EmailAccountsPage isHomeAssistant={Boolean(user.homeAssistant)} privacyMode={privacyMode} />}
           {activePage === "endpoints" && <EndpointsPage />}
-          {activePage === "webhook" && <WebhookPage />}
+          {activePage === "webhook" && <WebhookSettingsPage />}
           {activePage === "mcp-server" && <McpServerPage onNavigate={onNavigate} />}
         </main>
       </div>
@@ -5395,7 +5395,7 @@ function InboxAiHelperPanel({
             status: activity.status,
             title: activity.title,
             description: activity.description,
-            details: activity.details,
+            data: activity.data,
             error: activity.error,
             reportedStartedAt: activity.reportedStartedAt,
             reportedEndedAt: activity.reportedEndedAt,
@@ -13388,245 +13388,6 @@ function getSupportedTimezones() {
   return timezones.includes("America/Los_Angeles") ? timezones : ["America/Los_Angeles", ...timezones];
 }
 
-function WebhookPage() {
-  const [webhookUrl, setWebhookUrl] = useState("");
-  const [savedWebhookUrl, setSavedWebhookUrl] = useState("");
-  const [bearerToken, setBearerToken] = useState("");
-  const [savedBearerToken, setSavedBearerToken] = useState("");
-  const [showAuth, setShowAuth] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const urlValidationError = validateWebhookUrl(webhookUrl);
-  const hasChanges = webhookUrl !== savedWebhookUrl || bearerToken !== savedBearerToken;
-
-  useEffect(() => {
-    async function loadWebhookSettings() {
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const response = await fetch("/api/settings/webhook", { credentials: "include" });
-        const data = await response.json();
-
-        if (!response.ok) {
-          setError(data.error ?? "Could not load webhook settings.");
-          return;
-        }
-
-        setWebhookUrl(data.webhookUrl ?? "");
-        setSavedWebhookUrl(data.webhookUrl ?? "");
-        setBearerToken(data.bearerToken ?? "");
-        setSavedBearerToken(data.bearerToken ?? "");
-        setShowAuth(Boolean(data.bearerToken));
-      } catch {
-        setError("Could not load webhook settings.");
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
-    void loadWebhookSettings();
-  }, []);
-
-  async function saveWebhookSettings() {
-    const currentValidationError = validateWebhookUrl(webhookUrl);
-    if (currentValidationError) {
-      setError(currentValidationError);
-      setMessage(null);
-      return;
-    }
-
-    setIsSaving(true);
-    setError(null);
-    setMessage(null);
-
-    try {
-      const response = await fetch("/api/settings/webhook", {
-        method: "PUT",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ webhookUrl, bearerToken: showAuth ? bearerToken : "" }),
-      });
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data.error ?? "Could not save webhook settings.");
-        return;
-      }
-
-      setWebhookUrl(data.webhookUrl ?? "");
-      setSavedWebhookUrl(data.webhookUrl ?? "");
-      setBearerToken(data.bearerToken ?? "");
-      setSavedBearerToken(data.bearerToken ?? "");
-      setShowAuth(Boolean(data.bearerToken));
-      setMessage("Webhook settings saved successfully.");
-    } catch {
-      setError("Could not save webhook settings.");
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between sm:space-y-0">
-          <div>
-            <CardTitle>Webhook</CardTitle>
-            <CardDescription>Send Emailable events to an external workflow or automation endpoint.</CardDescription>
-          </div>
-          <Button disabled={isLoading || isSaving || !hasChanges || Boolean(urlValidationError)} onClick={() => void saveWebhookSettings()} type="button">
-            <Save className="h-4 w-4" />
-            {isSaving ? "Saving..." : "Save"}
-          </Button>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <label className="block">
-            <span className="mb-1 block text-sm font-medium text-zinc-700">Webhook URL</span>
-            <input
-              className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
-              disabled={isLoading}
-              onChange={(event) => {
-                setWebhookUrl(event.target.value);
-                setMessage(null);
-              }}
-              placeholder="https://example.com/emailable-webhook"
-              type="url"
-              value={webhookUrl}
-            />
-            <span className="mt-1 block text-xs text-zinc-500">Leave this blank to disable webhook delivery.</span>
-          </label>
-
-          <label className="flex items-center gap-2 text-sm text-zinc-700">
-            <input
-              checked={showAuth}
-              className="h-4 w-4"
-              disabled={isLoading}
-              onChange={(event) => {
-                setShowAuth(event.target.checked);
-                if (!event.target.checked) {
-                  setBearerToken("");
-                }
-                setMessage(null);
-              }}
-              type="checkbox"
-            />
-            Send Authorization bearer token
-          </label>
-
-          {showAuth ? (
-            <label className="block">
-              <span className="mb-1 block text-sm font-medium text-zinc-700">Bearer token</span>
-              <input
-                className="h-10 w-full glass-panel rounded-md border px-3 text-sm outline-none transition-colors focus:border-zinc-400"
-                disabled={isLoading}
-                onChange={(event) => {
-                  setBearerToken(event.target.value);
-                  setMessage(null);
-                }}
-                placeholder="Paste token"
-                type="password"
-                value={bearerToken}
-              />
-            </label>
-          ) : null}
-
-          {urlValidationError ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{urlValidationError}</p> : null}
-          {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-          {message ? <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</p> : null}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Webhook Events</CardTitle>
-          <CardDescription>Every webhook is sent as JSON with the same outer event envelope.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <pre className="overflow-x-auto rounded-md bg-zinc-950 p-3 text-xs text-white">
-            {JSON.stringify({ event_id: "uuid", event_name: "string", schema_version: "1.0", payload: {}, timestamp: new Date().toISOString() }, null, 2)}
-          </pre>
-          <EndpointDoc
-            method="EVENT"
-            path="email.ready_for_processing"
-            title="Email Ready for Processing"
-            notes={["Fired once an email has been ingested, classified, and its labels have been committed.", "Includes the available body, headers, attachment availability, classification, and the per-user activity callback URL. Delivery is asynchronous and attempted once."]}
-            response={{ event_id: "event-uuid", event_name: "email.ready_for_processing", schema_version: "1.0", payload: { email: { id: "message-id", body: { text: "Complete email text", html: "<p>Complete email HTML</p>" }, attachments: [{ filename: "invoice.pdf", available: false, unavailable_reason: "Attachment content was not loaded during processing." }] }, classification: { labels: ["Finance"], attention: null }, activity_callback: { url: "https://emailable.example/api/v1/activity-callbacks/secret", schema_version: "1.0" } }, timestamp: "2026-11-07T18:14:02.000Z" }}
-          />
-          <EndpointDoc
-            method="EVENT"
-            path="email.drafted"
-            title="Email Drafted"
-            notes={["Fired when a draft reply is created through REST API or MCP."]}
-            response={{
-              event_name: "email.drafted",
-              payload: {
-                to: ["recipient@example.com"],
-                from: "user@example.com",
-                subject: "Re: Example subject",
-                body: { text: "Reply text", html: "" },
-                accountEmail: "user@example.com",
-                emailId: "message-id",
-                draftId: "draft-id",
-                provider: "gmail",
-              },
-              timestamp: "2026-06-08T12:00:00.000Z",
-            }}
-          />
-          <EndpointDoc
-            method="EVENT"
-            path="email_rule.created / email_rule.modified / email_rule.deleted"
-            title="Email Rule Events"
-            notes={["Created and modified events include the saved rule and submitted payload or changes. Deleted events include the deleted rule payload."]}
-            response={{
-              event_name: "email_rule.modified",
-              payload: {
-                rule: { emailId: "message-id", labelsApplied: ["Invoice"], isPending: false },
-                changes: { labelsApplied: ["Invoice"], labelReasons: { Invoice: "Use this label for vendor invoices." } },
-                previous: { emailId: "message-id", labelsApplied: [], isPending: true },
-              },
-              timestamp: "2026-06-08T12:00:00.000Z",
-            }}
-          />
-          <EndpointDoc
-            method="EVENT"
-            path="label.created / label.modified / label.deleted"
-            title="Label Events"
-            notes={["Created and modified events include the label. Modified events include changed fields. Deleted events include the deleted label payload."]}
-            response={{
-              event_name: "label.created",
-              payload: {
-                label: { id: "label-id", name: "Invoice", description: "Vendor invoices" },
-              },
-              timestamp: "2026-06-08T12:00:00.000Z",
-            }}
-          />
-          <EndpointDoc
-            method="EVENT"
-            path="email.labels_updated"
-            title="Email Labels Updated"
-            notes={["Fired when labels are added to or removed from an email through REST API or MCP."]}
-            response={{
-              event_name: "email.labels_updated",
-              payload: {
-                emailId: "message-id",
-                accountEmail: "user@example.com",
-                added: ["Invoice"],
-                removed: [],
-              },
-              timestamp: "2026-06-08T12:00:00.000Z",
-            }}
-          />
-        </CardContent>
-      </Card>
-
-      <ActivityCallbackSettings />
-    </div>
-  );
-}
-
 function EmailAccountsPage({ isHomeAssistant, privacyMode }: { isHomeAssistant: boolean; privacyMode: boolean }) {
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [providers, setProviders] = useState<EmailProvider[]>([]);
@@ -16133,26 +15894,6 @@ function validateConfidenceThreshold(value: string) {
 
   if (threshold < 0.01 || threshold > 1) {
     return "Confidence threshold must be between 0.01 and 1.";
-  }
-
-  return null;
-}
-
-function validateWebhookUrl(value: string) {
-  const url = value.trim();
-
-  if (!url) {
-    return null;
-  }
-
-  try {
-    const parsedUrl = new URL(url);
-
-    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      return "Webhook URL must use http or https.";
-    }
-  } catch {
-    return "Webhook URL must be a valid URL.";
   }
 
   return null;

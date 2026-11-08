@@ -3052,7 +3052,7 @@ function sanitizeAiHelperEmailContext(value) {
           status: ["started", "completed", "failed"].includes(activity?.status) ? activity.status : "started",
           title: typeof activity?.title === "string" ? activity.title.slice(0, 200) : "Automation activity",
           description: typeof activity?.description === "string" ? activity.description.slice(0, 1000) : "",
-          details: activity?.details && typeof activity.details === "object" && !Array.isArray(activity.details) ? activity.details : {},
+          data: activity?.data && typeof activity.data === "object" && !Array.isArray(activity.data) ? activity.data : {},
           error: activity?.error && typeof activity.error === "object" && !Array.isArray(activity.error) ? activity.error : null,
           reportedStartedAt: typeof activity?.reportedStartedAt === "string" ? activity.reportedStartedAt.slice(0, 100) : "",
           reportedEndedAt: typeof activity?.reportedEndedAt === "string" ? activity.reportedEndedAt.slice(0, 100) : "",

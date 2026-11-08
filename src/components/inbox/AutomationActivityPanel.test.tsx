@@ -18,4 +18,12 @@ describe("AutomationActivityPanel", () => {
     expect(screen.getByText(/3s/)).toBeTruthy();
     expect(screen.getByText(/does not independently verify/)).toBeTruthy();
   });
+
+  it("labels incomplete lifecycle timing without inventing a duration", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    render(<AutomationActivityPanel accountId="account-1" emailId="email-1" initialActivities={[{
+      id: "row-2", eventId: "event-1", activityId: "run-2", source: "n8n", status: "completed", title: "Document created", description: "Saved", reportedEndedAt: "2026-11-07T18:14:05.000Z", data: {},
+    }]} />);
+    expect(screen.getByText(/Start unknown/)).toBeTruthy();
+  });
 });

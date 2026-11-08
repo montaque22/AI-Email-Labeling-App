@@ -1,0 +1,11 @@
+export type ActivityCallbackStatus = "started" | "completed" | "failed";
+export type ActivityCallbackPayload = { schema_version: "1.0"; event_id: string; activity_id: string; status: ActivityCallbackStatus; source: string; title: string; description: string; timestamp: string; data: Record<string, unknown>; error?: Record<string, unknown> };
+export type WebhookEventDefinition = { name: string; title: string; description: string; payload: Record<string, unknown>; useCase: string };
+export const WEBHOOK_SCHEMA_VERSION: "1.0";
+export const ACTIVITY_CALLBACK_STATUSES: readonly ActivityCallbackStatus[];
+export const ACTIVITY_CALLBACK_LIMITS: Readonly<Record<string, number>>;
+export const activityCallbackSchema: import("zod").ZodType<ActivityCallbackPayload>;
+export const ACTIVITY_CALLBACK_EXAMPLES: Record<ActivityCallbackStatus, ActivityCallbackPayload>;
+export const WEBHOOK_EVENT_DEFINITIONS: WebhookEventDefinition[];
+export function createWebhookEnvelope(eventName: string, payload: Record<string, unknown>, options?: { eventId?: string; schemaVersion?: string; timestamp?: string }): Record<string, unknown>;
+export function parseActivityCallbackPayload(body: unknown): { ok: false; error: string } | { ok: true; value: { schemaVersion: "1.0"; eventId: string; activityId: string; status: ActivityCallbackStatus; source: string; title: string; description: string; timestamp: Date; data: Record<string, unknown>; error: Record<string, unknown> | null } };
