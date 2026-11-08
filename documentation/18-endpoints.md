@@ -124,6 +124,20 @@ Finds an email, loads relevant rules, calls the active AI platform with structur
 
 This endpoint is only usable while BYOAI is active.
 
+### Processed Event Feed
+
+`GET /api/integrations/events` returns retained `email.ready_for_processing` events for the API-key owner. It supports `cursor`, `limit`, `event_name`, and `include_body` query parameters. Results use a signed opaque cursor, stable creation ordering, and pagination. Polling never changes outbound webhook delivery status.
+
+Use `cursor=latest` to initialize a new consumer without replaying historical events. Event-feed payloads are retained for 14 days by default. When a cursor is older than retained history, the response sets `cursor_expired` and resumes from the oldest available event.
+
+Bodies, HTML, raw headers, callback secrets, and attachment bytes are excluded by default. `include_body=true` adds only a bounded plain-text body.
+
+### Report Automation Activity
+
+`POST /api/integrations/activity-callbacks` lets native clients such as the Home Assistant integration report a Completed or Failed outcome using their existing integration API key. The JSON contract, idempotency, correlation, quota, persistence, and logs are identical to the generated secret callback URL documented under Webhooks.
+
+This endpoint does not accept Started, create pending activities, supervise external work, or infer a failure when no report arrives.
+
 ## Basic request example
 
 ```bash

@@ -1,11 +1,20 @@
 get_prompts:
   name: Get prompts
   description: Fetch rendered prompts, confidence threshold, and labels from Emailable.
+  fields:
+    config_entry_id: &config_entry
+      name: Emailable server
+      description: Required when more than one Emailable integration is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: emailable
 
 create_draft_reply:
   name: Create draft reply
   description: Create a draft reply in a connected email account.
   fields:
+    config_entry_id: *config_entry
     accountEmail:
       required: true
       selector:
@@ -33,6 +42,7 @@ add_labels_on_email:
   name: Add labels on email
   description: Apply labels or create a pending review rule depending on confidence.
   fields:
+    config_entry_id: *config_entry
     emailId:
       required: true
       selector:
@@ -74,6 +84,7 @@ query_email_rules:
   name: Query email rules
   description: Query email rules with AND/OR conditions.
   fields:
+    config_entry_id: *config_entry
     query:
       required: true
       selector:
@@ -90,6 +101,7 @@ send_email:
   name: Send email
   description: Send a new email through the connected Emailable server. Body content can be plain text, markdown, or HTML.
   fields:
+    config_entry_id: *config_entry
     accountEntity:
       name: From account entity
       description: Choose an Emailable email account entity. This is the easiest option when the integration has loaded account sensors.
@@ -153,3 +165,52 @@ send_email:
       selector:
         text:
           multiline: true
+
+activity_completed:
+  name: Activity completed
+  description: Report a successful Home Assistant outcome on the email that produced an Emailable event.
+  fields: &activity_fields
+    config_entry_id: *config_entry
+    event_id:
+      name: Event ID
+      description: The event_id from the emailable_email_ready event.
+      required: true
+      selector:
+        text:
+    activity_id:
+      name: Activity ID
+      description: A stable ID derived from the event and operation name. Use a different ID for each independent operation.
+      required: true
+      selector:
+        text:
+    title:
+      name: Title
+      description: A short description of the reported outcome.
+      required: true
+      selector:
+        text:
+    description:
+      name: Description
+      description: Optional human-readable result details.
+      required: false
+      selector:
+        text:
+          multiline: true
+    data:
+      name: Result data
+      description: Optional domain-agnostic result details, such as an external ID or URL.
+      required: false
+      selector:
+        object:
+
+activity_failed:
+  name: Activity failed
+  description: Report a failed Home Assistant outcome on the email that produced an Emailable event.
+  fields:
+    <<: *activity_fields
+    error:
+      name: Error
+      description: Optional structured error details, such as code and message.
+      required: false
+      selector:
+        object:

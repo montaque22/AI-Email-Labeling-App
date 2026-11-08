@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertCircle, Bot, CheckCircle2, ChevronRight, ExternalLink, LoaderCircle } from "lucide-react";
+import { AlertCircle, Bot, CheckCircle2, ChevronRight, ExternalLink } from "lucide-react";
 import { Badge } from "../ui/badge";
 
 export type AutomationActivity = {
@@ -7,16 +7,13 @@ export type AutomationActivity = {
   eventId: string;
   activityId: string;
   source: string;
-  status: "started" | "completed" | "failed";
+  status: "completed" | "failed";
   title: string;
   description: string;
   data?: Record<string, unknown>;
   error?: Record<string, unknown> | null;
-  reportedStartedAt?: string | null;
-  reportedEndedAt?: string | null;
-  startedReceivedAt?: string | null;
-  terminalReceivedAt?: string | null;
-  durationMs?: number | null;
+  reportedAt: string;
+  receivedAt: string;
   reportedByExternalSystem?: boolean;
 };
 
@@ -61,21 +58,16 @@ export function AutomationActivityPanel({ accountId, emailId, initialActivities 
 }
 
 function AutomationActivityRow({ activity }: { activity: AutomationActivity }) {
-  const Icon = activity.status === "completed" ? CheckCircle2 : activity.status === "failed" ? AlertCircle : LoaderCircle;
-  const statusStyle = activity.status === "completed" ? "bg-emerald-50 text-emerald-700" : activity.status === "failed" ? "bg-red-50 text-red-700" : "bg-blue-50 text-blue-700";
-  const iconStyle = activity.status === "completed" ? "text-emerald-600" : activity.status === "failed" ? "text-red-600" : "animate-spin text-blue-600";
+  const Icon = activity.status === "completed" ? CheckCircle2 : AlertCircle;
+  const statusStyle = activity.status === "completed" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700";
+  const iconStyle = activity.status === "completed" ? "text-emerald-600" : "text-red-600";
   const resultUrl = getExternalResultUrl(activity.data);
-  const timingNote = activity.reportedStartedAt && !activity.reportedEndedAt
-    ? "Completion unknown"
-    : !activity.reportedStartedAt && activity.reportedEndedAt
-      ? "Start unknown"
-      : null;
   return (
     <article className="flex items-start gap-3 py-3">
       <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${iconStyle}`} />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-2"><p className="font-semibold text-zinc-950">{activity.title}</p><Badge className={statusStyle}>{formatStatus(activity.status)}</Badge></div>
-        <p className="mt-0.5 text-xs text-zinc-500">{activity.source}{activity.reportedStartedAt ? ` · ${formatDate(activity.reportedStartedAt)}` : activity.reportedEndedAt ? ` · ${formatDate(activity.reportedEndedAt)}` : ""}{activity.durationMs != null ? ` · ${formatDuration(activity.durationMs)}` : timingNote ? ` · ${timingNote}` : ""}</p>
+        <p className="mt-0.5 text-xs text-zinc-500">{activity.source} · {formatDate(activity.reportedAt)}</p>
         {activity.description ? <p className="mt-1 text-sm text-zinc-700">{activity.description}</p> : null}
         {activity.status === "failed" && activity.error ? <p className="mt-1 text-sm text-red-700">{String(activity.error.message || activity.error.code || "External automation failed")}</p> : null}
         <div className="mt-2 flex items-center gap-3 text-xs">
@@ -88,7 +80,6 @@ function AutomationActivityRow({ activity }: { activity: AutomationActivity }) {
   );
 }
 
-function formatStatus(status: AutomationActivity["status"]) { return status === "started" ? "In progress" : status.charAt(0).toUpperCase() + status.slice(1); }
+function formatStatus(status: AutomationActivity["status"]) { return status.charAt(0).toUpperCase() + status.slice(1); }
 function formatDate(value: string) { return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
-function formatDuration(value: number) { return value < 1000 ? `${value}ms` : `${Math.round(value / 100) / 10}s`; }
 function getExternalResultUrl(data?: Record<string, unknown>) { const value = data?.url; if (typeof value !== "string") return null; try { const url = new URL(value); return url.protocol === "https:" || url.protocol === "http:" ? value : null; } catch { return null; } }

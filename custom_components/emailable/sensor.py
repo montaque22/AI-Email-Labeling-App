@@ -6,11 +6,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import EmailableApiClient
-from .const import DOMAIN
+from .const import DATA_CLIENTS, DOMAIN
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
-    client: EmailableApiClient = hass.data[DOMAIN][entry.entry_id]
+    client: EmailableApiClient = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
 
     try:
         data = await client.get_email_accounts()

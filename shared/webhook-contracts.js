@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const WEBHOOK_SCHEMA_VERSION = "1.0";
-export const ACTIVITY_CALLBACK_STATUSES = ["started", "completed", "failed"];
+export const ACTIVITY_CALLBACK_STATUSES = ["completed", "failed"];
 export const ACTIVITY_CALLBACK_LIMITS = {
   eventId: 200,
   activityId: 200,
@@ -38,17 +38,6 @@ export const activityCallbackSchema = z.object({
 });
 
 export const ACTIVITY_CALLBACK_EXAMPLES = {
-  started: {
-    schema_version: WEBHOOK_SCHEMA_VERSION,
-    event_id: "evt_123",
-    activity_id: "activity_456",
-    status: "started",
-    source: "n8n",
-    title: "Generating summary document",
-    description: "Creating a project summary from the email.",
-    timestamp: "2026-11-07T18:14:02Z",
-    data: { workflow_run_id: "run_789" },
-  },
   completed: {
     schema_version: WEBHOOK_SCHEMA_VERSION,
     event_id: "evt_123",

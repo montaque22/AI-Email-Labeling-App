@@ -11,6 +11,11 @@ const DAILY_LIMIT = numberFromEnv("ACTIVITY_CALLBACK_DAILY_LIMIT", 500);
 const RATE_PER_SECOND = numberFromEnv("ACTIVITY_CALLBACK_RATE_PER_SECOND", 5);
 const BURST_LIMIT = numberFromEnv("ACTIVITY_CALLBACK_BURST_LIMIT", 10);
 const MAX_CALLBACK_BYTES = numberFromEnv("ACTIVITY_CALLBACK_MAX_BYTES", 64 * 1024);
+const EVENT_RETENTION_DAYS = numberFromEnv("POST_PROCESSING_EVENT_RETENTION_DAYS", 14);
+const EVENT_BODY_MAX_LENGTH = numberFromEnv("POST_PROCESSING_EVENT_BODY_MAX_LENGTH", 12_000);
+const EVENT_FEED_MAX_LIMIT = 100;
+const EVENT_FEED_DEFAULT_LIMIT = 50;
+let lastRetentionCleanupAt = 0;
 
 export async function ensureAutomationActivityTables() {
   if (!dbPool) return;
@@ -34,6 +39,8 @@ export async function ensureAutomationActivityTables() {
       delivered_at timestamptz
     );
     create index if not exists post_processing_events_owner_idx on post_processing_events(user_id, email_id, created_at desc);
+    create index if not exists post_processing_events_feed_idx on post_processing_events(user_id, created_at, id);
+    alter table post_processing_events alter column payload drop not null;
 
     create table if not exists email_automation_activities (
       id uuid primary key,
@@ -49,15 +56,33 @@ export async function ensureAutomationActivityTables() {
       description text not null default '',
       details jsonb not null default '{}'::jsonb,
       error jsonb,
-      result_url text,
-      reported_started_at timestamptz,
-      reported_ended_at timestamptz,
-      started_received_at timestamptz,
-      terminal_received_at timestamptz,
+      reported_at timestamptz not null,
+      received_at timestamptz not null default now(),
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now(),
       unique(user_id, event_id, activity_id)
     );
+    alter table email_automation_activities add column if not exists reported_at timestamptz;
+    alter table email_automation_activities add column if not exists received_at timestamptz;
+    do $$
+    begin
+      if exists (select 1 from information_schema.columns where table_name='email_automation_activities' and column_name='reported_ended_at') then
+        update email_automation_activities
+          set reported_at = coalesce(reported_at, reported_ended_at, created_at),
+              received_at = coalesce(received_at, terminal_received_at, created_at)
+          where status in ('completed', 'failed');
+      end if;
+    end $$;
+    delete from email_automation_activities where status not in ('completed', 'failed');
+    alter table email_automation_activities alter column reported_at set not null;
+    alter table email_automation_activities alter column received_at set not null;
+    alter table email_automation_activities drop column if exists reported_started_at;
+    alter table email_automation_activities drop column if exists reported_ended_at;
+    alter table email_automation_activities drop column if exists started_received_at;
+    alter table email_automation_activities drop column if exists terminal_received_at;
+    alter table email_automation_activities drop column if exists result_url;
+    alter table email_automation_activities drop constraint if exists email_automation_activities_status_check;
+    alter table email_automation_activities add constraint email_automation_activities_status_check check (status in ('completed', 'failed'));
     create index if not exists email_automation_activities_email_idx on email_automation_activities(user_id, email_index_id, updated_at desc);
 
     create table if not exists activity_callback_usage (
@@ -122,7 +147,7 @@ export function registerAutomationActivityRoutes(app) {
         });
         return res.status(400).json({ error: input.error });
       }
-      const outcome = await recordActivityCallback(owner.userId, input.value);
+      const outcome = await ingestActivityCallback(owner.userId, input.value);
       res.status(outcome.duplicate ? 200 : 201).json(outcome);
     } catch (error) {
       if (owner?.userId) void logSystemEvent(owner.userId, { category: "webhook", eventName: "activity_callback.rejected", status: "error", message: error.message, payload: { status: error.status || 500 } });
@@ -133,6 +158,7 @@ export function registerAutomationActivityRoutes(app) {
 
 export async function emitReadyForProcessingEvent(userId, { target, labelsApplied = [] }) {
   if (!dbPool) return null;
+  await maybePruneExpiredPostProcessingEvents();
   const callback = await ensureCallbackCredential(userId);
   const normalizedLabels = normalizeLabels(labelsApplied);
   const [indexResult, labelResult] = await Promise.all([
@@ -195,42 +221,146 @@ export async function emitReadyForProcessingEvent(userId, { target, labelsApplie
 
 export async function listAutomationActivities(userId, { accountId, emailId }) {
   if (!dbPool) return [];
-  const result = await dbPool.query(`select id, event_id as "eventId", activity_id as "activityId", source, status, title, description, details as data, error, reported_started_at as "reportedStartedAt", reported_ended_at as "reportedEndedAt", started_received_at as "startedReceivedAt", terminal_received_at as "terminalReceivedAt", created_at as "createdAt", updated_at as "updatedAt" from email_automation_activities where user_id=$1 and email_account_id=$2 and email_id=$3 order by coalesce(terminal_received_at,started_received_at,created_at) desc`, [userId, accountId, emailId]);
-  return result.rows.map((row) => ({ ...row, durationMs: row.reportedStartedAt && row.reportedEndedAt && new Date(row.reportedEndedAt) >= new Date(row.reportedStartedAt) ? new Date(row.reportedEndedAt).getTime() - new Date(row.reportedStartedAt).getTime() : null, reportedByExternalSystem: true }));
+  const result = await dbPool.query(`select id, event_id as "eventId", activity_id as "activityId", source, status, title, description, details as data, error, reported_at as "reportedAt", received_at as "receivedAt", created_at as "createdAt", updated_at as "updatedAt" from email_automation_activities where user_id=$1 and email_account_id=$2 and email_id=$3 order by received_at desc`, [userId, accountId, emailId]);
+  return result.rows.map((row) => ({ ...row, reportedByExternalSystem: true }));
 }
 
-async function recordActivityCallback(userId, input) {
+export async function listIntegrationEvents(userId, options = {}) {
+  await maybePruneExpiredPostProcessingEvents();
+  const eventName = options.eventName || READY_FOR_PROCESSING_EVENT;
+  if (eventName !== READY_FOR_PROCESSING_EVENT) throw httpError(400, `Unsupported event_name: ${eventName}`);
+  const limit = parseEventLimit(options.limit);
+  const includeBody = options.includeBody === true;
+  const cutoff = new Date(Date.now() - EVENT_RETENTION_DAYS * 86_400_000);
+
+  if (options.cursor === "latest") {
+    const latest = await dbPool.query(
+      `select id,created_at from post_processing_events where user_id=$1 and payload is not null and created_at >= $2 order by created_at desc,id desc limit 1`,
+      [userId, cutoff],
+    );
+    const row = latest.rows[0];
+    return { events: [], next_cursor: row ? encodeEventCursor(userId, row) : null, has_more: false, cursor_expired: false, retention_days: EVENT_RETENTION_DAYS };
+  }
+
+  const position = options.cursor ? decodeEventCursor(userId, options.cursor) : null;
+  const oldestResult = await dbPool.query(
+    `select id,created_at from post_processing_events where user_id=$1 and payload is not null and created_at >= $2 order by created_at,id limit 1`,
+    [userId, cutoff],
+  );
+  const oldest = oldestResult.rows[0] ?? null;
+  const cursorExpired = Boolean(position && oldest && new Date(position.createdAt) < new Date(oldest.created_at));
+  const effectivePosition = cursorExpired ? null : position;
+  const values = [userId, cutoff];
+  let positionSql = "";
+  if (effectivePosition) {
+    values.push(effectivePosition.createdAt, effectivePosition.id);
+    positionSql = `and (created_at,id) > ($3::timestamptz,$4::uuid)`;
+  }
+  values.push(limit + 1);
+  const result = await dbPool.query(
+    `select id,event_id,created_at,payload from post_processing_events where user_id=$1 and payload is not null and created_at >= $2 ${positionSql} order by created_at,id limit $${values.length}`,
+    values,
+  );
+  const hasMore = result.rows.length > limit;
+  const rows = result.rows.slice(0, limit);
+  const events = rows.map((row) => ({
+    event_id: row.event_id,
+    event_name: READY_FOR_PROCESSING_EVENT,
+    created_at: new Date(row.created_at).toISOString(),
+    payload: buildEventFeedPayload(row.payload, includeBody),
+  }));
+  const last = rows.at(-1);
+  return {
+    events,
+    next_cursor: last ? encodeEventCursor(userId, last) : options.cursor && options.cursor !== "latest" ? options.cursor : null,
+    has_more: hasMore,
+    cursor_expired: cursorExpired,
+    retention_days: EVENT_RETENTION_DAYS,
+  };
+}
+
+export async function maybePruneExpiredPostProcessingEvents({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && now - lastRetentionCleanupAt < 3_600_000) return;
+  const cutoff = new Date(now - EVENT_RETENTION_DAYS * 86_400_000);
+  await dbPool.query(`delete from post_processing_events event where event.created_at < $1 and not exists (select 1 from email_automation_activities activity where activity.event_id=event.event_id)`, [cutoff]);
+  await dbPool.query(`update post_processing_events set payload=null where created_at < $1 and payload is not null`, [cutoff]);
+  lastRetentionCleanupAt = now;
+}
+
+export function buildEventFeedPayload(payload, includeBody) {
+  const email = payload?.email && typeof payload.email === "object" ? payload.email : {};
+  const bodyText = typeof email.body?.text === "string" ? email.body.text.slice(0, EVENT_BODY_MAX_LENGTH) : "";
+  return {
+    email: {
+      id: email.id || "",
+      thread_id: email.thread_id || email.id || "",
+      account_id: email.account_id || "",
+      account_email: email.account_email || "",
+      provider: email.provider || "",
+      from: email.from || { email: "", name: "" },
+      subject: email.subject || "",
+      received_at: email.received_at || null,
+      attachments: (Array.isArray(email.attachments) ? email.attachments : []).map(({ content_base64: _content, ...attachment }) => attachment),
+      ...(includeBody ? { body: { text: bodyText } } : {}),
+    },
+    classification: payload?.classification || { labels: [], attention: null },
+  };
+}
+
+function parseEventLimit(value) {
+  if (value === undefined || value === null || value === "") return EVENT_FEED_DEFAULT_LIMIT;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > EVENT_FEED_MAX_LIMIT) throw httpError(400, `limit must be an integer between 1 and ${EVENT_FEED_MAX_LIMIT}`);
+  return parsed;
+}
+
+function encodeEventCursor(userId, row) {
+  const payload = Buffer.from(JSON.stringify({ createdAt: new Date(row.created_at).toISOString(), id: row.id })).toString("base64url");
+  const signature = crypto.createHmac("sha256", eventCursorSecret()).update(`${userId}:${payload}`).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function decodeEventCursor(userId, cursor) {
+  const [payload, signature, extra] = String(cursor).split(".");
+  if (!payload || !signature || extra) throw httpError(400, "cursor is invalid");
+  const expected = crypto.createHmac("sha256", eventCursorSecret()).update(`${userId}:${payload}`).digest("base64url");
+  if (!timingSafe(signature, expected)) throw httpError(400, "cursor is invalid");
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!isUuid(decoded.id) || Number.isNaN(Date.parse(decoded.createdAt))) throw new Error("invalid cursor payload");
+    return decoded;
+  } catch {
+    throw httpError(400, "cursor is invalid");
+  }
+}
+
+function eventCursorSecret() { return process.env.EVENT_CURSOR_SECRET || process.env.BETTER_AUTH_SECRET || "local-development-only-event-cursor-key"; }
+
+export async function ingestActivityCallback(userId, input) {
   const client = await dbPool.connect();
   try {
     await client.query("begin");
+    const settingsResult = await client.query(`select activity_callback_enabled as enabled from user_settings where user_id=$1`, [userId]);
+    if (settingsResult.rows[0]?.enabled === false) throw httpError(403, "Activity callbacks are disabled");
     const eventResult = await client.query(`select event_id, email_index_id, email_account_id, email_id from post_processing_events where user_id=$1 and event_id=$2 for update`, [userId, input.eventId]);
     const event = eventResult.rows[0];
     if (!event) throw httpError(404, "Event was not found for this callback owner");
     const existingResult = await client.query(`select * from email_automation_activities where user_id=$1 and event_id=$2 and activity_id=$3 for update`, [userId, input.eventId, input.activityId]);
     const existing = existingResult.rows[0];
     if (existing && isExactDuplicate(existing, input)) { await client.query("rollback"); return { ok: true, duplicate: true, activityId: input.activityId }; }
-    if (existing && isTerminal(existing.status) && input.status !== "started") throw httpError(409, "A different terminal result is already recorded for this activity");
+    if (existing) throw httpError(409, "A different outcome is already recorded for this activity");
     await consumeRateLimit(client, userId);
     const now = new Date();
-    const lifecycle = resolveActivityLifecycle(existing, input);
-    const nextStatus = lifecycle.status;
     await client.query(`
-      insert into email_automation_activities(id,user_id,event_id,email_index_id,email_account_id,email_id,activity_id,source,status,title,description,details,error,result_url,reported_started_at,reported_ended_at,started_received_at,terminal_received_at)
-      values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18)
-      on conflict(user_id,event_id,activity_id) do update set
-        source=case when $19 then email_automation_activities.source else excluded.source end,
-        status=$9, title=case when $19 then email_automation_activities.title else excluded.title end,
-        description=case when $19 then email_automation_activities.description else excluded.description end,
-        details=case when $19 then email_automation_activities.details else email_automation_activities.details || excluded.details end,
-        error=coalesce(excluded.error,email_automation_activities.error), result_url=coalesce(excluded.result_url,email_automation_activities.result_url),
-        reported_started_at=coalesce(email_automation_activities.reported_started_at,excluded.reported_started_at), reported_ended_at=coalesce(excluded.reported_ended_at,email_automation_activities.reported_ended_at),
-        started_received_at=coalesce(email_automation_activities.started_received_at,excluded.started_received_at), terminal_received_at=coalesce(excluded.terminal_received_at,email_automation_activities.terminal_received_at), updated_at=now()
-    `, [crypto.randomUUID(), userId, input.eventId, event.email_index_id, event.email_account_id, event.email_id, input.activityId, input.source, nextStatus, input.title, input.description, JSON.stringify(input.data), input.error ? JSON.stringify(input.error) : null, null, lifecycle.reportedStartedAt, lifecycle.reportedEndedAt, input.status === "started" ? now : null, input.status !== "started" ? now : null, lifecycle.preserveTerminal]);
+      insert into email_automation_activities(id,user_id,event_id,email_index_id,email_account_id,email_id,activity_id,source,status,title,description,details,error,reported_at,received_at)
+      values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14,$15)
+    `, [crypto.randomUUID(), userId, input.eventId, event.email_index_id, event.email_account_id, event.email_id, input.activityId, input.source, input.status, input.title, input.description, JSON.stringify(input.data), input.error ? JSON.stringify(input.error) : null, input.timestamp, now]);
     await client.query(`insert into activity_callback_usage(user_id,usage_date,callback_count) values($1,(now() at time zone 'UTC')::date,1) on conflict(user_id,usage_date) do update set callback_count=activity_callback_usage.callback_count+1`, [userId]);
     await client.query("commit");
     const eventName = `activity_callback.${input.status}`;
     await logSystemEvent(userId, { category: "webhook", eventName, status: input.status === "failed" ? "error" : "success", message: `${input.source} reported ${input.status}.`, payload: { eventId: input.eventId, activityId: input.activityId } });
-    return { ok: true, duplicate: false, activityId: input.activityId, status: nextStatus };
+    return { ok: true, duplicate: false, activityId: input.activityId, status: input.status };
   } catch (error) { await client.query("rollback").catch(() => {}); throw error; }
   finally { client.release(); }
 }
@@ -248,17 +378,10 @@ async function consumeRateLimit(client, userId) {
 }
 
 export function parseActivityCallback(body) {
+  if (Buffer.byteLength(JSON.stringify(body ?? {})) > MAX_CALLBACK_BYTES) {
+    return { ok: false, error: "Callback payload is too large" };
+  }
   return parseActivityCallbackPayload(body);
-}
-
-export function resolveActivityLifecycle(existing, input) {
-  const isStarted = input.status === "started";
-  return {
-    status: isStarted && existing?.status ? existing.status : input.status,
-    preserveTerminal: isStarted && isTerminal(existing?.status),
-    reportedStartedAt: isStarted ? input.timestamp : null,
-    reportedEndedAt: isStarted ? null : input.timestamp,
-  };
 }
 
 async function getActivityCallbackSettings(userId, req) {
@@ -297,8 +420,8 @@ function resolveBaseUrl(req) { const configured = process.env.APP_URL || process
 function normalizeLabels(values) { return (Array.isArray(values) ? values : []).map((item) => typeof item === "string" ? item : item?.labelName || item?.name).filter(Boolean); }
 function numberFromEnv(name, fallback) { const value=Number(process.env[name]); return Number.isFinite(value)&&value>0?value:fallback; }
 function stringValue(value, max) { return typeof value === "string" ? value.trim().slice(0,max) : ""; }
-function isTerminal(status) { return status === "completed" || status === "failed"; }
-function isExactDuplicate(row, input) { const reportedTimestamp = input.status === "started" ? row.reported_started_at : row.reported_ended_at; if (!reportedTimestamp || new Date(reportedTimestamp).getTime() !== input.timestamp.getTime()) return false; if (input.status === "started" && isTerminal(row.status)) return true; return row.status===input.status && row.source===input.source && row.title===input.title && row.description===input.description && JSON.stringify(row.details||{})===JSON.stringify(input.data||{}) && JSON.stringify(row.error||null)===JSON.stringify(input.error||null); }
+function isExactDuplicate(row, input) { return Boolean(row.reported_at) && new Date(row.reported_at).getTime()===input.timestamp.getTime() && row.status===input.status && row.source===input.source && row.title===input.title && row.description===input.description && canonicalJson(row.details||{})===canonicalJson(input.data||{}) && canonicalJson(row.error||null)===canonicalJson(input.error||null); }
+function canonicalJson(value) { if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`; if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`; return JSON.stringify(value); }
 function httpError(status, message) { const error=new Error(message); error.status=status; return error; }
 function sendError(res,error) { const status=Number(error.status)||500; if(status>=500) console.error("Automation activity error:",error); res.status(status).json({error:status>=500?"Automation activity request failed":error.message}); }
 function nextUtcMidnight() { const date=new Date(); date.setUTCHours(24,0,0,0); return date.toISOString(); }

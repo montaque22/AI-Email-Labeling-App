@@ -9,9 +9,9 @@ order: 19
 Emailable supports two related integrations:
 
 - **Outbound Webhooks (Emailable → external system):** Emailable sends events to your configured destination.
-- **Activity Callbacks (external system → Emailable):** your workflow reports visible progress and outcomes back to the email's Automation Activity section.
+- **Activity Callbacks (external system → Emailable):** your workflow optionally reports completed or failed outcomes back to the email's Automation Activity section.
 
-They use different URLs and payloads. The outbound bearer token authenticates Emailable to your destination. The secret callback URL authorizes your workflow to report activity to Emailable.
+They use different URLs and payloads. The outbound bearer token authenticates Emailable to your destination. A generated secret callback URL authorizes generic external workflows to report activity; the native Home Assistant integration uses its existing Emailable API key instead.
 
 ## Configure outbound webhooks
 
@@ -129,7 +129,7 @@ For a failed callback, include an optional `error` object:
 }
 ~~~
 
-Required fields are `schema_version`, `event_id`, `activity_id`, `status`, `source`, `title`, `description`, `timestamp`, and `data`. Status must be `started`, `completed`, or `failed`. `error` is accepted only for `failed`.
+Required fields are `schema_version`, `event_id`, `activity_id`, `status`, `source`, `title`, `description`, `timestamp`, and `data`. Status must be `completed` or `failed`. `error` is accepted only for `failed`.
 
 Limits:
 
@@ -142,24 +142,25 @@ Limits:
 - `error`: 16 KB of JSON.
 - Default quota: 500 callbacks per UTC day, five per second with a burst of ten. The settings page shows the instance's actual limits.
 
-## Callback lifecycle
+## Reporting outcomes
 
 1. Receive `email.ready_for_processing`.
 2. Save its top-level `event_id` and the callback URL.
-3. Choose one stable `activity_id` for the external work.
-4. Send `started` when work begins.
-5. Send either `completed` or `failed` when it finishes, using the same identifiers.
+3. Choose one stable `activity_id` for each independent operation.
+4. Optionally send either `completed` or `failed` after that operation finishes.
 
-The callback `timestamp` is the external system's reported state time. Emailable separately records when it received each callback. A started callback without a terminal callback displays **Completion unknown**. A terminal callback without a start displays **Start unknown**. Terminal-before-start delivery is supported; once both timestamps arrive, Emailable can calculate duration.
+The callback `timestamp` is the external system's reported outcome time. Emailable separately records when it received the callback. If no callback is received, Emailable records no activity and makes no assumption about external work.
 
-Exact duplicate reports are idempotent. A conflicting second terminal result is rejected. Automation Activity clearly states that outcomes are reported by the external system and are not independently verified by Emailable.
+Exact duplicate reports are idempotent. A contradictory outcome using the same activity ID is rejected. Multiple independent operations may use different activity IDs for the same event. Automation Activity clearly states that outcomes are reported by the external system and are not independently verified by Emailable.
+
+Home Assistant users can call `emailable.activity_completed` and `emailable.activity_failed` instead of constructing HTTP requests. Those native actions authenticate with the existing Emailable integration API key. Generic systems such as n8n and Node-RED should continue using the generated callback URL. Both methods use this same schema, quota, correlation, persistence, and logging behavior.
 
 ## Connecting an external workflow
 
 1. Save the external workflow's receiver under **Outbound Webhooks**.
 2. Route `email.ready_for_processing` into your automation.
 3. Store `event_id` and read `payload.activity_callback.url`.
-4. Send canonical callbacks as the automation changes state.
+4. Send a canonical Completed or Failed callback after an operation finishes.
 5. Verify activity on the email and inspect Webhook Events logs if delivery or callbacks fail.
 
 ## Logging and security
@@ -180,5 +181,5 @@ Outbound delivery and inbound callback lifecycle entries use the **webhook** log
 - **400 from a callback:** compare the body with canonical v1.0. Obsolete `started_at`, `ended_at`, `result_url`, and `details` fields are rejected.
 - **409 from a callback:** a different terminal outcome is already recorded for the same activity.
 - **429 from a callback:** slow the sender or wait for the UTC daily quota reset.
-- **Activity remains In progress:** the workflow has not reported `completed` or `failed`.
+- **No Automation Activity appears:** external systems are not required to report an outcome. Confirm the workflow sent a Completed or Failed callback if an entry was expected.
 - **Attachment unavailable:** inspect `unavailable_reason`; metadata remains present even when content could not be loaded.

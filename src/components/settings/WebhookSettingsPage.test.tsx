@@ -15,6 +15,9 @@ describe("WebhookSettingsPage", () => {
     render(<WebhookSettingsPage />);
     expect(await screen.findByText("Outbound Webhooks")).toBeTruthy();
     expect(screen.getByText("Activity Callbacks")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Completed" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Failed" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "Started" })).toBeNull();
     const definition = WEBHOOK_EVENT_DEFINITIONS.find((event) => event.name === "email.ready_for_processing")!;
     fireEvent.click(screen.getByRole("button", { name: "Copy email.ready_for_processing JSON" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(JSON.stringify(createWebhookEnvelope(definition.name, definition.payload), null, 2)));

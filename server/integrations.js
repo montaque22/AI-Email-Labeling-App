@@ -29,6 +29,7 @@ import { runDetachedTask, runGuardedStep } from "./detached-tasks.js";
 import { fetchWithTimeout } from "./http.js";
 import { emitWebhookEvent, emitWebhookEventDetached } from "./webhooks.js";
 import { deleteAllSystemLogs, exportSystemLogs, listSystemLogs, logSystemEvent } from "./system-logs.js";
+import { emitReadyForProcessingEvent, ingestActivityCallback, listIntegrationEvents, parseActivityCallback } from "./automation-activity.js";
 
 const API_KEY_PREFIX = "n8n";
 const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
@@ -796,6 +797,50 @@ export function registerIntegrationRoutes(app) {
     }
   });
 
+  app.get("/api/integrations/events", requireApiKey, async (req, res) => {
+    try {
+      if (req.query.include_body !== undefined && !["true", "false"].includes(req.query.include_body)) {
+        res.status(400).json({ error: "include_body must be true or false" });
+        return;
+      }
+      const result = await listIntegrationEvents(req.integrationUser.id, {
+        eventName: typeof req.query.event_name === "string" ? req.query.event_name.trim() : "",
+        cursor: typeof req.query.cursor === "string" ? req.query.cursor.trim() : "",
+        limit: req.query.limit,
+        includeBody: req.query.include_body === "true",
+      });
+      if (result.events.length > 0 || result.cursor_expired) {
+        await logSystemEvent(req.integrationUser.id, {
+          category: "endpoints",
+          eventName: "GET /api/integrations/events",
+          status: result.cursor_expired ? "warning" : "success",
+          message: result.cursor_expired ? "Event-feed cursor expired; delivery resumed from the oldest retained event." : `Returned ${result.events.length} integration event(s).`,
+          payload: { count: result.events.length, cursorExpired: result.cursor_expired },
+        });
+      }
+      res.json(result);
+    } catch (error) {
+      await logSystemEvent(req.integrationUser.id, { category: "endpoints", eventName: "GET /api/integrations/events", status: "error", message: error.message });
+      handleError(res, error);
+    }
+  });
+
+  app.post("/api/integrations/activity-callbacks", requireApiKey, async (req, res) => {
+    try {
+      const input = parseActivityCallback(req.body);
+      if (!input.ok) {
+        await logSystemEvent(req.integrationUser.id, { category: "webhook", eventName: "activity_callback.rejected", status: "error", message: input.error, payload: { authentication: "api_key" } });
+        res.status(400).json({ error: input.error });
+        return;
+      }
+      const outcome = await ingestActivityCallback(req.integrationUser.id, input.value);
+      res.status(outcome.duplicate ? 200 : 201).json(outcome);
+    } catch (error) {
+      await logSystemEvent(req.integrationUser.id, { category: "webhook", eventName: "activity_callback.rejected", status: "error", message: error.message, payload: { authentication: "api_key", status: error.status || 500 } });
+      handleError(res, error);
+    }
+  });
+
   app.post("/api/integrations/email-rules/query", requireApiKey, async (req, res) => {
     const query = buildEmailRuleQuery(req.body?.query ?? req.body);
 
@@ -1025,7 +1070,7 @@ async function modifyMessageLabels(req, res, action) {
   }
 }
 
-export async function classifyEmailWithLabelCandidates(userId, rule, { source = "integration" } = {}) {
+export async function classifyEmailWithLabelCandidates(userId, rule, { source = "integration", publishReadyEvent = true } = {}) {
   const threshold = await getConfidenceThreshold(userId);
   const target = await findConnectedMessageById(userId, rule.emailId, rule.subject, {
     accountEmail: rule.accountEmail ?? "",
@@ -1064,11 +1109,18 @@ export async function classifyEmailWithLabelCandidates(userId, rule, { source = 
           source,
           reason: error.message,
         });
+        error.processingFallbackApplied = true;
+        if (publishReadyEvent) {
+          await emitReadyForProcessingEvent(userId, { target, labelsApplied: [UNEMAILABLE_SYSTEM_LABEL_NAME] });
+        }
         throw error;
       })
     : { labels: [] };
 
   if (shouldAutoLabel) {
+    if (publishReadyEvent) {
+      await emitReadyForProcessingEvent(userId, { target, labelsApplied: labels.labels });
+    }
     return {
       action: "labels_added",
       threshold,
@@ -1106,6 +1158,9 @@ export async function classifyEmailWithLabelCandidates(userId, rule, { source = 
     },
   });
   await emitEmailRuleUpsertWebhook(userId, previousRule, pendingRule, rule);
+  if (publishReadyEvent) {
+    await emitReadyForProcessingEvent(userId, { target, labelsApplied: [UNEMAILABLE_SYSTEM_LABEL_NAME] });
+  }
 
   return {
     action: "pending_rule_created",

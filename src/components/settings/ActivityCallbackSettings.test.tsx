@@ -8,7 +8,7 @@ import { ActivityCallbackSettings } from "./ActivityCallbackSettings";
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe("ActivityCallbackSettings", () => {
-  it("shows the three canonical examples and copies the selected JSON", async () => {
+  it("shows the terminal outcome examples and copies the selected JSON", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ enabled: true, callbackUrl: "https://example.com/api/v1/activity-callbacks/secret", maskedCallbackUrl: "https://example.com/api/v1/activity-callbacks/secret••••", usage: 1, dailyLimit: 500, ratePerSecond: 5, burstLimit: 10 }) }));

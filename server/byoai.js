@@ -1079,6 +1079,7 @@ export async function generateAiLabel(userId, request) {
   if (allowedLabelNames.length === 0) {
     const error = new Error("No labels are available for AI labeling.");
     error.status = 400;
+    await finalizeFallbackProcessing(userId, target, error.message);
     throw error;
   }
   const labelInstructions = await getRenderedLabelInstructions(userId);
@@ -1097,55 +1098,70 @@ export async function generateAiLabel(userId, request) {
     responseShape: "label",
     responseSchema,
   }).catch(async (error) => {
-    await tryApplyUnemailableLabel(userId, {
-      emailId: target.email.emailId,
-      subject: target.email.subject,
-      target,
-      source: "ai-integration",
-      reason: error.message,
-    });
+    await finalizeFallbackProcessing(userId, target, error.message);
     throw error;
   });
-  const labelResult = parseJsonResponse(aiResponse, ["labelsApplied"]);
+  let labelResult;
+  try {
+    labelResult = parseJsonResponse(aiResponse, ["labelsApplied"]);
+  } catch (error) {
+    await finalizeFallbackProcessing(userId, target, error.message);
+    throw error;
+  }
   const labelsApplied = normalizeAiLabelCandidates(labelResult.labelsApplied);
   const payload = buildAiLabelClassificationPayload(target, labelsApplied);
   let parsed = await parseLabelClassificationInput(userId, payload);
   if (!parsed.ok && parsed.error === "labelsApplied contains labels that do not exist") {
-    const retryResponse = await callBestAvailableAi(userId, {
-      systemPrompt: `${baseSystemPrompt}${ruleContext}`,
-      userPrompt: `${baseUserPrompt}\n\nYour previous response included invalid labels: ${(parsed.labels ?? []).join(", ")}. Retry now. Use ONLY these exact labels: ${allowedLabelNames.join(", ")}. Return only valid JSON with labelsApplied.`,
-      responseShape: "label",
-      responseSchema,
-    });
-    const retryResult = parseJsonResponse(retryResponse, ["labelsApplied"]);
-    const retryLabelsApplied = normalizeAiLabelCandidates(retryResult.labelsApplied);
-    parsed = await parseLabelClassificationInput(userId, buildAiLabelClassificationPayload(target, retryLabelsApplied));
+    try {
+      const retryResponse = await callBestAvailableAi(userId, {
+        systemPrompt: `${baseSystemPrompt}${ruleContext}`,
+        userPrompt: `${baseUserPrompt}\n\nYour previous response included invalid labels: ${(parsed.labels ?? []).join(", ")}. Retry now. Use ONLY these exact labels: ${allowedLabelNames.join(", ")}. Return only valid JSON with labelsApplied.`,
+        responseShape: "label",
+        responseSchema,
+      });
+      const retryResult = parseJsonResponse(retryResponse, ["labelsApplied"]);
+      const retryLabelsApplied = normalizeAiLabelCandidates(retryResult.labelsApplied);
+      parsed = await parseLabelClassificationInput(userId, buildAiLabelClassificationPayload(target, retryLabelsApplied));
+    } catch (error) {
+      await finalizeFallbackProcessing(userId, target, error.message);
+      throw error;
+    }
   }
   if (!parsed.ok) {
-    await tryApplyUnemailableLabel(userId, {
-      emailId: target.email.emailId,
-      subject: target.email.subject,
-      target,
-      source: "ai-integration",
-      reason: parsed.error,
-    });
+    await finalizeFallbackProcessing(userId, target, parsed.error);
     const error = new Error(parsed.error);
     error.status = 400;
     error.labels = parsed.labels;
     throw error;
   }
 
-  if (relevantRules.length > 0) {
-    const result = await labelUsingExistingRuleEvidence(userId, parsed.rule, target, relevantRules, allowedLabelNames);
-    await emitReadyForProcessingEvent(userId, { target, labelsApplied: parsed.rule.labelsApplied ?? result.added ?? [] });
-    queueCustomPromptAutomations(userId, target, parsed.rule.labelsApplied ?? result.added ?? []);
-    return result;
+  let result;
+  try {
+    result = relevantRules.length > 0
+      ? await labelUsingExistingRuleEvidence(userId, parsed.rule, target, relevantRules, allowedLabelNames)
+      : await classifyEmailWithLabelCandidates(userId, parsed.rule, { source: "ai-integration", publishReadyEvent: false });
+  } catch (error) {
+    await finalizeFallbackProcessing(userId, target, error.message, { applyFallback: error.processingFallbackApplied !== true });
+    throw error;
   }
-
-  const result = await classifyEmailWithLabelCandidates(userId, parsed.rule, { source: "ai-integration" });
-  await emitReadyForProcessingEvent(userId, { target, labelsApplied: parsed.rule.labelsApplied ?? result.added ?? [] });
-  queueCustomPromptAutomations(userId, target, parsed.rule.labelsApplied ?? result.added ?? []);
+  const finalLabels = result.added ?? [UNEMAILABLE_SYSTEM_LABEL_NAME];
+  await emitReadyForProcessingEvent(userId, { target, labelsApplied: finalLabels });
+  queueCustomPromptAutomations(userId, target, finalLabels);
   return result;
+}
+
+async function finalizeFallbackProcessing(userId, target, reason, { applyFallback = true } = {}) {
+  if (applyFallback) {
+    await tryApplyUnemailableLabel(userId, {
+      emailId: target.email.emailId,
+      subject: target.email.subject,
+      target,
+      source: "ai-integration",
+      reason,
+    });
+  }
+  await emitReadyForProcessingEvent(userId, { target, labelsApplied: [UNEMAILABLE_SYSTEM_LABEL_NAME] });
+  queueCustomPromptAutomations(userId, target, [UNEMAILABLE_SYSTEM_LABEL_NAME]);
 }
 
 function buildAiLabelOutputSchema(allowedLabelNames) {
@@ -1254,6 +1270,7 @@ async function labelUsingExistingRuleEvidence(userId, rule, target, relevantRule
       source: "ai-integration",
       reason: error.message,
     });
+    error.processingFallbackApplied = true;
     throw error;
   });
   return {
@@ -3049,13 +3066,12 @@ function sanitizeAiHelperEmailContext(value) {
     automationActivities: Array.isArray(value.automationActivities)
       ? value.automationActivities.slice(0, 20).map((activity) => ({
           source: typeof activity?.source === "string" ? activity.source.slice(0, 100) : "External automation",
-          status: ["started", "completed", "failed"].includes(activity?.status) ? activity.status : "started",
+          status: ["completed", "failed"].includes(activity?.status) ? activity.status : "failed",
           title: typeof activity?.title === "string" ? activity.title.slice(0, 200) : "Automation activity",
           description: typeof activity?.description === "string" ? activity.description.slice(0, 1000) : "",
           data: activity?.data && typeof activity.data === "object" && !Array.isArray(activity.data) ? activity.data : {},
           error: activity?.error && typeof activity.error === "object" && !Array.isArray(activity.error) ? activity.error : null,
-          reportedStartedAt: typeof activity?.reportedStartedAt === "string" ? activity.reportedStartedAt.slice(0, 100) : "",
-          reportedEndedAt: typeof activity?.reportedEndedAt === "string" ? activity.reportedEndedAt.slice(0, 100) : "",
+          reportedAt: typeof activity?.reportedAt === "string" ? activity.reportedAt.slice(0, 100) : "",
           provenance: "Reported by an external system and not independently verified by Emailable",
         }))
       : [],

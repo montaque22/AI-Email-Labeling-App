@@ -1,4 +1,4 @@
-export type ActivityCallbackStatus = "started" | "completed" | "failed";
+export type ActivityCallbackStatus = "completed" | "failed";
 export type ActivityCallbackPayload = { schema_version: "1.0"; event_id: string; activity_id: string; status: ActivityCallbackStatus; source: string; title: string; description: string; timestamp: string; data: Record<string, unknown>; error?: Record<string, unknown> };
 export type WebhookEventDefinition = { name: string; title: string; description: string; payload: Record<string, unknown>; useCase: string };
 export const WEBHOOK_SCHEMA_VERSION: "1.0";

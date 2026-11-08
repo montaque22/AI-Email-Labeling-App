@@ -5,6 +5,8 @@ import { ACTIVITY_CALLBACK_EXAMPLES, WEBHOOK_EVENT_DEFINITIONS, activityCallback
 describe("shared webhook contracts", () => {
   it("keeps examples valid and envelopes versioned", () => {
     for (const example of Object.values(ACTIVITY_CALLBACK_EXAMPLES)) expect(activityCallbackSchema.safeParse(example).success).toBe(true);
+    expect(Object.keys(ACTIVITY_CALLBACK_EXAMPLES)).toEqual(["completed", "failed"]);
+    expect(activityCallbackSchema.safeParse({ ...ACTIVITY_CALLBACK_EXAMPLES.completed, status: "started" }).success).toBe(false);
     expect(createWebhookEnvelope("label.created", { label: { name: "Finance" } })).toMatchObject({ event_id: "evt_123", event_name: "label.created", schema_version: "1.0" });
   });
 
