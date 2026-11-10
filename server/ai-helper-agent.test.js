@@ -71,6 +71,21 @@ describe("inbox agent policy", () => {
     expect(prompt).toContain("Do not claim to browse the public internet");
   });
 
+  it("requires operational research when public research tools are registered", () => {
+    const context = buildAiHelperExecutionContext({
+      toolCatalog: [
+        { name: "search_web", source: "emailable" },
+        { name: "read_public_page", source: "emailable" },
+      ],
+    });
+    const prompt = buildAiHelperSystemPrompt([], context);
+
+    expect(prompt).toContain("search the public web");
+    expect(prompt).toContain("read the relevant result pages");
+    expect(prompt).toContain("including public PDFs");
+    expect(prompt).toContain("cite the source URLs");
+  });
+
   it("does not contain user-specific accounts or labels", () => {
     const prompt = buildAiHelperSystemPrompt();
 
@@ -141,6 +156,7 @@ describe("inbox agent policy", () => {
 
   it("gives the verifier the request, history, evidence, and candidate answer", () => {
     const prompt = buildAiHelperVerificationPrompt({
+      activeEmail: '{"contentStatus":"available","text":"A complete proposal"}',
       candidate: "The result is 50%.",
       history: "assistant: There are 25 matching messages.",
       request: "What percentage is that?",
@@ -151,6 +167,8 @@ describe("inbox agent policy", () => {
     expect(prompt).toContain("There are 25 matching messages.");
     expect(prompt).toContain('"totalMatches":100');
     expect(prompt).toContain("The result is 50%.");
+    expect(prompt).toContain("A complete proposal");
+    expect(prompt).toContain("never call its body empty");
     expect(prompt).toContain("fix unsupported claims, scope mistakes, arithmetic errors");
   });
 

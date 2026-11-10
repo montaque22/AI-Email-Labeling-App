@@ -22,6 +22,7 @@ import {
 import { emitWebhookEventDetached } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import { calculateInboxAgentValues } from "./ai-helper-agent.js";
+import { readPublicPage, searchPublicWeb } from "./research-tools.js";
 import {
   completeTask,
   createTaskFromWorkflow,
@@ -60,6 +61,16 @@ export const SYSTEM_MCP_TOOL_DEFINITIONS = [
     name: "find_email",
     title: "Find Email",
     description: "Search Emailable's indexed email database by id, subject, sender, account, label, archive/draft/sent/inbox state, read/unread status, and timestamps. Provider-wide connected-account search is optional.",
+  },
+  {
+    name: "search_web",
+    title: "Search Public Web",
+    description: "Search the public web for current information and return source URLs, titles, and excerpts.",
+  },
+  {
+    name: "read_public_page",
+    title: "Read Public Page",
+    description: "Read a public webpage or PDF and return extractable text with source metadata.",
   },
   {
     name: "propose_email_bulk_action",
@@ -347,6 +358,32 @@ function createMcpServer(userId) {
     async (input) => {
       return loggedMcpToolResult(userId, "find_email", input, "internal:find-email", () => findEmailTool(userId, input));
     },
+  );
+
+  server.registerTool(
+    "search_web",
+    {
+      title: "Search Public Web",
+      description: "Search the public web for current information. Use the returned URLs as leads, then read relevant sources before drawing conclusions.",
+      inputSchema: {
+        query: z.string().trim().min(2).max(500),
+        limit: z.number().int().min(1).max(10).optional(),
+      },
+    },
+    async (input) => loggedMcpToolResult(userId, "search_web", input, "public-web:search", () => searchPublicWeb(input)),
+  );
+
+  server.registerTool(
+    "read_public_page",
+    {
+      title: "Read Public Page",
+      description: "Fetch and read a public webpage or text-based PDF. Private-network destinations are blocked.",
+      inputSchema: {
+        url: z.string().url(),
+        maxCharacters: z.number().int().min(1000).max(30000).optional(),
+      },
+    },
+    async (input) => loggedMcpToolResult(userId, "read_public_page", input, "public-web:read", () => readPublicPage(input)),
   );
 
   server.registerTool(

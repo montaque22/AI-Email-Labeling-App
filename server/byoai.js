@@ -251,6 +251,32 @@ const SYSTEM_MCP_TOOLS = [
     },
   },
   {
+    name: "search_web",
+    description: "Search the public web for current information. Use the returned URLs as leads, then call read_public_page on relevant sources before making factual claims.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", minLength: 2, maxLength: 500, description: "Focused public-web search query." },
+        limit: { type: "number", minimum: 1, maximum: 10 },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "read_public_page",
+    description: "Read a public webpage or text-based PDF and return its extractable text plus source metadata. Use it to inspect search results and follow evidence.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", format: "uri", description: "Public HTTP or HTTPS URL." },
+        maxCharacters: { type: "number", minimum: 1000, maximum: 30000 },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "calculate",
     description: "Perform reliable arithmetic for counts, percentages, ratios, sums, differences, products, and quotients. Use this instead of mental arithmetic whenever an answer depends on calculated numeric results.",
     inputSchema: {
@@ -1623,6 +1649,8 @@ function filterMcpClientsForPrompt(clients, selectedTools) {
 
 async function generateAiHelperChat(userId, request, options = {}) {
   await assertAiEnabled(userId);
+  const runId = crypto.randomUUID();
+  const runStartedAt = Date.now();
   pruneAiHelperMemory();
   const memory = getAiHelperSessionMemory(userId, request.sessionId);
   const combinedHistory = mergeAiHelperHistory(memory.messages, request.conversationHistory);
@@ -1630,57 +1658,178 @@ async function generateAiHelperChat(userId, request, options = {}) {
   const currentMessageIsInHistory = history.at(-1)?.role === "user" && history.at(-1)?.text === request.prompt;
   const previousHistory = currentMessageIsInHistory ? history.slice(0, -1) : history;
   const toolResults = [];
-  const labels = await getAiHelperLabelCatalog(userId);
-  const mcpClients = await buildAiHelperMcpClients(userId);
-  const executionContext = buildAiHelperExecutionContext({
-    applicationContext: request.applicationContext,
-    emailContext: request.emailContext,
-    sessionId: request.sessionId,
-    toolCatalog: buildAiHelperToolCatalog(mcpClients),
-  });
-  const aiResponse = await callBestAvailableAi(userId, {
-    systemPrompt: buildAiHelperSystemPrompt(labels, executionContext),
-    messages: buildAiHelperMessages(previousHistory, request.prompt),
-    responseShape: "text",
-    toolChoice: "auto",
-  }, {
-    mcpClients,
-    onToolEvent: options.onExecutionEvent,
-    onToolResult: (result) => toolResults.push(result),
-    toolExecutionContext: {
-      defaultTaskSourceEmailId: "",
-      userId,
-    },
-  });
+  try {
+    const labels = await getAiHelperLabelCatalog(userId);
+    const mcpClients = await buildAiHelperMcpClients(userId);
+    const resolvedEmailContext = await resolveAiHelperEmailContext(userId, request.emailContext);
+    const toolCatalog = buildAiHelperToolCatalog(mcpClients);
+    const executionContext = buildAiHelperExecutionContext({
+      applicationContext: request.applicationContext,
+      emailContext: resolvedEmailContext,
+      sessionId: request.sessionId,
+      toolCatalog,
+    });
+    await logSystemEvent(userId, {
+      category: "ai",
+      eventName: "ai_agent.run_started",
+      status: "info",
+      message: "Work Mode agent run started.",
+      payload: {
+        runId,
+        sessionId: request.sessionId,
+        activeEmail: summarizeActiveEmailContext(resolvedEmailContext),
+        tools: toolCatalog.map((entry) => ({ name: entry.name, source: entry.source })),
+      },
+    });
+    let providerDiagnostics = null;
+    const aiResponse = await callBestAvailableAi(userId, {
+      systemPrompt: buildAiHelperSystemPrompt(labels, executionContext),
+      messages: buildAiHelperMessages(previousHistory, request.prompt),
+      responseShape: "text",
+      toolChoice: "auto",
+    }, {
+      mcpClients,
+      onRunDiagnostics: (diagnostics) => { providerDiagnostics = diagnostics; },
+      onToolEvent: options.onExecutionEvent,
+      onToolResult: (result) => toolResults.push(result),
+      toolExecutionContext: {
+        defaultTaskSourceEmailId: resolvedEmailContext?.emailId || "",
+        runId,
+        userId,
+      },
+    });
 
-  const candidateMessage = cleanAiTextResponse(aiResponse);
-  const message = await verifyAiHelperResponse(userId, {
-    candidate: candidateMessage,
-    history: previousHistory,
-    request: request.prompt,
-    toolResults,
-  });
-  const affectedEmails = extractAffectedEmailsFromAiHelperToolResults(toolResults);
-  const affectedTasks = extractAffectedTasksFromAiHelperToolResults(toolResults);
-  const proposedBulkAction = extractProposedBulkActionFromAiHelperToolResults(toolResults);
-  const artifact = extractPreparedReplyDraftFromAiHelperToolResults(toolResults);
-  const sources = extractAgentResearchSources(toolResults);
-  updateAiHelperSessionMemory(userId, request.sessionId, [
-    ...previousHistory,
-    { role: "user", text: request.prompt },
-    { role: "assistant", text: message },
-  ], {
-    affectedEmails: affectedEmails.length > 0 ? affectedEmails : memory.affectedEmails,
-    affectedTasks: affectedTasks.length > 0 ? affectedTasks : memory.affectedTasks,
-  });
+    const candidateMessage = cleanAiTextResponse(aiResponse);
+    const message = await verifyAiHelperResponse(userId, {
+      activeEmail: resolvedEmailContext,
+      candidate: candidateMessage,
+      history: previousHistory,
+      request: request.prompt,
+      runId,
+      toolResults,
+    });
+    const affectedEmails = extractAffectedEmailsFromAiHelperToolResults(toolResults);
+    const affectedTasks = extractAffectedTasksFromAiHelperToolResults(toolResults);
+    const proposedBulkAction = extractProposedBulkActionFromAiHelperToolResults(toolResults);
+    const artifact = extractPreparedReplyDraftFromAiHelperToolResults(toolResults);
+    const sources = extractAgentResearchSources(toolResults);
+    updateAiHelperSessionMemory(userId, request.sessionId, [
+      ...previousHistory,
+      { role: "user", text: request.prompt },
+      { role: "assistant", text: message },
+    ], {
+      affectedEmails: affectedEmails.length > 0 ? affectedEmails : memory.affectedEmails,
+      affectedTasks: affectedTasks.length > 0 ? affectedTasks : memory.affectedTasks,
+    });
+    await logSystemEvent(userId, {
+      category: "ai",
+      eventName: "ai_agent.run_completed",
+      status: "success",
+      message: "Work Mode agent run completed.",
+      payload: {
+        runId,
+        durationMs: Date.now() - runStartedAt,
+        activeEmail: summarizeActiveEmailContext(resolvedEmailContext),
+        provider: providerDiagnostics,
+        sourceCount: sources.length,
+        toolCalls: toolResults.map((entry) => entry.toolName),
+      },
+    });
 
+    return {
+      message,
+      affectedEmails: affectedEmails.length > 0 ? affectedEmails : [],
+      affectedTasks: affectedTasks.length > 0 ? affectedTasks : [],
+      artifact,
+      proposedBulkAction,
+      sources,
+    };
+  } catch (error) {
+    await logSystemEvent(userId, {
+      category: "ai",
+      eventName: "ai_agent.run_failed",
+      status: "error",
+      message: `Work Mode agent run failed: ${error.message}`,
+      payload: { runId, durationMs: Date.now() - runStartedAt, toolCalls: toolResults.map((entry) => entry.toolName) },
+    });
+    throw error;
+  }
+}
+
+async function resolveAiHelperEmailContext(userId, emailContext) {
+  if (!emailContext) return null;
+  const clientText = String(emailContext.text || "").trim();
+  const clientContentLength = Number(emailContext.clientContentLength || clientText.length);
+  const clientContentTruncated = Boolean(emailContext.clientContentTruncated);
+  if (!emailContext.emailId) {
+    return {
+      ...emailContext,
+      contentLength: clientContentLength,
+      contentSource: clientText ? "client_context" : "none",
+      contentStatus: clientText ? "available" : "empty",
+      contentTruncated: clientContentTruncated,
+    };
+  }
+  let accountEmail = "";
+  if (emailContext.accountId) {
+    const accountResult = await dbPool.query(
+      `select email from email_accounts where user_id = $1 and id = $2 limit 1`,
+      [userId, emailContext.accountId],
+    );
+    accountEmail = String(accountResult.rows[0]?.email || "");
+  }
+  try {
+    const resolved = await findConnectedEmailContextById(userId, {
+      accountEmail,
+      emailId: emailContext.emailId,
+      subject: emailContext.subject,
+    });
+    const providerText = String(resolved.email.bodyText || "").trim();
+    const sourceText = providerText || clientText;
+    const text = sourceText.slice(0, 12_000);
+    return {
+      ...emailContext,
+      accountId: resolved.account.id,
+      date: resolved.email.receivedAt || emailContext.date,
+      emailId: resolved.email.emailId || emailContext.emailId,
+      from: formatAiHelperEmailSender(resolved.email) || emailContext.from,
+      subject: resolved.email.subject || emailContext.subject,
+      text,
+      threadId: resolved.email.threadId || emailContext.threadId,
+      to: resolved.email.to || emailContext.to,
+      contentLength: providerText ? providerText.length : clientContentLength,
+      contentSource: providerText ? "connected_provider" : clientText ? "client_fallback" : "connected_provider",
+      contentStatus: sourceText ? "available" : "empty",
+      contentTruncated: providerText ? providerText.length > text.length : clientContentTruncated,
+    };
+  } catch (error) {
+    return {
+      ...emailContext,
+      contentError: truncateLogText(error.message || "Active email retrieval failed.", 300),
+      contentLength: clientContentLength,
+      contentSource: clientText ? "client_fallback" : "unavailable",
+      contentStatus: clientText ? "available" : "unavailable",
+      contentTruncated: clientContentTruncated,
+    };
+  }
+}
+
+function formatAiHelperEmailSender(email) {
+  const name = String(email?.fromName || "").trim();
+  const address = String(email?.fromEmail || "").trim();
+  return name && address ? `${name} <${address}>` : name || address;
+}
+
+function summarizeActiveEmailContext(emailContext) {
+  if (!emailContext) return { present: false };
   return {
-    message,
-    affectedEmails: affectedEmails.length > 0 ? affectedEmails : [],
-    affectedTasks: affectedTasks.length > 0 ? affectedTasks : [],
-    artifact,
-    proposedBulkAction,
-    sources,
+    present: true,
+    accountId: emailContext.accountId || "",
+    emailId: emailContext.emailId || "",
+    contentLength: Number(emailContext.contentLength || 0),
+    contentSource: emailContext.contentSource || "unknown",
+    contentStatus: emailContext.contentStatus || "unknown",
+    contentTruncated: Boolean(emailContext.contentTruncated),
   };
 }
 
@@ -1710,7 +1859,7 @@ async function getAiHelperLabelCatalog(userId) {
   return result.rows;
 }
 
-async function verifyAiHelperResponse(userId, { candidate, history, request, toolResults }) {
+async function verifyAiHelperResponse(userId, { activeEmail, candidate, history, request, runId, toolResults }) {
   const toolEvidence = toolResults.map((entry) => ({
     input: entry.input,
     result: parseToolResultPayload(entry.result),
@@ -1720,11 +1869,14 @@ async function verifyAiHelperResponse(userId, { candidate, history, request, too
     systemPrompt: "You are the final quality-control pass for an inbox agent. Return only the corrected user-facing answer. Tool results are authoritative. Check scope, arithmetic, completeness, and whether the answer follows the request. Never invent facts or tool calls.",
     userPrompt: buildAiHelperVerificationPrompt({
       candidate,
+      activeEmail: JSON.stringify(activeEmail || null).slice(0, 20_000),
       history: history.slice(-12).map((message) => `${message.role}: ${message.text}`).join("\n"),
       request,
       toolResults: JSON.stringify(toolEvidence).slice(0, 30_000),
     }),
     responseShape: "inbox-agent-verification",
+  }, {
+    toolExecutionContext: { runId, userId },
   });
   return cleanAiTextResponse(response) || candidate || "I could not produce a verified answer.";
 }
@@ -2421,6 +2573,7 @@ export async function callBestAvailableAi(userId, prompt, options = {}) {
     try {
       return await callAiPlatformWithMetrics(userId, platform, prompt, {
         mcpClients,
+        onRunDiagnostics: options.onRunDiagnostics,
         onToolEvent: options.onToolEvent,
         onToolResult: options.onToolResult,
         toolExecutionContext: { ...(options.toolExecutionContext ?? {}), userId },
@@ -2534,6 +2687,15 @@ async function callAiPlatformWithSdk(platform, { systemPrompt, userPrompt, respo
     temperature: 0.2,
   });
 
+  options.onRunDiagnostics?.({
+    finishReason: result.finishReason || "unknown",
+    stepCount: Array.isArray(result.steps) ? result.steps.length : 0,
+    toolCallCount: Array.isArray(result.steps)
+      ? result.steps.reduce((count, step) => count + (Array.isArray(step.toolCalls) ? step.toolCalls.length : 0), 0)
+      : 0,
+    usage: result.totalUsage || result.usage || null,
+  });
+
   if (Array.isArray(result.steps) && result.steps.length >= AI_AGENT_MAX_STEPS) {
     const lastStep = result.steps[result.steps.length - 1];
     if (Array.isArray(lastStep.toolCalls) && lastStep.toolCalls.length > 0) {
@@ -2604,13 +2766,14 @@ function buildSdkTools(clients, onToolResult, executionContext = {}, onToolEvent
           ? applySystemToolExecutionDefaults(name, input ?? {}, executionContext)
           : input ?? {};
         const auditUserId = typeof executionContext.userId === "string" ? executionContext.userId : "";
+        const runId = typeof executionContext.runId === "string" ? executionContext.runId : "";
         if (auditUserId) {
           await logSystemEvent(auditUserId, {
             category: "ai",
             eventName: "ai_tool.call_started",
             status: "info",
             message: `AI tool call started: ${name}`,
-            payload: { input: normalizedInput, toolName: name },
+            payload: { callId, input: normalizedInput, runId, toolName: name },
           });
         }
         notifyToolEvent({ callId, occurredAt: new Date().toISOString(), phase: "started", toolName: name });
@@ -2625,7 +2788,7 @@ function buildSdkTools(clients, onToolResult, executionContext = {}, onToolEvent
               eventName: "ai_tool.call_completed",
               status: "success",
               message: `AI tool call completed: ${name}`,
-              payload: { input: normalizedInput, result, toolName: name },
+              payload: { callId, input: normalizedInput, result, runId, toolName: name },
             });
           }
           notifyToolEvent({ callId, occurredAt: new Date().toISOString(), phase: "completed", toolName: name });
@@ -2641,7 +2804,7 @@ function buildSdkTools(clients, onToolResult, executionContext = {}, onToolEvent
               eventName: "ai_tool.call_failed",
               status: "error",
               message: `AI tool call failed: ${name}`,
-              payload: { error: error.message, input: normalizedInput, toolName: name },
+              payload: { callId, error: error.message, input: normalizedInput, runId, toolName: name },
             });
           }
           notifyToolEvent({ callId, error: error.message, occurredAt: new Date().toISOString(), phase: "failed", toolName: name });
@@ -3116,6 +3279,7 @@ function sanitizeAiHelperApplicationContext(value) {
 function sanitizeAiHelperEmailContext(value) {
   if (!value || typeof value !== "object") return null;
   const text = (field, limit) => typeof value[field] === "string" ? value[field].trim().slice(0, limit) : "";
+  const rawBodyText = typeof value.text === "string" ? value.text.trim() : "";
   const labels = Array.isArray(value.labels)
     ? value.labels.filter((label) => typeof label === "string").slice(0, 20).map((label) => label.trim().slice(0, 100)).filter(Boolean)
     : [];
@@ -3127,7 +3291,9 @@ function sanitizeAiHelperEmailContext(value) {
     labels,
     mailbox: text("mailbox", 100),
     subject: text("subject", 500),
-    text: text("text", 12000),
+    text: rawBodyText.slice(0, 12000),
+    clientContentLength: rawBodyText.length,
+    clientContentTruncated: rawBodyText.length > 12000,
     threadId: text("threadId", 500),
     to: text("to", 1000),
     automationActivities: Array.isArray(value.automationActivities)
