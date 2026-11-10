@@ -252,7 +252,7 @@ export function deriveAttentionSignals(message, labelCatalog = []) {
   };
 }
 
-async function getAttentionDashboard(userId, {
+export async function getAttentionDashboard(userId, {
   accountIds = [],
   attentionLimit = 5,
   attentionOffset = 0,

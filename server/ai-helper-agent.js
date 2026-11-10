@@ -5,6 +5,7 @@ export function buildAiHelperSystemPrompt(labels = [], executionContext = null) 
     ? JSON.stringify(context.immediate.activeEmail)
     : "(no email is currently open)";
   const runtimeContext = JSON.stringify({
+    application: context.application,
     capabilities: context.capabilities,
     immediate: {
       accountIds: context.immediate.accountIds,
@@ -25,7 +26,9 @@ export function buildAiHelperSystemPrompt(labels = [], executionContext = null) 
     "In the Read/Work workspace, when the user asks to draft, write, prepare, revise, shorten, change the tone of, or otherwise refine a reply to the open email, call prepare_reply_draft with the complete actual draft. This tool is side-effect-free and creates the structured inline artifact the user can review. Do not call create_draft_reply merely to prepare UI content.",
     "For a reply draft, use the open email's accountId, emailId, and threadId; address the sender in from; preserve a reply subject; and include the complete bodyText. For refinements, use the Current reply draft artifact in conversation history as the source, apply the user's requested changes, and call prepare_reply_draft again with the complete revised draft.",
     "Never say a reply draft was created or revised unless prepare_reply_draft succeeded. Applying the artifact to the composer and sending it are separate frontend/user actions; never claim that either occurred from generating the artifact.",
-    "For every search, count, cross-message analysis, recommendation, or action involving email, call find_email first. The indexed database is the authoritative first source, including requests for all mail with no filters. A question fully answerable from the complete open email may use that immediate context directly.",
+    "For every search, count, cross-message analysis, recommendation, or action involving ordinary email fields, call find_email first. The indexed database is the authoritative first source, including requests for all mail with no filters. A question fully answerable from the complete open email may use that immediate context directly.",
+    "Emailable application concepts are not ordinary email labels. For Needs Attention, Of Interest/bookmarked mail, Quick Cleanup, Likely Clutter, Needs Review, Quick Wins, or Commitments, call query_attention_dashboard so the answer uses the same persistent placement logic and counts as the dashboard. Do not ask the user what these standard Emailable terms mean.",
+    "Use get_application_context when you need to discover the user's authorized accounts, labels, exact Emailable concept meanings, or currently registered internal operations. Use get_email_content after identifying a message when its indexed snippet is insufficient.",
     "You decide which tool properties and filters are needed from the user's request and conversation history. Do not infer an account, folder, state, label, sender, or subject from the visible page unless the user explicitly refers to that visible context.",
     "totalMatches is the authoritative size of a database search. returned is only the current page. Never report returned, preview-card count, or a page length as the total.",
     "Read the search result's scope and breakdown before answering. If the user's wording could mean either inbox-only or all indexed mail and those totals differ, report both clearly instead of silently choosing one.",
@@ -43,7 +46,7 @@ export function buildAiHelperSystemPrompt(labels = [], executionContext = null) 
     "Current email context:",
     contextualEmail,
     "The active email record includes contentStatus, contentSource, contentLength, and contentTruncated when Emailable could resolve them. If contentStatus is available, read and use text; never describe that body as empty. If it is unavailable, say retrieval failed or content was unavailable rather than claiming the sender sent an empty message.",
-    "The following runtime context was supplied structurally by Emailable for this turn. It is authoritative for identifiers, current mode, selected items, and which broad capability categories are available. Tool definitions remain authoritative for exact operations.",
+    "The following runtime context was supplied structurally by Emailable for this turn. The application manifest describes persistent application concepts and authorized resources; the immediate section describes temporary UI state such as current mode, selected items, and surface. Never confuse current UI visibility with the user's persistent data. Tool definitions remain authoritative for exact operations.",
     "Runtime context:",
     runtimeContext,
     context.capabilities.webResearchAvailable
@@ -57,7 +60,7 @@ export function buildAiHelperSystemPrompt(labels = [], executionContext = null) 
   ].join("\n");
 }
 
-export function buildAiHelperExecutionContext({ applicationContext = null, emailContext = null, sessionId = "", toolCatalog = [] } = {}) {
+export function buildAiHelperExecutionContext({ applicationCapabilities = null, applicationContext = null, emailContext = null, sessionId = "", toolCatalog = [] } = {}) {
   const tools = Array.isArray(toolCatalog)
     ? toolCatalog.filter((entry) => entry && typeof entry.name === "string").map((entry) => ({
         description: typeof entry.description === "string" ? entry.description : "",
@@ -67,6 +70,7 @@ export function buildAiHelperExecutionContext({ applicationContext = null, email
     : [];
   const webCapabilityText = tools.map((entry) => `${entry.name} ${entry.description}`.toLowerCase()).join(" ");
   return normalizeAiHelperExecutionContext({
+    application: applicationCapabilities,
     capabilities: {
       toolCount: tools.length,
       toolSources: [...new Set(tools.map((entry) => entry.source))],
@@ -90,6 +94,9 @@ function normalizeAiHelperExecutionContext(value) {
     ? items.filter((item) => typeof item === "string" && item.trim()).slice(0, limit).map((item) => item.trim())
     : [];
   return {
+    application: value?.application && typeof value.application === "object"
+      ? value.application
+      : null,
     capabilities: {
       toolCount: Number.isFinite(value?.capabilities?.toolCount) ? Math.max(0, value.capabilities.toolCount) : 0,
       toolSources: cleanStrings(value?.capabilities?.toolSources, 20),

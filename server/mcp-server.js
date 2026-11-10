@@ -22,6 +22,13 @@ import {
 import { emitWebhookEventDetached } from "./webhooks.js";
 import { logSystemEvent } from "./system-logs.js";
 import { calculateInboxAgentValues } from "./ai-helper-agent.js";
+import {
+  APPLICATION_MCP_TOOL_DEFINITIONS,
+  ATTENTION_DASHBOARD_CATEGORIES,
+  getApplicationCapabilityContext,
+  getEmailContentForAgent,
+  queryAttentionDashboardForAgent,
+} from "./application-capabilities.js";
 import { readPublicPage, searchPublicWeb } from "./research-tools.js";
 import {
   completeTask,
@@ -37,6 +44,7 @@ import {
 
 const MCP_KEY_PREFIX = "mcp";
 export const SYSTEM_MCP_TOOL_DEFINITIONS = [
+  ...APPLICATION_MCP_TOOL_DEFINITIONS.map(({ inputSchema: _inputSchema, ...definition }) => definition),
   {
     name: "prepare_reply_draft",
     title: "Prepare Reply Draft",
@@ -257,6 +265,49 @@ function createMcpServer(userId) {
     name: "emailable",
     version: "1.0.0",
   });
+
+  server.registerTool(
+    "get_application_context",
+    {
+      title: "Get Application Context",
+      description: "Discover authorized Emailable accounts, labels, application concepts, and registered internal data tools. Use this when the user's wording refers to Emailable concepts or resources that need clarification.",
+      inputSchema: {},
+    },
+    async () => loggedMcpToolResult(userId, "get_application_context", {}, "internal:application-context", async () => ({
+      manifest: await getApplicationCapabilityContext(userId, SYSTEM_MCP_TOOL_DEFINITIONS),
+    })),
+  );
+
+  server.registerTool(
+    "query_attention_dashboard",
+    {
+      title: "Query Attention Dashboard",
+      description: "Count or list exact Emailable dashboard categories using the same persistent placement logic as the UI. Use this instead of treating Of Interest, Needs Attention, Quick Cleanup, Quick Wins, or Commitments as labels.",
+      inputSchema: {
+        category: z.enum(ATTENTION_DASHBOARD_CATEGORIES),
+        operation: z.enum(["count", "list"]).optional(),
+        accountIds: z.array(z.string().min(1)).max(50).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+    },
+    async (input) => loggedMcpToolResult(userId, "query_attention_dashboard", input, "internal:attention-dashboard", () => queryAttentionDashboardForAgent(userId, input)),
+  );
+
+  server.registerTool(
+    "get_email_content",
+    {
+      title: "Get Email Content",
+      description: "Retrieve complete message content from a specific authorized connected account. Use after identifying a message when its indexed snippet is not enough.",
+      inputSchema: {
+        accountId: z.string().min(1),
+        emailId: z.string().min(1),
+        subject: z.string().optional(),
+        maxCharacters: z.number().int().min(1000).max(30000).optional(),
+      },
+    },
+    async (input) => loggedMcpToolResult(userId, "get_email_content", input, "internal:email-content", () => getEmailContentForAgent(userId, input)),
+  );
 
   server.registerTool(
     "prepare_reply_draft",

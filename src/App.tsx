@@ -5418,6 +5418,7 @@ function InboxAiHelperPanel({
     onText: (text: string) => void,
     onExecutionEvent: (event: AgentExecutionEvent) => void,
   ) {
+    const selectedEmailContext = !emailContext && selectedMessages.length === 1 ? selectedMessages[0] : null;
     const response = await fetch("/api/byoai/helper-chat", {
       method: "POST",
       credentials: "include",
@@ -5425,7 +5426,7 @@ function InboxAiHelperPanel({
       body: JSON.stringify({
         applicationContext: {
           accountIds: accounts.map((account) => account.id),
-          mode: variant === "workspace" ? "work" : "read",
+          mode: "work",
           selectedEmailIds: selectedMessages.map((message) => message.id),
           surface: variant === "workspace" ? "email-workspace" : `inbox-${inboxMode}`,
         },
@@ -5453,6 +5454,17 @@ function InboxAiHelperPanel({
             error: activity.error,
             reportedAt: activity.reportedAt,
           })),
+        } : selectedEmailContext ? {
+          accountId: selectedEmailContext.accountId,
+          date: selectedEmailContext.date,
+          emailId: selectedEmailContext.id,
+          from: selectedEmailContext.from || selectedEmailContext.sender,
+          labels: selectedEmailContext.labels,
+          mailbox: selectedEmailContext.mailbox,
+          subject: selectedEmailContext.subject,
+          text: selectedEmailContext.snippet,
+          threadId: selectedEmailContext.threadId || selectedEmailContext.id,
+          to: selectedEmailContext.accountEmail,
         } : null,
         prompt,
         sessionId,
@@ -5624,34 +5636,6 @@ function InboxAiHelperPanel({
       return;
     }
 
-    const isReplyIntent = /\b(reply|respond|response|answer)\b/.test(normalizedPrompt)
-      && !/\b(new email|new message|compose new|start a new)\b/.test(normalizedPrompt);
-    if (variant !== "workspace" && isReplyIntent) {
-      const target = findReplyTarget(prompt);
-      if (!target) {
-        addMessage({
-          role: "assistant",
-          text: "Which email should I reply to? Select one email first, or mention the sender or subject from the visible emails.",
-        });
-        return;
-      }
-
-      const nextDraft = openComposeWithDraft(createReplyDraftFromMessage(target));
-      setWorkflow({ draft: nextDraft, step: "body" });
-      addMessage({
-        role: "assistant",
-        text: `I opened a reply to ${describeReplyTarget(target)}. Tell me what you want the reply to say, and I will draft it in that thread.`,
-      });
-      return;
-    }
-
-    if (variant !== "workspace" && /\b(compose|write|new email|send an email|draft an email)\b/.test(normalizedPrompt)) {
-      const nextDraft = openComposeWithDraft(null);
-      setWorkflow({ draft: nextDraft, step: "recipient" });
-      addMessage({ role: "assistant", text: "I opened a new compose window. Who should this email go to? You can type a name from the current emails or a full email address." });
-      return;
-    }
-
     setIsThinking(true);
     executionEventsRef.current = [];
     setExecutionEvents([]);
@@ -5764,9 +5748,10 @@ function InboxAiHelperPanel({
   }
 
   function useDraftArtifactInReply(messageId: number, artifact: ReplyDraftArtifact) {
-    const source = selectedMessages.find((message) => message.accountId === artifact.accountId && message.id === artifact.emailId)
-      ?? selectedMessages.find((message) => message.accountId === artifact.accountId && (message.threadId || message.id) === artifact.threadId)
-      ?? selectedMessages[0];
+    const availableMessages = [...selectedMessages, ...contextMessages];
+    const source = availableMessages.find((message) => message.accountId === artifact.accountId && message.id === artifact.emailId)
+      ?? availableMessages.find((message) => message.accountId === artifact.accountId && (message.threadId || message.id) === artifact.threadId)
+      ?? availableMessages[0];
     if (!source) {
       addMessage({ role: "assistant", text: "I could not match this draft to the source email. Reopen that email and try Use in Reply again." });
       return;

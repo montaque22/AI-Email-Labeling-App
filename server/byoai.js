@@ -36,6 +36,10 @@ import {
   buildAiHelperVerificationPrompt,
 } from "./ai-helper-agent.js";
 import { extractAgentResearchSources } from "./ai-helper-sources.js";
+import {
+  APPLICATION_MCP_TOOL_DEFINITIONS,
+  getApplicationCapabilityContext,
+} from "./application-capabilities.js";
 
 const SECRET = process.env.BETTER_AUTH_SECRET || "local-byoai-secret";
 const clientEncryptionKeyPair = crypto.generateKeyPairSync("rsa", {
@@ -151,6 +155,7 @@ const AI_EMAIL_ACTION_RESULT_SUMMARY_SCHEMA = {
 };
 const SYSTEM_MCP_CLIENT_ID = "system";
 const SYSTEM_MCP_TOOLS = [
+  ...APPLICATION_MCP_TOOL_DEFINITIONS,
   {
     name: "prepare_reply_draft",
     description: "Prepare a complete, reviewable reply draft artifact for the open Read/Work email. This has no provider side effects: it does not open the composer, create a remote draft, or send email. Use it for both initial drafts and conversational refinements.",
@@ -1663,7 +1668,9 @@ async function generateAiHelperChat(userId, request, options = {}) {
     const mcpClients = await buildAiHelperMcpClients(userId);
     const resolvedEmailContext = await resolveAiHelperEmailContext(userId, request.emailContext);
     const toolCatalog = buildAiHelperToolCatalog(mcpClients);
+    const applicationCapabilities = await getApplicationCapabilityContext(userId, toolCatalog);
     const executionContext = buildAiHelperExecutionContext({
+      applicationCapabilities,
       applicationContext: request.applicationContext,
       emailContext: resolvedEmailContext,
       sessionId: request.sessionId,
@@ -1678,6 +1685,13 @@ async function generateAiHelperChat(userId, request, options = {}) {
         runId,
         sessionId: request.sessionId,
         activeEmail: summarizeActiveEmailContext(resolvedEmailContext),
+        capabilityManifestVersion: applicationCapabilities.version,
+        internalTools: applicationCapabilities.availableInternalTools.map((tool) => tool.name),
+        selectedResources: {
+          accountIds: request.applicationContext?.accountIds ?? [],
+          selectedEmailIds: request.applicationContext?.selectedEmailIds ?? [],
+          surface: request.applicationContext?.surface ?? "",
+        },
         tools: toolCatalog.map((entry) => ({ name: entry.name, source: entry.source })),
       },
     });
@@ -1730,6 +1744,7 @@ async function generateAiHelperChat(userId, request, options = {}) {
         runId,
         durationMs: Date.now() - runStartedAt,
         activeEmail: summarizeActiveEmailContext(resolvedEmailContext),
+        capabilityManifestVersion: applicationCapabilities.version,
         provider: providerDiagnostics,
         sourceCount: sources.length,
         toolCalls: toolResults.map((entry) => entry.toolName),

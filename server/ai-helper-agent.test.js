@@ -38,6 +38,11 @@ describe("inbox agent policy", () => {
 
   it("builds structured runtime context without adding it to the user message", () => {
     const context = buildAiHelperExecutionContext({
+      applicationCapabilities: {
+        version: "test-manifest",
+        concepts: [{ key: "of_interest", name: "Of Interest" }],
+        availableInternalTools: [{ name: "query_attention_dashboard", source: "emailable" }],
+      },
       applicationContext: {
         accountIds: ["account-1"],
         mode: "work",
@@ -60,7 +65,20 @@ describe("inbox agent policy", () => {
     });
     expect(context.immediate.activeEmail).toMatchObject({ emailId: "message-1" });
     expect(context.capabilities).toMatchObject({ toolCount: 2, webResearchAvailable: true });
+    expect(context.application).toMatchObject({ version: "test-manifest" });
     expect(buildAiHelperMessages([], "Research the sender")).toEqual([{ role: "user", content: "Research the sender" }]);
+  });
+
+  it("routes Emailable dashboard concepts to authoritative application tools", () => {
+    const prompt = buildAiHelperSystemPrompt([], buildAiHelperExecutionContext({
+      applicationCapabilities: { version: "test", concepts: [], availableInternalTools: [] },
+      toolCatalog: [{ name: "query_attention_dashboard", source: "emailable" }],
+    }));
+
+    expect(prompt).toContain("Of Interest/bookmarked mail");
+    expect(prompt).toContain("call query_attention_dashboard");
+    expect(prompt).toContain("Do not ask the user what these standard Emailable terms mean");
+    expect(prompt).toContain("Never confuse current UI visibility with the user's persistent data");
   });
 
   it("does not claim web research when no registered tool provides it", () => {
