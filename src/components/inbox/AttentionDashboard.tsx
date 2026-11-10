@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Gem, Inbox, Layers3, Loader2, SearchCheck, Sparkles } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -9,6 +9,7 @@ import { AttentionCategoryCards, ATTENTION_CATEGORY_CARDS } from "./AttentionCat
 import { AttentionCleanupGroups } from "./AttentionCleanupGroups";
 import { AttentionPriorityList } from "./AttentionPriorityList";
 import { AttentionTrashConfirmation } from "./AttentionTrashConfirmation";
+import { DashboardFilterTabs } from "./DashboardFilterTabs";
 import { InboxPageHeader } from "./InboxPageHeader";
 import type { AttentionCleanupGroup, AttentionDashboardProps, AttentionMessage } from "./attention-dashboard-types";
 import { attentionMessageKey } from "./attention-dashboard-utils";
@@ -153,16 +154,16 @@ export function AttentionDashboard({
             <Button className="sm:hidden" onClick={() => setIsMobileSelectionMode((current) => !current)} size="sm" type="button" variant="outline">{isMobileSelectionMode ? "Cancel" : "Select"}</Button>
           </CardHeader>
           {category === "attention" ? (
-            <DashboardTabs ariaLabel="Needs Attention filters" onChange={(value) => setAttentionFilter(value as typeof attentionFilter)} options={[
-              { count: data?.counts.attention ?? 0, label: "All", value: "all" },
-              { count: data?.quickWinCount ?? 0, label: "Quick Wins", value: "quick-wins" },
-              { count: data?.categories.attention.filter((message) => Boolean(message.commitment && !message.commitment.isCompleted)).length ?? 0, label: "Commitments", value: "commitments" },
+            <DashboardFilterTabs ariaLabel="Needs Attention filters" compact={Boolean(detailPanel)} onChange={(value) => setAttentionFilter(value as typeof attentionFilter)} options={[
+              { count: data?.counts.attention ?? 0, icon: Inbox, label: "All", value: "all" },
+              { count: data?.quickWinCount ?? 0, icon: Sparkles, label: "Quick Wins", value: "quick-wins" },
+              { count: data?.categories.attention.filter((message) => Boolean(message.commitment && !message.commitment.isCompleted)).length ?? 0, icon: Gem, label: "Commitments", value: "commitments" },
             ]} value={attentionFilter} />
           ) : null}
           {category === "cleanup" ? (
-            <DashboardTabs ariaLabel="Quick Cleanup views" onChange={(value) => setCleanupView(value as typeof cleanupView)} options={[
-              { count: data?.cleanupCounts?.likelyClutter ?? 0, label: "Likely Clutter", value: "likely-clutter" },
-              { count: data?.cleanupCounts?.needsReview ?? 0, label: "Needs Review", value: "needs-review" },
+            <DashboardFilterTabs ariaLabel="Quick Cleanup views" compact={Boolean(detailPanel)} onChange={(value) => setCleanupView(value as typeof cleanupView)} options={[
+              { count: data?.cleanupCounts?.likelyClutter ?? 0, icon: Layers3, label: "Likely Clutter", value: "likely-clutter" },
+              { count: data?.cleanupCounts?.needsReview ?? 0, icon: SearchCheck, label: "Needs Review", value: "needs-review" },
             ]} value={cleanupView} />
           ) : null}
           <CardContent className={cn("p-0", detailPanel && "min-h-0 flex-1 overflow-y-auto")}>
@@ -205,23 +206,6 @@ export function AttentionDashboard({
       {pendingTrash ? <AttentionTrashConfirmation isRunning={isActionRunning} messages={pendingTrash} onCancel={() => setPendingTrash(null)} onConfirm={(messages) => void trashMessages(messages)} /> : null}
       <p aria-live="polite" className="sr-only">{announcement}</p>
     </section>
-  );
-}
-
-function DashboardTabs({ ariaLabel, onChange, options, value }: {
-  ariaLabel: string;
-  onChange: (value: string) => void;
-  options: Array<{ count: number; label: string; value: string }>;
-  value: string;
-}) {
-  return (
-    <div aria-label={ariaLabel} className="flex gap-1 overflow-x-auto border-b border-white/70 bg-white/25 px-4 py-2" role="tablist">
-      {options.map((option) => (
-        <button aria-selected={value === option.value} className={cn("min-h-10 shrink-0 rounded-full px-4 text-sm font-medium transition", value === option.value ? "bg-violet-600 text-white shadow-sm" : "text-zinc-600 hover:bg-white/70")} key={option.value} onClick={() => onChange(option.value)} role="tab" type="button">
-          {option.label} <span className={cn("ml-1", value === option.value ? "text-violet-100" : "text-zinc-400")}>{option.count}</span>
-        </button>
-      ))}
-    </div>
   );
 }
 

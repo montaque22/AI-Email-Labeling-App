@@ -5797,10 +5797,10 @@ function InboxAiHelperPanel({
 
   return (
     <aside className={cn(
-      "inbox-ai-helper flex min-h-0 flex-col border-white/70 bg-white/95 backdrop-blur-2xl",
+      "inbox-ai-helper relative flex min-h-0 flex-col border-white/70 bg-white/95 backdrop-blur-2xl",
       variant === "floating"
         ? "fixed inset-0 z-[120] h-[100dvh] w-screen rounded-none border-0 shadow-2xl shadow-slate-900/20 md:inset-x-auto md:bottom-24 md:right-5 md:top-20 md:h-auto md:w-[420px] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:bg-white/70"
-        : "work-mode-mobile-shell fixed inset-0 z-[70] w-screen bg-[#f7f7f7] md:static md:z-auto md:h-full md:min-h-0 md:w-full md:bg-white/45",
+        : "work-mode-mobile-shell fixed inset-0 z-[70] w-screen bg-[#f7f7f7] md:static md:z-auto md:h-full md:max-h-full md:min-h-0 md:w-full md:overflow-hidden md:bg-white/45",
     )} data-state={isClosing ? "closing" : "open"} data-work-mode-panel={variant === "workspace" ? "" : undefined} style={variant === "workspace" && visualViewportHeight ? { "--work-mode-visual-height": `${visualViewportHeight}px` } as CSSProperties : undefined} tabIndex={variant === "workspace" ? -1 : undefined}>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
@@ -5957,7 +5957,7 @@ function InboxAiHelperPanel({
         </button>
       ) : null}
 
-      <form className="shrink-0 border-t border-white/70 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]" onSubmit={submitPrompt}>
+      <form className="work-mode-composer shrink-0 border-t border-white/70 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]" onSubmit={submitPrompt}>
         <div className="flex items-end gap-2 rounded-xl border border-white/70 bg-white/55 p-2 shadow-sm backdrop-blur-xl">
           <textarea
             className="min-h-10 max-h-28 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-2 py-2 text-sm leading-5 outline-none [field-sizing:content] placeholder:text-zinc-400"
