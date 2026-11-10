@@ -212,6 +212,29 @@ select,
   animation: inbox-ai-helper-out 220ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
+@media (min-width: 1200px) {
+  .attention-work-mode-layout {
+    grid-template-columns: 300px minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1199px) {
+  .attention-work-mode-layout:has(> :nth-child(2)) .attention-work-mode-list {
+    display: none;
+  }
+}
+
+.work-mode-mobile-shell {
+  height: var(--work-mode-visual-height, 100dvh);
+  max-height: var(--work-mode-visual-height, 100dvh);
+  overscroll-behavior: contain;
+}
+
+.work-mode-conversation {
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+
 @keyframes inbox-ai-helper-in {
   from {
     opacity: 0;

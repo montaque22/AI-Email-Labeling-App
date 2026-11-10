@@ -6,6 +6,7 @@ export function useIsMobileViewport() {
   const [isMobile, setIsMobile] = useState(() => matchesMobileViewport());
 
   useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
     const mediaQuery = window.matchMedia(MOBILE_VIEWPORT_QUERY);
     const updateViewport = () => setIsMobile(mediaQuery.matches);
     updateViewport();
@@ -35,5 +36,7 @@ export function useBodyScrollLock(shouldLock: boolean) {
 }
 
 function matchesMobileViewport() {
-  return typeof window !== "undefined" && window.matchMedia(MOBILE_VIEWPORT_QUERY).matches;
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia(MOBILE_VIEWPORT_QUERY).matches;
 }

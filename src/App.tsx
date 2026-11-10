@@ -82,6 +82,7 @@ import { InboxPageHeader } from "./components/inbox/InboxPageHeader";
 import { shouldLockInboxPageScroll } from "./components/inbox/inbox-scroll-lock";
 import { AiHelperSessionResetButton } from "./components/inbox/AiHelperSessionResetButton";
 import { AgentExecutionStatus, isAgentExecutionEvent, type AgentExecutionEvent } from "./components/inbox/AgentExecutionStatus";
+import { AgentSourceCards, isAgentResearchSource, type AgentResearchSource } from "./components/inbox/AgentSourceCards";
 import { AttentionDashboard, type AttentionCategory, type AttentionDashboardData, type AttentionMessage } from "./components/inbox/AttentionDashboard";
 import { AttentionTrashConfirmation } from "./components/inbox/AttentionTrashConfirmation";
 import { LiquidActionBar } from "./components/inbox/LiquidActionBar";
@@ -112,6 +113,7 @@ import { clearPwaUnreadBadge, refreshPwaUnreadBadge } from "./lib/pwa-badge";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
 import { useBodyScrollLock, useIsMobileViewport } from "./hooks/useResponsiveScrollLock";
+import { useVisualViewportHeight } from "./hooks/useVisualViewportHeight";
 
 type Page =
   | "overview"
@@ -907,6 +909,8 @@ type InboxAiChatMessage = {
   draftBody?: string;
   subjectSuggestion?: string;
   artifact?: ReplyDraftArtifact;
+  executionEvents?: AgentExecutionEvent[];
+  sources?: AgentResearchSource[];
   options?: Array<{
     label: string;
     sublabel?: string;
@@ -914,6 +918,13 @@ type InboxAiChatMessage = {
     type: "account" | "contact";
   }>;
 };
+
+function mergeAgentExecutionEvent(events: AgentExecutionEvent[], incoming: AgentExecutionEvent) {
+  if (!incoming.callId) return [...events, incoming];
+  const existingIndex = events.findIndex((event) => event.callId === incoming.callId);
+  if (existingIndex === -1) return [...events, incoming];
+  return events.map((event, index) => index === existingIndex ? { ...event, ...incoming } : event);
+}
 
 type InboxAiBulkActionProposal = {
   action: "archive" | "delete";
@@ -3290,6 +3301,8 @@ function InboxPage({
         labels={labels}
         onArchiveMessages={archiveSelectedMessages}
         onDeleteMessages={deleteSelectedMessages}
+        onCloseWorkspace={() => { setSelectedMessage(null); setMessageDetail(null); }}
+        onExitWorkMode={() => updateReaderMode("read")}
         onOpenComposeDraft={openComposeDraft}
         onOpenMessage={(target) => void openMessage(target)}
         privacyMode={privacyMode}
@@ -4351,7 +4364,7 @@ function InboxPage({
         </div>
       </div>
 
-      <LiquidActionBar
+      {isMobileViewport && selectedMessage && readerMode === "work" ? null : <LiquidActionBar
         canArchive={inboxView === "dashboard"
           ? !attentionSelectedMessages.some((message) => Boolean(message.commitment))
           : !selectedHasCommitments}
@@ -4392,7 +4405,7 @@ function InboxPage({
           : void deleteSelectedMessages()}
         selectedCount={inboxView === "dashboard" ? attentionSelectedMessages.length : selectedMessages.length}
         selectedLabelId={selectedMessagesLabelValue}
-      />
+      />}
       {accountsNeedingRefresh.length > 0 ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 shadow-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -4972,6 +4985,8 @@ function InboxAiHelperPanel({
   onClose,
   onArchiveMessages,
   onDeleteMessages,
+  onCloseWorkspace,
+  onExitWorkMode,
   onOpenComposeDraft,
   onOpenMessage,
   privacyMode,
@@ -4991,6 +5006,8 @@ function InboxAiHelperPanel({
     messages: InboxMessage[],
     options?: { source?: "ai" | "user" },
   ) => Promise<{ backgroundTask?: { id: string; title: string }; failed: number; succeeded: number }>;
+  onCloseWorkspace?: () => void;
+  onExitWorkMode?: () => void;
   onOpenComposeDraft: (draft: Partial<InboxComposeDraft> | null) => void;
   onOpenMessage: (message: InboxMessage) => Promise<void> | void;
   privacyMode: boolean;
@@ -5020,6 +5037,7 @@ function InboxAiHelperPanel({
           .slice(-INBOX_AI_HELPER_HISTORY_LIMIT)
           .map((message, index) => ({
             artifact: isReplyDraftArtifact(message.artifact) ? message.artifact : undefined,
+            executionEvents: Array.isArray(message.executionEvents) ? message.executionEvents.filter(isAgentExecutionEvent) : undefined,
             draftBody: typeof message.draftBody === "string" ? message.draftBody : undefined,
             id: typeof message.id === "number" ? message.id : Date.now() + index,
             role: message.role,
@@ -5028,6 +5046,7 @@ function InboxAiHelperPanel({
             pendingBulkAction: message.pendingBulkAction === "archive" || message.pendingBulkAction === "delete"
               ? message.pendingBulkAction
               : undefined,
+            sources: Array.isArray(message.sources) ? message.sources.filter(isAgentResearchSource) : undefined,
             text: message.text,
           }));
       }
@@ -5056,11 +5075,16 @@ function InboxAiHelperPanel({
     messages: InboxMessage[];
   } | null>(null);
   const [isThinking, setIsThinking] = useState(false);
-  const [executionEvent, setExecutionEvent] = useState<AgentExecutionEvent | null>(null);
+  const [executionEvents, setExecutionEvents] = useState<AgentExecutionEvent[]>([]);
+  const [executionStartedAt, setExecutionStartedAt] = useState<number | null>(null);
+  const [isNearConversationBottom, setIsNearConversationBottom] = useState(true);
   const [isClosing, setIsClosing] = useState(false);
+  const conversationRef = useRef<HTMLDivElement | null>(null);
+  const executionEventsRef = useRef<AgentExecutionEvent[]>([]);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const closeTimerRef = useRef<number | null>(null);
+  const visualViewportHeight = useVisualViewportHeight();
   const activeContext = selectedMessages.length > 0 ? selectedMessages : contextMessages;
   const selectedContextText = selectedMessages.length > 0
     ? `${selectedMessages.length} selected email${selectedMessages.length === 1 ? "" : "s"}`
@@ -5080,25 +5104,30 @@ function InboxAiHelperPanel({
     setInput("");
     setWorkflow({ draft: {}, step: "idle" });
     setPendingBulkAction(null);
+    executionEventsRef.current = [];
+    setExecutionEvents([]);
+    setExecutionStartedAt(null);
   }
 
   useEffect(() => {
     const persisted = messages.slice(-INBOX_AI_HELPER_HISTORY_LIMIT).map((message) => ({
       affectedEmails: message.affectedEmails,
       artifact: message.artifact,
+      executionEvents: message.executionEvents,
       draftBody: message.draftBody,
       id: message.id,
       pendingBulkAction: message.pendingBulkAction,
       role: message.role,
       subjectSuggestion: message.subjectSuggestion,
+      sources: message.sources,
       text: message.text,
     }));
     agentStorage.setItem(historyStorageKey, JSON.stringify(persisted));
   }, [agentStorage, historyStorageKey, messages]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, isThinking]);
+    if (isNearConversationBottom) messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, isThinking, isNearConversationBottom]);
 
   useEffect(() => () => {
     if (closeTimerRef.current) {
@@ -5491,7 +5520,8 @@ function InboxAiHelperPanel({
       ? rawBulkAction as InboxAiBulkActionProposal
       : null;
     const artifact = isPreparedReplyDraft(data.artifact) ? data.artifact : null;
-    return { affectedEmails, artifact, message: streamedText.trim(), proposedBulkAction };
+    const sources = Array.isArray(data.sources) ? data.sources.filter(isAgentResearchSource) : [];
+    return { affectedEmails, artifact, message: streamedText.trim(), proposedBulkAction, sources };
   }
 
   async function resolveAgentBulkActionProposal(proposal: InboxAiBulkActionProposal, fallbackEmails: InboxMessage[]) {
@@ -5623,13 +5653,20 @@ function InboxAiHelperPanel({
     }
 
     setIsThinking(true);
-    setExecutionEvent(null);
+    executionEventsRef.current = [];
+    setExecutionEvents([]);
+    setExecutionStartedAt(Date.now());
+    setIsNearConversationBottom(true);
     const streamingMessageId = Date.now() + conversationHistory.length + 1;
     setMessages((current) => [...current, { id: streamingMessageId, role: "assistant", text: "" }]);
     try {
       const answer = await askAiHelper(prompt, conversationHistory, (text) => {
         setMessages((current) => current.map((message) => message.id === streamingMessageId ? { ...message, text } : message));
-      }, setExecutionEvent);
+      }, (event) => {
+        const nextEvents = mergeAgentExecutionEvent(executionEventsRef.current, event);
+        executionEventsRef.current = nextEvents;
+        setExecutionEvents(nextEvents);
+      });
       if (answer.proposedBulkAction) {
         setMessages((current) => current.filter((message) => message.id !== streamingMessageId));
         const fallbackEmails = answer.affectedEmails.map(affectedEmailToInboxMessage);
@@ -5642,6 +5679,7 @@ function InboxAiHelperPanel({
         setPendingBulkAction({ action: answer.proposedBulkAction.action, messages: targets });
         addMessage({
           affectedEmails: targets.length <= 7 ? targets.map(summarizeAffectedEmail) : undefined,
+          executionEvents: executionEventsRef.current,
           pendingBulkAction: answer.proposedBulkAction.action,
           role: "assistant",
           text: `I found ${targets.length.toLocaleString()} email${targets.length === 1 ? "" : "s"} in ${answer.proposedBulkAction.scopeSummary}. Reply “confirm” to ${answer.proposedBulkAction.action} them, or “cancel” to stop.`,
@@ -5657,6 +5695,8 @@ function InboxAiHelperPanel({
               ...message,
               affectedEmails: answer.affectedEmails,
               artifact: nextArtifact,
+              executionEvents: executionEventsRef.current,
+              sources: answer.sources,
               text: answer.message || (nextArtifact ? "Here’s a reply draft based on your request." : "I completed that request."),
             };
           }
@@ -5667,11 +5707,11 @@ function InboxAiHelperPanel({
       });
     } catch (error) {
       setMessages((current) => current.map((message) => message.id === streamingMessageId
-        ? { ...message, text: error instanceof Error ? error.message : "AI Helper could not answer that." }
+        ? { ...message, executionEvents: executionEventsRef.current, text: error instanceof Error ? error.message : "AI Helper could not answer that." }
         : message));
     } finally {
       setIsThinking(false);
-      setExecutionEvent(null);
+      setExecutionStartedAt(null);
     }
   }
 
@@ -5760,15 +5800,19 @@ function InboxAiHelperPanel({
       "inbox-ai-helper flex min-h-0 flex-col border-white/70 bg-white/95 backdrop-blur-2xl",
       variant === "floating"
         ? "fixed inset-0 z-[120] h-[100dvh] w-screen rounded-none border-0 shadow-2xl shadow-slate-900/20 md:inset-x-auto md:bottom-24 md:right-5 md:top-20 md:h-auto md:w-[420px] md:max-w-[calc(100vw-2.5rem)] md:rounded-2xl md:border md:bg-white/70"
-        : "h-full min-h-[560px] w-full bg-white/45 md:min-h-0",
-    )} data-state={isClosing ? "closing" : "open"}>
+        : "work-mode-mobile-shell fixed inset-0 z-[70] w-screen bg-[#f7f7f7] md:static md:z-auto md:h-full md:min-h-0 md:w-full md:bg-white/45",
+    )} data-state={isClosing ? "closing" : "open"} data-work-mode-panel={variant === "workspace" ? "" : undefined} style={variant === "workspace" && visualViewportHeight ? { "--work-mode-visual-height": `${visualViewportHeight}px` } as CSSProperties : undefined} tabIndex={variant === "workspace" ? -1 : undefined}>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/70 px-4 py-3">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-zinc-950">{variant === "workspace" ? "AI Assistant" : "AI Helper"}</p>
-          <p className="flex items-center gap-1.5 truncate text-xs text-zinc-500">
-            {variant === "workspace" ? <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" /> : null}
-            {variant === "workspace" ? "Working with this email" : selectedContextText}
-          </p>
+        <div className="flex min-w-0 items-center gap-2">
+          {variant === "workspace" && onExitWorkMode ? <Button aria-label="Back to email" className="-ml-2 md:hidden" onClick={onExitWorkMode} size="icon" type="button" variant="ghost"><ChevronLeft className="h-5 w-5" /></Button> : null}
+          {variant === "workspace" ? <span className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600 sm:flex"><Sparkles className="h-5 w-5" /></span> : null}
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-zinc-950">{variant === "workspace" ? "AI Assistant" : "AI Helper"}</p>
+            <p className="flex items-center gap-1.5 truncate text-xs text-zinc-500">
+              {variant === "workspace" ? <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" /> : null}
+              {variant === "workspace" ? "Working with this email" : selectedContextText}
+            </p>
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {variant === "workspace" ? (
@@ -5782,11 +5826,22 @@ function InboxAiHelperPanel({
             </details>
           ) : null}
           <AiHelperSessionResetButton disabled={isThinking} onReset={resetAgentSession} />
+          {variant === "workspace" && onCloseWorkspace ? <Button aria-label="Close email" className="md:hidden" onClick={onCloseWorkspace} size="icon" type="button" variant="ghost"><X className="h-5 w-5" /></Button> : null}
           {variant === "floating" ? <Button aria-label="Close AI helper" onClick={closeWithAnimation} size="icon" type="button" variant="ghost"><X className="h-4 w-4" /></Button> : null}
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+      <div
+        aria-live="polite"
+        aria-relevant="additions text"
+        className="work-mode-conversation min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4"
+        onScroll={(event) => {
+          const target = event.currentTarget;
+          setIsNearConversationBottom(target.scrollHeight - target.scrollTop - target.clientHeight < 96);
+        }}
+        ref={conversationRef}
+        role="log"
+      >
         {messages.map((message) => (
           <div className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")} key={message.id}>
             <div className={cn(
@@ -5795,6 +5850,7 @@ function InboxAiHelperPanel({
               message.draftBody && "cursor-pointer hover:border-emerald-200 hover:bg-emerald-50/80",
               message.artifact && "max-w-full",
             )} onClick={() => applyDraftMessage(message)} role={message.draftBody ? "button" : undefined} tabIndex={message.draftBody ? 0 : undefined}>
+              {message.executionEvents?.length ? <div className="mb-3"><AgentExecutionStatus events={message.executionEvents} isRunning={false} /></div> : null}
               <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{message.text}</p>
               {message.artifact && message.artifact.status !== "superseded" ? (
                 <ReplyDraftArtifactCard
@@ -5809,7 +5865,7 @@ function InboxAiHelperPanel({
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
                     {getAffectedEmailSectionTitle(message)}
                   </p>
-                  <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  <div className="space-y-2">
                     {message.affectedEmails.map((email) => (
                       <button
                         aria-label={`Open ${email.subject || "email"} from ${email.from || email.sender || "unknown sender"}`}
@@ -5853,6 +5909,7 @@ function InboxAiHelperPanel({
                   </div>
                 </div>
               ) : null}
+              {message.sources?.length ? <AgentSourceCards sources={message.sources} /> : null}
               {message.options?.length ? (
                 <div className="mt-3 space-y-2">
                   {message.options.map((option) => (
@@ -5876,7 +5933,7 @@ function InboxAiHelperPanel({
         ))}
         {isThinking ? (
           <div className="flex justify-start">
-            {executionEvent ? <AgentExecutionStatus event={executionEvent} /> : (
+            {executionEvents.length > 0 ? <AgentExecutionStatus events={executionEvents} isRunning startedAt={executionStartedAt} /> : (
               <div className="inline-flex items-center gap-2 rounded-xl border border-white/70 bg-white/65 px-3 py-2 text-sm text-zinc-600 shadow-sm backdrop-blur-xl">
                 <Loader />
                 Thinking...
@@ -5887,10 +5944,23 @@ function InboxAiHelperPanel({
         <div ref={messagesEndRef} />
       </div>
 
-      <form className="shrink-0 border-t border-white/70 p-3" onSubmit={submitPrompt}>
+      {!isNearConversationBottom ? (
+        <button
+          className="absolute bottom-[calc(5.75rem+env(safe-area-inset-bottom))] left-1/2 z-10 -translate-x-1/2 rounded-full border border-violet-100 bg-white/95 px-3 py-1.5 text-xs font-semibold text-violet-700 shadow-lg"
+          onClick={() => {
+            setIsNearConversationBottom(true);
+            messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+          }}
+          type="button"
+        >
+          Jump to latest
+        </button>
+      ) : null}
+
+      <form className="shrink-0 border-t border-white/70 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]" onSubmit={submitPrompt}>
         <div className="flex items-end gap-2 rounded-xl border border-white/70 bg-white/55 p-2 shadow-sm backdrop-blur-xl">
           <textarea
-            className="min-h-10 max-h-28 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-zinc-400"
+            className="min-h-10 max-h-28 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-2 py-2 text-sm leading-5 outline-none [field-sizing:content] placeholder:text-zinc-400"
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -5903,7 +5973,7 @@ function InboxAiHelperPanel({
             rows={1}
             value={input}
           />
-          <Button disabled={isThinking || !input.trim()} size="icon" type="submit" variant="ghost">
+          <Button aria-label="Send message" className="shrink-0 rounded-full text-violet-600 hover:bg-violet-50 hover:text-violet-700" disabled={isThinking || !input.trim()} size="icon" type="submit" variant="ghost">
             <Send className="h-4 w-4" />
           </Button>
         </div>
@@ -6721,8 +6791,8 @@ function InboxMessagePushView({
   const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
 
   return (
-    <section className="fixed inset-0 z-50 flex flex-col bg-[#f7f7f7] text-zinc-950 md:hidden">
-      <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-zinc-200 bg-white/70 px-2 backdrop-blur-xl">
+    <section aria-label="Email reader" aria-modal="true" className="fixed inset-0 z-50 flex flex-col bg-[#f7f7f7] text-zinc-950 md:hidden" role="dialog">
+      {mode === "read" ? <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-zinc-200 bg-white/70 px-2 backdrop-blur-xl">
         <Button aria-label="Back to inbox" onClick={onClose} size="icon" type="button" variant="ghost">
           <ChevronLeft className="h-5 w-5" />
         </Button>
@@ -6752,10 +6822,10 @@ function InboxMessagePushView({
             <Reply className="h-4 w-4" />
           </Button>
         </div>
-      </div>
-      <div className="flex shrink-0 justify-center border-b border-zinc-200 bg-white/55 px-3 py-2">
+      </div> : null}
+      {mode === "read" ? <div className="flex shrink-0 justify-center border-b border-zinc-200 bg-white/55 px-3 py-2">
         <EmailReaderModeSwitch mode={mode} onModeChange={onModeChange} />
-      </div>
+      </div> : null}
 
       {mode === "work" ? workPane : <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-4">
         <div className="mx-auto max-w-2xl space-y-4">

@@ -136,8 +136,8 @@ export function AttentionDashboard({
 
       <AttentionCategoryCards category={category} counts={data?.counts} isLoading={showInitialLoading} onSelect={onSelectCategory} />
 
-      <div className={cn("min-w-0", detailPanel && "grid items-start gap-4 lg:grid-cols-[minmax(320px,0.8fr)_minmax(0,1.5fr)]")}>
-        <Card className="min-w-0 overflow-visible bg-white/60">
+      <div className={cn("min-w-0", detailPanel && "attention-work-mode-layout grid items-start gap-4")}>
+        <Card className={cn("min-w-0 overflow-visible bg-white/60", detailPanel && "attention-work-mode-list")}>
           <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-white/70">
             <div>
               <div className="flex items-center gap-2"><CardTitle>{card?.label}</CardTitle><Badge>{data?.counts[category] ?? 0} emails</Badge></div>

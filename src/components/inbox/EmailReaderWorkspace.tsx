@@ -17,9 +17,9 @@ export function EmailReaderWorkspace({ mode, onModeChange, readPane, workPane }:
       <div className="flex shrink-0 justify-center border-b border-white/60 bg-white/35 px-4 py-2">
         <EmailReaderModeSwitch mode={mode} onModeChange={onModeChange} />
       </div>
-      <div className={cn("min-h-0 flex-1", mode === "work" && "md:grid md:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.8fr)] md:gap-3")}>
+      <div className={cn("min-h-0 flex-1", mode === "work" && "md:grid md:grid-cols-[minmax(0,2fr)_minmax(340px,3fr)] md:gap-3")}>
         <div className={cn("min-h-0", mode === "work" && "max-md:hidden")}>{readPane}</div>
-        {mode === "work" ? <div className="min-h-0 border-white/70 md:border-l">{workPane}</div> : null}
+        {mode === "work" ? <div className="min-h-0 min-w-0 border-white/70 md:border-l">{workPane}</div> : null}
       </div>
     </div>
   );

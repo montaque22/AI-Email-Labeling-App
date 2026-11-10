@@ -35,6 +35,7 @@ import {
   buildAiHelperSystemPrompt,
   buildAiHelperVerificationPrompt,
 } from "./ai-helper-agent.js";
+import { extractAgentResearchSources } from "./ai-helper-sources.js";
 
 const SECRET = process.env.BETTER_AUTH_SECRET || "local-byoai-secret";
 const clientEncryptionKeyPair = crypto.generateKeyPairSync("rsa", {
@@ -853,6 +854,7 @@ export function registerByoAiRoutes(app) {
         affectedTasks: result.affectedTasks,
         artifact: result.artifact,
         proposedBulkAction: result.proposedBulkAction,
+        sources: result.sources,
         type: "done",
       })}\n`);
       res.end();
@@ -1662,6 +1664,7 @@ async function generateAiHelperChat(userId, request, options = {}) {
   const affectedTasks = extractAffectedTasksFromAiHelperToolResults(toolResults);
   const proposedBulkAction = extractProposedBulkActionFromAiHelperToolResults(toolResults);
   const artifact = extractPreparedReplyDraftFromAiHelperToolResults(toolResults);
+  const sources = extractAgentResearchSources(toolResults);
   updateAiHelperSessionMemory(userId, request.sessionId, [
     ...previousHistory,
     { role: "user", text: request.prompt },
@@ -1677,6 +1680,7 @@ async function generateAiHelperChat(userId, request, options = {}) {
     affectedTasks: affectedTasks.length > 0 ? affectedTasks : [],
     artifact,
     proposedBulkAction,
+    sources,
   };
 }
 
@@ -2595,6 +2599,7 @@ function buildSdkTools(clients, onToolResult, executionContext = {}, onToolEvent
       description,
       inputSchema: jsonSchema(inputSchema ?? { type: "object", properties: {}, additionalProperties: true }),
       execute: async (input) => {
+        const callId = crypto.randomUUID();
         const normalizedInput = useSystemDefaults
           ? applySystemToolExecutionDefaults(name, input ?? {}, executionContext)
           : input ?? {};
@@ -2608,7 +2613,7 @@ function buildSdkTools(clients, onToolResult, executionContext = {}, onToolEvent
             payload: { input: normalizedInput, toolName: name },
           });
         }
-        notifyToolEvent({ input: normalizedInput, phase: "started", toolName: name });
+        notifyToolEvent({ callId, occurredAt: new Date().toISOString(), phase: "started", toolName: name });
         try {
           const result = await execute(normalizedInput);
           if (typeof onToolResult === "function") {
@@ -2623,7 +2628,7 @@ function buildSdkTools(clients, onToolResult, executionContext = {}, onToolEvent
               payload: { input: normalizedInput, result, toolName: name },
             });
           }
-          notifyToolEvent({ phase: "completed", toolName: name });
+          notifyToolEvent({ callId, occurredAt: new Date().toISOString(), phase: "completed", toolName: name });
           return result;
         } catch (error) {
           const failure = { error: error.message || "Tool execution failed.", ok: false, toolName: name };
@@ -2639,7 +2644,7 @@ function buildSdkTools(clients, onToolResult, executionContext = {}, onToolEvent
               payload: { error: error.message, input: normalizedInput, toolName: name },
             });
           }
-          notifyToolEvent({ error: error.message, phase: "failed", toolName: name });
+          notifyToolEvent({ callId, error: error.message, occurredAt: new Date().toISOString(), phase: "failed", toolName: name });
           return failure;
         }
       },
