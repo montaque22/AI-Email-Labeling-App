@@ -131,6 +131,25 @@ describe("AttentionDashboard", () => {
     expect(actions?.className).toContain("@[40rem]/priority-row:justify-end");
   });
 
+  it("uses compact, independently scrolling rows beside the desktop email workspace", () => {
+    const { container } = renderDashboard("attention", {
+      detailPanel: <div data-testid="email-workspace">Email workspace</div>,
+    });
+
+    const layout = container.querySelector(".attention-work-mode-layout");
+    const listCard = layout?.querySelector(".attention-work-mode-list");
+    const row = container.querySelector("[data-attention-row]");
+    const actions = container.querySelector("[data-attention-row-actions]");
+
+    expect(screen.getByTestId("email-workspace")).toBeTruthy();
+    expect(layout?.className).toContain("overflow-hidden");
+    expect(listCard?.className).toContain("h-full");
+    expect(row?.className).toContain("min-h-[88px]");
+    expect(actions?.className).toContain("md:opacity-0");
+    expect(actions?.className).toContain("md:group-hover:opacity-100");
+    expect(actions?.className).toContain("md:group-focus-within:opacity-100");
+  });
+
   it("keeps the inbox view toggle in the dashboard title header", () => {
     renderDashboard("attention", { headerAction: <button type="button">All Mail</button> });
     const heading = screen.getByRole("heading", { name: "Your Inbox" });

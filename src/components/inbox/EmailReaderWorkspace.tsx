@@ -13,13 +13,13 @@ type EmailReaderWorkspaceProps = {
 
 export function EmailReaderWorkspace({ mode, onModeChange, readPane, workPane }: EmailReaderWorkspaceProps) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex shrink-0 justify-center border-b border-white/60 bg-white/35 px-4 py-2">
         <EmailReaderModeSwitch mode={mode} onModeChange={onModeChange} />
       </div>
-      <div className={cn("min-h-0 flex-1", mode === "work" && "md:grid md:grid-cols-[minmax(0,2fr)_minmax(340px,3fr)] md:gap-3")}>
-        <div className={cn("min-h-0", mode === "work" && "max-md:hidden")}>{readPane}</div>
-        {mode === "work" ? <div className="min-h-0 min-w-0 border-white/70 md:border-l">{workPane}</div> : null}
+      <div className={cn("min-h-0 flex-1 overflow-hidden", mode === "work" && "md:grid md:grid-cols-[minmax(0,2fr)_minmax(340px,3fr)] md:gap-3")}>
+        <div className={cn("h-full min-h-0 min-w-0 overflow-hidden", mode === "work" && "max-md:hidden")}>{readPane}</div>
+        {mode === "work" ? <div className="h-full min-h-0 min-w-0 overflow-hidden border-white/70 md:border-l">{workPane}</div> : null}
       </div>
     </div>
   );

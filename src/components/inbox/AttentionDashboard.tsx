@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { cn } from "../../lib/utils";
+import { useAvailableViewportHeight } from "../../hooks/useAvailableViewportHeight";
 import { AttentionCategoryCards, ATTENTION_CATEGORY_CARDS } from "./AttentionCategoryCards";
 import { AttentionCleanupGroups } from "./AttentionCleanupGroups";
 import { AttentionPriorityList } from "./AttentionPriorityList";
@@ -28,6 +29,8 @@ export function AttentionDashboard({
   const [pendingTrash, setPendingTrash] = useState<AttentionMessage[] | null>(null);
   const [attentionFilter, setAttentionFilter] = useState<"all" | "quick-wins" | "commitments">("all");
   const [cleanupView, setCleanupView] = useState<"likely-clutter" | "needs-review">("likely-clutter");
+  const workModeLayoutRef = useRef<HTMLDivElement>(null);
+  const workModeHeight = useAvailableViewportHeight(workModeLayoutRef, Boolean(detailPanel));
 
   const categoryMessages = category === "cleanup" && cleanupView === "needs-review"
     ? data?.cleanupReview ?? []
@@ -136,8 +139,12 @@ export function AttentionDashboard({
 
       <AttentionCategoryCards category={category} counts={data?.counts} isLoading={showInitialLoading} onSelect={onSelectCategory} />
 
-      <div className={cn("min-w-0", detailPanel && "attention-work-mode-layout grid items-start gap-4")}>
-        <Card className={cn("min-w-0 overflow-visible bg-white/60", detailPanel && "attention-work-mode-list")}>
+      <div
+        className={cn("min-w-0", detailPanel && "attention-work-mode-layout grid min-h-0 items-stretch gap-4 overflow-hidden")}
+        ref={workModeLayoutRef}
+        style={workModeHeight ? { height: `${workModeHeight}px` } : undefined}
+      >
+        <Card className={cn("min-w-0 overflow-visible bg-white/60", detailPanel && "attention-work-mode-list flex h-full min-h-0 flex-col overflow-hidden")}>
           <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-white/70">
             <div>
               <div className="flex items-center gap-2"><CardTitle>{card?.label}</CardTitle><Badge>{data?.counts[category] ?? 0} emails</Badge></div>
@@ -158,7 +165,7 @@ export function AttentionDashboard({
               { count: data?.cleanupCounts?.needsReview ?? 0, label: "Needs Review", value: "needs-review" },
             ]} value={cleanupView} />
           ) : null}
-          <CardContent className="p-0">
+          <CardContent className={cn("p-0", detailPanel && "min-h-0 flex-1 overflow-y-auto")}>
             {showInitialLoading ? <DashboardSkeleton /> : (
               <>
                 <AttentionSelectionHeader
@@ -175,6 +182,7 @@ export function AttentionDashboard({
                   />
                 ) : (
                   <AttentionPriorityList
+                    compact={Boolean(detailPanel)}
                     category={category} isActionRunning={isActionRunning} isMobileSelectionMode={isMobileSelectionMode} messages={categoryMessages}
                     onArchive={(message) => void archiveMessages([message])} onCommitment={onCommitment} onNotQuickWin={(message) => void onNotQuickWin(message)} onOpen={onOpen}
                     onReturnInterest={(message) => void onReturnInterest(message)} onStillInterested={(message) => void onStillInterested(message)}

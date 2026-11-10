@@ -7065,19 +7065,20 @@ function InboxMessageModal({
 
   return (
     <div className={cn(
-      variant === "modal" ? "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4" : "sticky top-20 hidden min-w-0 md:block",
+      variant === "modal" ? "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4" : "hidden h-full min-h-0 min-w-0 md:block",
     )}>
       <div className={cn(
-        "flex max-h-[92vh] w-full items-stretch justify-center gap-3 transition-[max-width] duration-300",
+        "flex w-full min-h-0 items-stretch justify-center gap-3 transition-[max-width] duration-300",
+        variant === "modal" ? "h-[92dvh] max-h-[92vh]" : "h-full",
         variant === "modal" ? mode === "work" ? "max-w-[1500px]" : "max-w-4xl" : "max-w-none",
       )}>
       <LiquidGlassCard
         borderRadius="8px"
-        className="max-h-[92vh] min-w-0 flex-1 overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]"
+        className="h-full min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl border border-white/70 bg-white/55 p-4 shadow-2xl shadow-slate-900/20 [backdrop-filter:blur(5px)] [-webkit-backdrop-filter:blur(5px)]"
         glowIntensity="none"
         shadowIntensity="xs"
       >
-        <div className="flex max-h-[calc(92vh-2rem)] min-h-[540px] flex-col overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
+        <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl bg-white/40 shadow-inner ring-1 ring-white/60">
           <div className="flex items-start justify-between gap-4 border-b border-white/60 px-5 pb-4 pt-5">
             <div className="min-w-0">
               <h3 className="mt-1 truncate text-lg font-semibold text-zinc-950">{detail?.subject || summary.subject || "(no subject)"}</h3>
@@ -7140,7 +7141,7 @@ function InboxMessageModal({
               </Button>
             </div>
           </div>
-          <EmailReaderWorkspace mode={mode} onModeChange={onModeChange} workPane={workPane} readPane={<div className="max-h-[calc(92vh-164px)] overflow-y-auto px-5 pb-10 pt-5">
+          <EmailReaderWorkspace mode={mode} onModeChange={onModeChange} workPane={workPane} readPane={<div className="h-full min-h-0 overflow-x-hidden overflow-y-auto px-5 pb-10 pt-5 [overflow-wrap:anywhere] [&_iframe]:max-w-full [&_img]:h-auto [&_img]:max-w-full [&_table]:max-w-full">
           {isLoading ? <p className="text-sm text-zinc-500">Loading email...</p> : null}
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           {detail ? <AutomationActivityPanel accountId={detail.accountId} emailId={detail.id} initialActivities={detail.automationActivities} /> : null}

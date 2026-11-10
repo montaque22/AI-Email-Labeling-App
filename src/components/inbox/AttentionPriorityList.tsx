@@ -9,6 +9,7 @@ import { attentionMessageKey, attentionSenderInitial, formatAttentionDate, hasAc
 
 type AttentionPriorityListProps = {
   category: AttentionCategory;
+  compact?: boolean;
   isActionRunning: boolean;
   isMobileSelectionMode: boolean;
   messages: AttentionMessage[];
@@ -39,6 +40,7 @@ export function AttentionPriorityList(props: AttentionPriorityListProps) {
 }
 
 function AttentionPriorityRow({
+  compact = false,
   isActionRunning,
   isMobileSelectionMode,
   message,
@@ -63,6 +65,7 @@ function AttentionPriorityRow({
       animate={{ opacity: 1 }}
       className={cn(
       "@container/priority-row group relative grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1 border-b border-white/70 px-3 py-3 last:border-b-0 md:gap-x-3 md:px-5 md:py-4 @[40rem]/priority-row:grid-cols-[auto_minmax(0,1fr)_auto]",
+      compact && "min-h-[88px] py-2 md:gap-x-2 md:px-3 md:py-2",
       selected && "bg-violet-50/60",
       category === "interest" && freshnessBorderClass(message.interestFreshness?.state),
       )}
@@ -78,25 +81,28 @@ function AttentionPriorityRow({
         onChange={() => onToggleSelection(message)}
         type="checkbox"
       />
-      <button className="col-start-2 row-start-1 flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500" data-attention-row-content onClick={() => onOpen(message)} type="button">
-        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-sm font-medium">{attentionSenderInitial(message)}</span>
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2">
+      <button className={cn("col-start-2 row-start-1 flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500", compact && "items-start gap-2 pr-12")} data-attention-row-content onClick={() => onOpen(message)} type="button">
+        <span className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-sm font-medium", compact && "h-9 w-9 text-xs")}>{attentionSenderInitial(message)}</span>
+        <span className={cn("min-w-0 flex-1", compact && "overflow-hidden")}>
+          <span className="flex min-w-0 items-center gap-2">
             <span className="truncate font-semibold text-zinc-950">{message.sender || message.from}</span>
             {!message.isRead ? <span aria-label="Unread" className="h-2 w-2 shrink-0 rounded-full bg-blue-600" /> : null}
+            {compact && message.followed ? <Bookmark aria-label="Bookmarked" className="h-3.5 w-3.5 shrink-0 fill-blue-600 text-blue-600" /> : null}
+            {compact && committed ? <Gem aria-label="Commitment" className="h-3.5 w-3.5 shrink-0 fill-violet-200 text-violet-700" /> : null}
           </span>
           <span className="block truncate text-sm font-medium text-zinc-800">{message.subject || "No subject"}</span>
           <span className="mt-0.5 block truncate text-xs text-zinc-500 @[40rem]/priority-row:hidden">{message.snippet}</span>
-          <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+          <span className={cn("mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500", compact && "mt-0.5 flex-nowrap overflow-hidden")}>
             {message.labels[0] ? <Badge>{message.labels[0]}</Badge> : null}
             {message.attention.quickWin?.isQuickWin ? <Badge className="gap-1 border-violet-200 bg-violet-50 text-violet-700"><Sparkles className="h-3 w-3" />Quick Win</Badge> : null}
-            {category === "interest" && message.interestFreshness ? <span title={`${message.interestFreshness.days} days since meaningful interest activity`}>{message.interestFreshness.label}</span> : committed ? <><Gem className="h-3.5 w-3.5 fill-violet-100 text-violet-600" />Commitment</> : message.attention.reasonCode === "security_notice" ? <><ShieldCheck className="h-3.5 w-3.5 text-orange-500" />Security notice</> : <><Clock3 className="h-3.5 w-3.5 text-blue-600" /><span className="max-w-52 truncate">{message.attention.explanation}</span></>}
+            {category === "interest" && message.interestFreshness ? <span className="truncate" title={`${message.interestFreshness.days} days since meaningful interest activity`}>{message.interestFreshness.label}</span> : committed ? <><Gem className="h-3.5 w-3.5 fill-violet-100 text-violet-600" />Commitment</> : message.attention.reasonCode === "security_notice" ? <><ShieldCheck className="h-3.5 w-3.5 text-orange-500" />Security notice</> : compact ? null : <><Clock3 className="h-3.5 w-3.5 text-blue-600" /><span className="max-w-52 truncate">{message.attention.explanation}</span></>}
           </span>
         </span>
-        <span className="shrink-0 self-start pt-1 text-xs text-zinc-500 @[40rem]/priority-row:self-center @[40rem]/priority-row:pt-0 @[40rem]/priority-row:text-sm">{formatAttentionDate(message.date)}</span>
+        <span className={cn("shrink-0 self-start pt-1 text-xs text-zinc-500 @[40rem]/priority-row:self-center @[40rem]/priority-row:pt-0 @[40rem]/priority-row:text-sm", compact && "absolute right-3 top-2.5 pt-0 text-[11px]")}>{formatAttentionDate(message.date)}</span>
       </button>
       <div className={cn(
         "col-start-2 row-start-2 flex w-full min-w-0 flex-nowrap items-center justify-evenly @[40rem]/priority-row:col-start-3 @[40rem]/priority-row:row-start-1 @[40rem]/priority-row:w-auto @[40rem]/priority-row:justify-end",
+        compact && "absolute bottom-1 right-2 z-10 w-auto justify-end rounded-lg bg-white/95 px-0.5 opacity-100 shadow-sm transition-opacity md:pointer-events-none md:opacity-0 md:group-hover:pointer-events-auto md:group-hover:opacity-100 md:group-focus-within:pointer-events-auto md:group-focus-within:opacity-100",
         isMobileSelectionMode && "hidden @[40rem]/priority-row:flex",
       )} data-attention-row-actions>
         <ActionButton label={message.followed ? "Remove bookmark" : "Bookmark email"} onClick={() => onToggleFollow(message)}>
