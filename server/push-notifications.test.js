@@ -29,6 +29,7 @@ const {
   buildPushPayload,
   parsePushSubscription,
   sendProcessedEmailNotification,
+  sendInboxSyncNotification,
   sendPushNotification,
 } = await import("./push-notifications.js");
 
@@ -110,6 +111,18 @@ describe("push delivery", () => {
       body: "Ready",
       badgeCount: 3,
       icon: "pwa-192.png",
+    });
+  });
+
+  it("sends a quiet inbox synchronization push with the latest badge count", async () => {
+    await sendInboxSyncNotification("user-1", { reason: "deleted" });
+    const payload = JSON.parse(mocks.sendNotification.mock.calls[0][1]);
+    expect(payload).toMatchObject({
+      badgeCount: 7,
+      body: "An email was moved to Trash. Your devices are now in sync.",
+      silent: true,
+      tag: "emailable-inbox-sync",
+      type: "inbox-sync",
     });
   });
 });

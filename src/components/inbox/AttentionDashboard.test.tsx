@@ -150,6 +150,18 @@ describe("AttentionDashboard", () => {
     expect(actions?.className).toContain("md:group-focus-within:opacity-100");
   });
 
+  it("turns a mobile row tap into selection while selection mode is active", () => {
+    const onOpen = vi.fn();
+    const onSelectionChange = vi.fn();
+    renderDashboard("attention", { onOpen, onSelectionChange });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(screen.getByRole("button", { name: /Sender 1.*Subject 1/i }));
+
+    expect(onSelectionChange).toHaveBeenCalledWith([expect.objectContaining({ id: "message-1" })]);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it("keeps the inbox view toggle in the dashboard title header", () => {
     renderDashboard("attention", { headerAction: <button type="button">All Mail</button> });
     const heading = screen.getByRole("heading", { name: "Your Inbox" });

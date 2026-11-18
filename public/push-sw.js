@@ -12,13 +12,7 @@ self.addEventListener("push", (event) => {
       : self.navigator.clearAppBadge?.());
   }
 
-  work.push(self.registration.showNotification(payload.title || "Emailable", {
-    body: payload.body || "New email is ready.",
-    icon: new URL(payload.icon || "pwa-192.png", scope).href,
-    badge: new URL(payload.badge || "pwa-maskable.png", scope).href,
-    tag: payload.tag || "emailable-email",
-    data: { url: notificationUrl, email: payload.email || null },
-  }));
+  work.push(deliverPayloadToApp(payload, notificationUrl, scope));
   event.waitUntil(Promise.all(work.filter(Boolean)));
 });
 
@@ -48,4 +42,18 @@ async function openOrFocusApp(targetUrl) {
     return existing.focus();
   }
   return self.clients.openWindow(target.href);
+}
+
+async function deliverPayloadToApp(payload, notificationUrl, scope) {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  windows.forEach((client) => client.postMessage({ type: "emailable:inbox-changed", payload }));
+
+  return self.registration.showNotification(payload.title || "Emailable", {
+    body: payload.body || "New email is ready.",
+    icon: new URL(payload.icon || "pwa-192.png", scope).href,
+    badge: new URL(payload.badge || "pwa-maskable.png", scope).href,
+    tag: payload.tag || "emailable-email",
+    silent: Boolean(payload.silent),
+    data: { url: notificationUrl, email: payload.email || null },
+  });
 }

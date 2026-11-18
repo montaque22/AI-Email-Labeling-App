@@ -111,6 +111,18 @@ export async function sendProcessedEmailNotification(userId, message) {
   });
 }
 
+export async function sendInboxSyncNotification(userId, change) {
+  const reason = String(change?.reason || "updated");
+  return sendPushNotification(userId, {
+    title: "Inbox updated",
+    body: syncNotificationBody(reason),
+    tag: "emailable-inbox-sync",
+    type: "inbox-sync",
+    silent: true,
+    url: "inbox",
+  });
+}
+
 export async function sendPushNotification(userId, notification) {
   const subscriptionResult = await dbPool.query(
     `select endpoint, expiration_time as "expirationTime", p256dh, auth
@@ -167,10 +179,20 @@ export function buildPushPayload(notification, badgeCount) {
     icon: "pwa-192.png",
     badge: "pwa-maskable.png",
     tag: String(notification.tag || "emailable-update"),
+    type: String(notification.type || "notification"),
+    silent: Boolean(notification.silent),
     url: String(notification.url || "inbox"),
     badgeCount: Math.max(0, Number(badgeCount) || 0),
     email: notification.email || null,
   };
+}
+
+function syncNotificationBody(reason) {
+  if (reason === "deleted") return "An email was moved to Trash. Your devices are now in sync.";
+  if (reason === "archived") return "An email was archived. Your devices are now in sync.";
+  if (reason === "read") return "Your unread email count changed.";
+  if (reason === "restored") return "An email was restored. Your devices are now in sync.";
+  return "Your inbox changed. Your devices are now in sync.";
 }
 
 export function parsePushSubscription(value) {

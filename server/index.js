@@ -21,6 +21,7 @@ import { isLocalDevelopmentSessionEnabled, resolveLocalDevelopmentUser } from ".
 import { ensureMcpTables, registerMcpRoutes } from "./mcp-server.js";
 import { ensurePollingSettings, registerPollingRoutes, startPollingWorker } from "./polling.js";
 import { ensurePushNotificationTables, registerPushNotificationRoutes } from "./push-notifications.js";
+import { registerInboxRealtimeRoutes } from "./inbox-realtime.js";
 import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
 import { ensureSystemLogsTable, startSystemLogRetentionWorker } from "./system-logs.js";
 import { ensureTasksTable, registerTaskRoutes, startTaskMidnightWorker } from "./tasks.js";
@@ -189,6 +190,7 @@ registerAutomationActivityRoutes(app);
 registerBackgroundTaskRoutes(app);
 registerEmailAccountRoutes(app);
 registerInboxRoutes(app);
+registerInboxRealtimeRoutes(app);
 registerAttentionDashboardRoutes(app);
 registerIntegrationRoutes(app);
 registerAiPromptRoutes(app);

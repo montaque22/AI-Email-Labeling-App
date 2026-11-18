@@ -184,9 +184,9 @@ export async function getEmailIndexEntryBySourceId(userId, sourceEmailId) {
 
 export async function updateEmailIndexReadStatus(userId, { accountId, emailId, mailbox = "", isRead }) {
   if (!dbPool) {
-    return;
+    return false;
   }
-  await dbPool.query(
+  const result = await dbPool.query(
     `
       update email_index
       set is_read = $5,
@@ -195,9 +195,12 @@ export async function updateEmailIndexReadStatus(userId, { accountId, emailId, m
         and email_account_id = $2
         and email_id = $3
         and mailbox = $4
+        and is_read is distinct from $5
+      returning id
     `,
     [userId, accountId, emailId, mailbox || "", Boolean(isRead)],
   );
+  return (result.rowCount ?? result.rows.length) > 0;
 }
 
 export async function updateEmailIndexLabels(userId, { accountId, emailId, mailbox = "", labels, nextMailbox = "" }) {

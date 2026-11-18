@@ -111,6 +111,7 @@ import {
 } from "./lib/inbox-ai-helper-session";
 import { useLocalDevelopmentSession } from "./hooks/useLocalDevelopmentSession";
 import { clearPwaUnreadBadge, refreshPwaUnreadBadge } from "./lib/pwa-badge";
+import { useInboxRealtimeSync, type InboxRealtimeChange } from "./hooks/useInboxRealtimeSync";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
 import { cn } from "./lib/utils";
 import { useBodyScrollLock, useIsMobileViewport } from "./hooks/useResponsiveScrollLock";
@@ -2386,7 +2387,22 @@ function InboxPage({
   const mobilePullReadyHapticRef = useRef(false);
   const lastAutoRefreshAtRef = useRef(0);
   const activeProcessingToastJobRef = useRef<string | null>(null);
+  const realtimeRefreshTimerRef = useRef<number | null>(null);
   const commitmentDraftOpen = commitmentDraftMessages.length > 0;
+
+  useInboxRealtimeSync((change) => {
+    void refreshPwaUnreadBadge();
+    closeChangedOpenMessage(change);
+    if (realtimeRefreshTimerRef.current) window.clearTimeout(realtimeRefreshTimerRef.current);
+    realtimeRefreshTimerRef.current = window.setTimeout(() => {
+      realtimeRefreshTimerRef.current = null;
+      void refreshInboxData({ preserveCurrent: true, preserveSelection: true, silent: true });
+    }, 80);
+  });
+
+  useEffect(() => () => {
+    if (realtimeRefreshTimerRef.current) window.clearTimeout(realtimeRefreshTimerRef.current);
+  }, []);
 
   useEffect(() => setInboxView(initialView), [initialView]);
   useEffect(() => setInboxMode(initialMode), [initialMode]);
@@ -2834,27 +2850,45 @@ function InboxPage({
     }
   }
 
-  async function refreshInboxData() {
+  async function refreshInboxData(options: { preserveCurrent?: boolean; preserveSelection?: boolean; silent?: boolean } = {}) {
     if (isLoading || isLoadingMore || isMobilePullRefreshing) {
       return;
     }
 
-    setIsMobilePullRefreshing(true);
-    navigator.vibrate?.(12);
+    if (!options.silent) {
+      setIsMobilePullRefreshing(true);
+      navigator.vibrate?.(12);
+    }
     try {
       await Promise.all([
-        loadMessages({ reset: true }),
+        inboxView === "dashboard"
+          ? loadAttentionDashboard()
+          : loadMessages({ reset: true, preserveCurrent: options.preserveCurrent, preserveSelection: options.preserveSelection }),
         isLabelFilteredInboxMode(inboxMode) && selectedAccountIds.length > 0 && labels.length > 0
           ? loadLabelCounts()
           : Promise.resolve(),
         accounts.length > 0 ? checkInboxAccountTokenStatuses(accounts) : Promise.resolve(),
       ]);
     } finally {
-      setIsMobilePullRefreshing(false);
-      setMobilePullDistance(0);
-      mobilePullActiveRef.current = false;
-      mobilePullReadyHapticRef.current = false;
-      mobilePullStartYRef.current = null;
+      if (!options.silent) {
+        setIsMobilePullRefreshing(false);
+        setMobilePullDistance(0);
+        mobilePullActiveRef.current = false;
+        mobilePullReadyHapticRef.current = false;
+        mobilePullStartYRef.current = null;
+      }
+    }
+  }
+
+  function closeChangedOpenMessage(change: InboxRealtimeChange) {
+    if (!selectedMessage || !["deleted", "archived"].includes(change.reason)) return;
+    const selectedKey = getInboxMessageKey(selectedMessage);
+    const changedSelectedMessage = change.messages.some((message) =>
+      `${message.accountId}:${message.mailbox ?? ""}:${message.emailId}` === selectedKey,
+    );
+    if (changedSelectedMessage) {
+      setSelectedMessage(null);
+      setMessageDetail(null);
     }
   }
 
@@ -3004,7 +3038,13 @@ function InboxPage({
     mobilePullStartYRef.current = null;
   }
 
-  async function loadMessages({ reset, pageTokenOverride, limitOverride }: { reset: boolean; pageTokenOverride?: string | null; limitOverride?: number }) {
+  async function loadMessages({ reset, pageTokenOverride, limitOverride, preserveCurrent = false, preserveSelection = false }: {
+    reset: boolean;
+    pageTokenOverride?: string | null;
+    limitOverride?: number;
+    preserveCurrent?: boolean;
+    preserveSelection?: boolean;
+  }) {
     const activeSearch = committedInboxSearch.trim();
     const isSearchActive = activeSearch.length > 0;
     const activeAccountIds = isSearchActive ? accounts.map((account) => account.id) : selectedAccountIds;
@@ -3028,7 +3068,7 @@ function InboxPage({
     }
 
     reset ? setIsLoading(true) : setIsLoadingMore(true);
-    if (reset) {
+    if (reset && !preserveCurrent) {
       setMessages([]);
     }
     setError(null);
@@ -3079,7 +3119,7 @@ function InboxPage({
         });
         setNextPageToken(data.nextPageToken ?? null);
         setListTotalCount(typeof data.totalCount === "number" ? data.totalCount : null);
-        if (reset) {
+        if (reset && !preserveSelection) {
           setSelectedMessageKeys([]);
           setMobilePullDistance(0);
           mobilePullActiveRef.current = false;
@@ -3190,7 +3230,7 @@ function InboxPage({
         );
       });
       setNextPageToken(encodeInboxPageToken(nextPageState));
-      if (reset) {
+      if (reset && !preserveSelection) {
         setSelectedMessageKeys([]);
         setMobilePullDistance(0);
         mobilePullActiveRef.current = false;
@@ -3325,11 +3365,6 @@ function InboxPage({
   }
 
   async function actOnDashboardMessage(message: InboxMessage, action: "archive" | "delete") {
-    const isCleanupReview = attentionCategory === "cleanup" && message.attention?.category === "review";
-    const categoryMessages = isCleanupReview
-      ? attentionDashboard?.cleanupReview as InboxMessage[] | undefined
-      : attentionDashboard?.categories[attentionCategory] as InboxMessage[] | undefined;
-    const currentIndex = categoryMessages?.findIndex((item) => getInboxMessageKey(item) === getInboxMessageKey(message)) ?? -1;
     const result = action === "archive"
       ? await archiveSelectedMessages([message])
       : await deleteSelectedMessages([message], { source: "user" });
@@ -3339,17 +3374,9 @@ function InboxPage({
     } else if (attentionCategory === "cleanup") {
       recordAttentionEngagement(message, action);
     }
-    const refreshed = await loadAttentionDashboard();
-    const nextMessages = isCleanupReview
-      ? refreshed?.cleanupReview as InboxMessage[] | undefined
-      : refreshed?.categories[attentionCategory] as InboxMessage[] | undefined;
-    const nextMessage = nextMessages?.[Math.max(0, currentIndex)] ?? nextMessages?.[Math.max(0, currentIndex - 1)];
-    if (nextMessage) {
-      await openMessage(nextMessage);
-    } else {
-      setSelectedMessage(null);
-      setMessageDetail(null);
-    }
+    setSelectedMessage(null);
+    setMessageDetail(null);
+    await loadAttentionDashboard();
   }
 
   function toggleAccount(accountId: string) {

@@ -177,7 +177,7 @@ export function AttentionDashboard({
                 />
                 {category === "cleanup" && cleanupView === "likely-clutter" ? (
                   <AttentionCleanupGroups
-                    expandedGroups={expandedGroups} groups={data?.cleanupGroups ?? []} onOpen={onOpen}
+                    expandedGroups={expandedGroups} groups={data?.cleanupGroups ?? []} isMobileSelectionMode={isMobileSelectionMode} onOpen={onOpen}
                     onToggleExpanded={(id) => setExpandedGroups((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])}
                     onToggleGroup={toggleCleanupGroup} onToggleMessage={toggleMessage} selectedKeys={selectedKeys}
                   />

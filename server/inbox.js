@@ -45,6 +45,7 @@ import { getPollingProcessingJob } from "./polling.js";
 import { completeBackgroundTask, createBackgroundTask, failBackgroundTask, updateBackgroundTask, warnBackgroundTask } from "./background-tasks.js";
 import { runDetachedTask } from "./detached-tasks.js";
 import { drainProviderDeleteQueues } from "./provider-delete-queue.js";
+import { publishInboxChange } from "./inbox-realtime.js";
 import crypto from "node:crypto";
 import nodemailer from "nodemailer";
 
@@ -635,7 +636,10 @@ async function getInboxMessage(userId, query) {
     const accessToken = await getValidEmailAccountAccessToken(account);
     const message = await fetchGmailInboxMessage(accessToken, account, query.emailId);
     const isRead = await markGmailMessageRead(accessToken, message);
-    await updateEmailIndexReadStatus(userId, { accountId: account.id, emailId: message.id, mailbox: message.mailbox, isRead });
+    const readStatusChanged = await updateEmailIndexReadStatus(userId, { accountId: account.id, emailId: message.id, mailbox: message.mailbox, isRead });
+    if (readStatusChanged && isRead) {
+      publishInboxChange(userId, { reason: "read", messages: [message] });
+    }
     return attachSingleMessageMetadata(userId, { ...message, isRead });
   }
 
@@ -643,7 +647,10 @@ async function getInboxMessage(userId, query) {
     const accessToken = await getImapAccessToken(account);
     const message = await fetchImapInboxMessage(account, { accessToken, emailId: query.emailId, mailbox: query.mailbox });
     const isRead = await markImapMessageRead(account, message, accessToken);
-    await updateEmailIndexReadStatus(userId, { accountId: account.id, emailId: message.id, mailbox: message.mailbox, isRead });
+    const readStatusChanged = await updateEmailIndexReadStatus(userId, { accountId: account.id, emailId: message.id, mailbox: message.mailbox, isRead });
+    if (readStatusChanged && isRead) {
+      publishInboxChange(userId, { reason: "read", messages: [message] });
+    }
     return attachSingleMessageMetadata(userId, { ...message, isRead });
   }
 
@@ -1163,6 +1170,10 @@ async function deleteInboxMessages(userId, messages, { backgroundTaskId = "" } =
     payload: { deleted, failed, messages },
   });
 
+  if (deleted > 0) {
+    publishInboxChange(userId, { reason: "deleted", messages: results.filter((result) => result.ok) });
+  }
+
   return {
     deleted,
     failed,
@@ -1201,6 +1212,9 @@ async function restoreInboxMessages(userId, messages) {
     message: `${restored} email${restored === 1 ? "" : "s"} restored from Trash${failed.length ? `; ${failed.length} failed` : ""}.`,
     payload: { restored, failed, messages },
   });
+  if (restored > 0) {
+    publishInboxChange(userId, { reason: "restored", messages: results.filter((result) => result.ok) });
+  }
   return { failed, restored, results };
 }
 
@@ -1229,6 +1243,10 @@ async function archiveInboxMessages(userId, messages) {
     message: `${archived} email${archived === 1 ? "" : "s"} archived${failed.length ? `; ${failed.length} failed` : ""}.`,
     payload: { archived, failed, messages },
   });
+
+  if (archived > 0) {
+    publishInboxChange(userId, { reason: "archived", messages: results.filter((result) => result.ok) });
+  }
 
   return {
     archived,

@@ -4,9 +4,10 @@ import type { AttentionCleanupGroup, AttentionMessage } from "./attention-dashbo
 import { attentionMessageKey, formatAttentionDate } from "./attention-dashboard-utils";
 import { AttentionEmptyCategory } from "./AttentionPriorityList";
 
-export function AttentionCleanupGroups({ expandedGroups, groups, onOpen, onToggleExpanded, onToggleGroup, onToggleMessage, selectedKeys }: {
+export function AttentionCleanupGroups({ expandedGroups, groups, isMobileSelectionMode, onOpen, onToggleExpanded, onToggleGroup, onToggleMessage, selectedKeys }: {
   expandedGroups: string[];
   groups: AttentionCleanupGroup[];
+  isMobileSelectionMode: boolean;
   onOpen: (message: AttentionMessage) => void;
   onToggleExpanded: (id: string) => void;
   onToggleGroup: (group: AttentionCleanupGroup) => void;
@@ -32,7 +33,7 @@ export function AttentionCleanupGroups({ expandedGroups, groups, onOpen, onToggl
             {group.messages.map((message) => (
               <div className="flex items-center gap-3 border-b border-white/60 px-4 py-3 last:border-b-0" key={attentionMessageKey(message)}>
                 <input aria-label={`Select ${message.subject || "email"}`} checked={selectedKeys.has(attentionMessageKey(message))} className="h-5 w-5 accent-violet-600" onChange={() => onToggleMessage(message)} type="checkbox" />
-                <button className="min-w-0 flex-1 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500" onClick={() => onOpen(message)} type="button"><span className="block truncate text-sm font-medium">{message.subject || "No subject"}</span><span className="block truncate text-xs text-zinc-500">{message.attention.explanation}</span></button>
+                <button className="min-w-0 flex-1 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500" onClick={() => isMobileSelectionMode ? onToggleMessage(message) : onOpen(message)} type="button"><span className="block truncate text-sm font-medium">{message.subject || "No subject"}</span><span className="block truncate text-xs text-zinc-500">{message.attention.explanation}</span></button>
                 <span className="text-xs text-zinc-500">{formatAttentionDate(message.date)}</span>
               </div>
             ))}

@@ -6,6 +6,7 @@ import { searchPollingCandidates } from "./integrations.js";
 import { requireSession } from "./session.js";
 import { logSystemEvent } from "./system-logs.js";
 import { sendProcessedEmailNotification } from "./push-notifications.js";
+import { publishInboxChange } from "./inbox-realtime.js";
 import { emitWebhookEventDetached } from "./webhooks.js";
 
 const POLLING_WORKER_INTERVAL_MS = 60_000;
@@ -430,6 +431,7 @@ async function pollUser(settings, trigger, options = {}) {
 export async function processPollingCandidate(userId, candidate, dependencies = {}) {
   const generateLabel = dependencies.generateLabel || generateAiLabel;
   const sendNotification = dependencies.sendNotification || sendProcessedEmailNotification;
+  const publishChange = dependencies.publishChange || publishInboxChange;
   const result = await generateLabel(userId, {
     emailId: candidate.email.emailId,
     accountEmail: candidate.account.email,
@@ -442,6 +444,10 @@ export async function processPollingCandidate(userId, candidate, dependencies = 
     subject: candidate.email.subject || "No subject",
     labels: result.added ?? [],
   }));
+  publishChange(userId, {
+    reason: "new-email",
+    messages: [{ accountId: candidate.account.id, emailId: candidate.email.emailId, mailbox: candidate.email.mailbox || "" }],
+  }, { push: false });
   return result;
 }
 

@@ -8,6 +8,8 @@ describe("PWA push service worker", () => {
     expect(source).toContain('addEventListener("push"');
     expect(source).toContain("showNotification");
     expect(source).toContain("setAppBadge");
+    expect(source).toContain("emailable:inbox-changed");
+    expect(source).toContain("client.postMessage");
     expect(source).toContain('addEventListener("notificationclick"');
     expect(source).toContain("openWindow");
   });

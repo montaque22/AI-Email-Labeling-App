@@ -10,6 +10,7 @@ vi.mock("./background-tasks.js", () => ({
 }));
 vi.mock("./integrations.js", () => ({ searchPollingCandidates: vi.fn() }));
 vi.mock("./push-notifications.js", () => ({ sendProcessedEmailNotification: vi.fn() }));
+vi.mock("./inbox-realtime.js", () => ({ publishInboxChange: vi.fn() }));
 vi.mock("./session.js", () => ({ requireSession: vi.fn() }));
 vi.mock("./system-logs.js", () => ({ logSystemEvent: vi.fn() }));
 vi.mock("./webhooks.js", () => ({ emitWebhookEventDetached: vi.fn() }));
@@ -27,15 +28,20 @@ describe("polling push notification sequencing", () => {
       sequence.push("notified");
       expect(payload.labels).toEqual(["Finance"]);
     });
+    const publishChange = vi.fn(() => sequence.push("published"));
     const candidate = {
       account: { id: "account-1", email: "owner@example.com" },
       email: { emailId: "email-1", fromName: "Bank", fromEmail: "bank@example.com", subject: "Statement" },
     };
 
-    await processPollingCandidate("user-1", candidate, { generateLabel, sendNotification });
+    await processPollingCandidate("user-1", candidate, { generateLabel, publishChange, sendNotification });
 
-    expect(sequence).toEqual(["labeled", "notified"]);
+    expect(sequence).toEqual(["labeled", "notified", "published"]);
     expect(generateLabel).toHaveBeenCalledWith("user-1", { emailId: "email-1", accountEmail: "owner@example.com" });
+    expect(publishChange).toHaveBeenCalledWith("user-1", {
+      reason: "new-email",
+      messages: [{ accountId: "account-1", emailId: "email-1", mailbox: "" }],
+    }, { push: false });
   });
 
   it("never notifies when labeling fails", async () => {
@@ -45,6 +51,7 @@ describe("polling push notification sequencing", () => {
       email: { emailId: "email-1" },
     }, {
       generateLabel: vi.fn().mockRejectedValue(new Error("Labeling failed")),
+      publishChange: vi.fn(),
       sendNotification,
     })).rejects.toThrow("Labeling failed");
     expect(sendNotification).not.toHaveBeenCalled();
@@ -56,6 +63,7 @@ describe("polling push notification sequencing", () => {
       email: { emailId: "email-1", subject: "Subject" },
     }, {
       generateLabel: vi.fn().mockResolvedValue({ added: ["General"] }),
+      publishChange: vi.fn(),
       sendNotification: vi.fn().mockRejectedValue(new Error("Push service unavailable")),
     })).resolves.toMatchObject({ added: ["General"] });
   });

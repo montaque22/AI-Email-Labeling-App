@@ -81,7 +81,7 @@ function AttentionPriorityRow({
         onChange={() => onToggleSelection(message)}
         type="checkbox"
       />
-      <button className={cn("col-start-2 row-start-1 flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500", compact && "items-start gap-2 pr-12")} data-attention-row-content onClick={() => onOpen(message)} type="button">
+      <button className={cn("col-start-2 row-start-1 flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500", compact && "items-start gap-2 pr-12")} data-attention-row-content onClick={() => isMobileSelectionMode ? onToggleSelection(message) : onOpen(message)} type="button">
         <span className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-sm font-medium", compact && "h-9 w-9 text-xs")}>{attentionSenderInitial(message)}</span>
         <span className={cn("min-w-0 flex-1", compact && "overflow-hidden")}>
           <span className="flex min-w-0 items-center gap-2">
