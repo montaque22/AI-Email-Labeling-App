@@ -12,6 +12,7 @@ export default defineConfig({
       injectRegister: "auto",
       registerType: "prompt",
       manifest: {
+        id: ".",
         name: "Emailable",
         short_name: "Emailable",
         description: "AI-assisted email labeling, rules, inbox, and automation.",
@@ -41,6 +42,7 @@ export default defineConfig({
         ],
       },
       workbox: {
+        importScripts: ["push-sw.js"],
         globPatterns: ["**/*.{js,css,html,ico,png,svg,webmanifest}"],
         navigateFallback: "index.html",
         navigateFallbackDenylist: [/\/api\/(?!email-accounts\/callback\/)/],

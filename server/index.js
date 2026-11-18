@@ -20,6 +20,7 @@ import { ensureLabelsTable, registerLabelRoutes } from "./labels.js";
 import { isLocalDevelopmentSessionEnabled, resolveLocalDevelopmentUser } from "./local-development-session.js";
 import { ensureMcpTables, registerMcpRoutes } from "./mcp-server.js";
 import { ensurePollingSettings, registerPollingRoutes, startPollingWorker } from "./polling.js";
+import { ensurePushNotificationTables, registerPushNotificationRoutes } from "./push-notifications.js";
 import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
 import { ensureSystemLogsTable, startSystemLogRetentionWorker } from "./system-logs.js";
 import { ensureTasksTable, registerTaskRoutes, startTaskMidnightWorker } from "./tasks.js";
@@ -194,6 +195,7 @@ registerAiPromptRoutes(app);
 registerByoAiRoutes(app);
 registerMcpRoutes(app);
 registerPollingRoutes(app);
+registerPushNotificationRoutes(app);
 registerCalendarSubscriptionRoutes(app);
 registerTaskRoutes(app);
 
@@ -279,6 +281,7 @@ async function startServer() {
     await ensureByoAiTables();
     await ensureMcpTables();
     await ensurePollingSettings();
+    await ensurePushNotificationTables();
     await ensureCalendarSubscriptionTables();
     await ensureTasksTable();
   } catch (error) {

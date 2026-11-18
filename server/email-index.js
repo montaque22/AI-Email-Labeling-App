@@ -634,6 +634,7 @@ export async function countUnreadEmailIndexEntries(userId) {
       where user_id = $1
         and direction = 'inbox'
         and archived = false
+        and trashed_at is null
         and is_read = false
     `,
     [userId],

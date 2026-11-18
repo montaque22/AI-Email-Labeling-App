@@ -5,6 +5,7 @@ import { runDetachedTask, runGuardedStep } from "./detached-tasks.js";
 import { searchPollingCandidates } from "./integrations.js";
 import { requireSession } from "./session.js";
 import { logSystemEvent } from "./system-logs.js";
+import { sendProcessedEmailNotification } from "./push-notifications.js";
 import { emitWebhookEventDetached } from "./webhooks.js";
 
 const POLLING_WORKER_INTERVAL_MS = 60_000;
@@ -368,10 +369,7 @@ async function pollUser(settings, trigger, options = {}) {
     const failures = [];
     for (const candidate of uniqueCandidates) {
       try {
-        await generateAiLabel(settings.userId, {
-          emailId: candidate.email.emailId,
-          accountEmail: candidate.account.email,
-        });
+        await processPollingCandidate(settings.userId, candidate);
         processed += 1;
         updatePollingProcessingJob(settings.userId, { processed });
         updatePollingBackgroundTask(settings.userId, backgroundTaskId, { processed });
@@ -427,6 +425,24 @@ async function pollUser(settings, trigger, options = {}) {
     clearPollingProcessingJobLater(settings.userId);
     throw error;
   }
+}
+
+export async function processPollingCandidate(userId, candidate, dependencies = {}) {
+  const generateLabel = dependencies.generateLabel || generateAiLabel;
+  const sendNotification = dependencies.sendNotification || sendProcessedEmailNotification;
+  const result = await generateLabel(userId, {
+    emailId: candidate.email.emailId,
+    accountEmail: candidate.account.email,
+  });
+  await runGuardedStep("email.polling.push_notification", () => sendNotification(userId, {
+    accountId: candidate.account.id,
+    accountEmail: candidate.account.email,
+    emailId: candidate.email.emailId,
+    sender: candidate.email.fromName || candidate.email.fromEmail || "New sender",
+    subject: candidate.email.subject || "No subject",
+    labels: result.added ?? [],
+  }));
+  return result;
 }
 
 function simplifyPollingBody(value) {

@@ -99,6 +99,7 @@ import {
   type ReplyDraftArtifact,
 } from "./components/inbox/work-artifacts";
 import { AttentionDashboardSettingsPage } from "./components/settings/AttentionDashboardSettingsPage";
+import { PushNotificationSettings } from "./components/settings/PushNotificationSettings";
 import { authClient } from "./lib/auth-client";
 import { fetchNoStore } from "./lib/http";
 import {
@@ -13464,6 +13465,7 @@ function SystemSettingsPage() {
           </Button>
         </CardContent>
       </Card>
+      <PushNotificationSettings />
     </div>
   );
 }
