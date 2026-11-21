@@ -214,7 +214,7 @@ select,
 
 @media (min-width: 768px) {
   .attention-dashboard-shell:has(.attention-work-mode-layout[data-has-detail="true"]) {
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto;
     max-height: calc(100dvh - 8rem);
   }
 
