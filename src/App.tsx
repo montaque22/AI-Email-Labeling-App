@@ -6891,11 +6891,13 @@ function InboxMessageModal({
 
   return (
     <div className={cn(
-      variant === "modal" ? "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4" : "hidden h-full min-h-0 min-w-0 md:block",
+      variant === "modal"
+        ? "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 p-4"
+        : "attention-work-mode-detail hidden min-h-0 min-w-0 md:flex md:flex-col md:overflow-hidden",
     )}>
       <div className={cn(
         "flex w-full min-h-0 items-stretch justify-center gap-3 transition-[max-width] duration-300",
-        variant === "modal" ? "h-[92dvh] max-h-[92vh]" : "h-full",
+        variant === "modal" ? "h-[92dvh] max-h-[92vh]" : "h-full max-h-full flex-1",
         variant === "modal" ? mode === "work" ? "max-w-[1500px]" : "max-w-4xl" : "max-w-none",
       )}>
       <LiquidGlassCard

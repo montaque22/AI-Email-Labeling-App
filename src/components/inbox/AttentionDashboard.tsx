@@ -135,7 +135,7 @@ export function AttentionDashboard({
   }
 
   return (
-    <section className="space-y-5" aria-label="Attention Dashboard">
+    <section className="attention-dashboard-shell grid gap-5" aria-label="Attention Dashboard">
       <InboxPageHeader action={headerAction} />
 
       <AttentionCategoryCards category={category} counts={data?.counts} isLoading={showInitialLoading} onSelect={onSelectCategory} />

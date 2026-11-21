@@ -51,7 +51,13 @@ export async function applyPwaUpdate({
     if (!activated) {
       // A broken or permanently blocked worker must not keep serving the old app
       // shell after the fallback reload. The app registers a fresh worker on load.
-      await registration?.unregister().catch(() => false);
+      const unregister = registration?.unregister().catch(() => false);
+      if (unregister) {
+        await Promise.race([
+          unregister,
+          new Promise<void>((resolve) => setTimeout(resolve, Math.min(timeoutMs, 1_000))),
+        ]);
+      }
     }
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);

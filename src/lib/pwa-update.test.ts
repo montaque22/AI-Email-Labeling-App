@@ -8,7 +8,7 @@ describe("applyPwaUpdate", () => {
     vi.useFakeTimers();
     const reload = vi.fn();
     const postMessage = vi.fn();
-    const unregister = vi.fn().mockResolvedValue(true);
+    const unregister = vi.fn(() => new Promise<boolean>(() => undefined));
     const serviceWorker = new EventTarget() as ServiceWorkerContainer;
 
     const result = applyPwaUpdate({
@@ -20,7 +20,7 @@ describe("applyPwaUpdate", () => {
     });
 
     expect(postMessage).toHaveBeenCalledWith({ type: "SKIP_WAITING" });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(200);
     await result;
     expect(reload).toHaveBeenCalledOnce();
     expect(unregister).toHaveBeenCalledOnce();
