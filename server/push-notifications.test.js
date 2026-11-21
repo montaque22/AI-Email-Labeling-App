@@ -90,8 +90,14 @@ describe("push delivery", () => {
       title: "New email labeled Action Required",
       body: "Sender: Project update",
       badgeCount: 7,
+      silent: false,
       url: "inbox",
     });
+    expect(mocks.sendNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ endpoint: "https://push.example/subscription" }),
+      expect.any(String),
+      { TTL: 60 * 60, urgency: "high" },
+    );
   });
 
   it("removes expired subscriptions without failing email processing", async () => {
@@ -124,5 +130,10 @@ describe("push delivery", () => {
       tag: "emailable-inbox-sync",
       type: "inbox-sync",
     });
+    expect(mocks.sendNotification).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(String),
+      { TTL: 5 * 60, urgency: "low" },
+    );
   });
 });

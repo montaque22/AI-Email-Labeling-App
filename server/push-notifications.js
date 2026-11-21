@@ -146,7 +146,10 @@ export async function sendPushNotification(userId, notification) {
 
   await Promise.all(subscriptions.map(async (subscription) => {
     try {
-      await webPush.sendNotification(toWebPushSubscription(subscription), payload, { TTL: 60 * 60, urgency: "normal" });
+      await webPush.sendNotification(toWebPushSubscription(subscription), payload, {
+        TTL: notification.silent ? 5 * 60 : 60 * 60,
+        urgency: notification.silent ? "low" : "high",
+      });
       delivered += 1;
     } catch (error) {
       if (error?.statusCode === 404 || error?.statusCode === 410) {

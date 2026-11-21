@@ -1,5 +1,4 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type ComponentType, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
-import { registerSW } from "virtual:pwa-register";
 import {
   Cell,
   Line,
@@ -117,6 +116,8 @@ import { looksLikeMarkdownEmail, plainTextToEmailHtml } from "./lib/email-conten
 import { cn } from "./lib/utils";
 import { useBodyScrollLock, useIsMobileViewport } from "./hooks/useResponsiveScrollLock";
 import { useVisualViewportHeight } from "./hooks/useVisualViewportHeight";
+import { usePwaUpdatePrompt } from "./hooks/usePwaUpdatePrompt";
+import { usePushSubscriptionSync } from "./hooks/usePushSubscriptionSync";
 
 type Page =
   | "overview"
@@ -929,6 +930,7 @@ export function App() {
     ? mapAuthUser(localDevelopmentSession.user)
     : homeAssistantUser ?? (session.data?.user ? mapAuthUser(session.data.user) : null);
   const pwaUpdate = usePwaUpdatePrompt();
+  usePushSubscriptionSync(user?.email);
   const publicLegalDocument = getPublicLegalDocument(window.location.pathname);
   const isPublicHomePage = isPublicHomePath(window.location.pathname);
 
@@ -1120,90 +1122,6 @@ export function App() {
       <PwaUpdatePrompt {...pwaUpdate} />
     </>
   );
-}
-
-function usePwaUpdatePrompt() {
-  const [isUpdateAvailable, setIsUpdateAvailable] = useState(false);
-  const [isUpdateCollapsed, setIsUpdateCollapsed] = useState(false);
-  const [isOffline, setIsOffline] = useState(() => typeof navigator !== "undefined" ? !navigator.onLine : false);
-  const [isUpdating, setIsUpdating] = useState(false);
-  const updateServiceWorkerRef = useRef<ReturnType<typeof registerSW> | null>(null);
-
-  useEffect(() => {
-    function handleOnline() {
-      setIsOffline(false);
-    }
-
-    function handleOffline() {
-      setIsOffline(true);
-    }
-
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-    return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!("serviceWorker" in navigator) || updateServiceWorkerRef.current) {
-      return;
-    }
-
-    updateServiceWorkerRef.current = registerSW({
-      immediate: true,
-      onNeedRefresh() {
-        setIsUpdateAvailable(true);
-        setIsUpdateCollapsed(false);
-      },
-      onRegisteredSW(_swUrl, registration) {
-        if (!registration) {
-          return;
-        }
-
-        const checkForUpdates = () => {
-          if (navigator.onLine) {
-            void registration.update();
-          }
-        };
-        const intervalId = window.setInterval(checkForUpdates, 60 * 60 * 1000);
-
-        document.addEventListener("visibilitychange", checkForUpdates);
-        window.addEventListener("focus", checkForUpdates);
-        checkForUpdates();
-
-        return () => {
-          window.clearInterval(intervalId);
-          document.removeEventListener("visibilitychange", checkForUpdates);
-          window.removeEventListener("focus", checkForUpdates);
-        };
-      },
-      onRegisterError(error) {
-        console.error("PWA registration failed:", error);
-      },
-    });
-  }, []);
-
-  async function applyUpdate() {
-    if (!updateServiceWorkerRef.current) {
-      window.location.reload();
-      return;
-    }
-
-    setIsUpdating(true);
-    await updateServiceWorkerRef.current(true);
-  }
-
-  return {
-    applyUpdate,
-    collapseUpdate: () => setIsUpdateCollapsed(true),
-    expandUpdate: () => setIsUpdateCollapsed(false),
-    isOffline,
-    isUpdateAvailable,
-    isUpdateCollapsed,
-    isUpdating,
-  };
 }
 
 function HomePage({ hideAuth = false, onAuthSuccess }: { hideAuth?: boolean; onAuthSuccess: () => Promise<unknown> }) {
