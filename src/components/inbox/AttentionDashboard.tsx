@@ -11,7 +11,6 @@ import { AttentionTrashConfirmation } from "./AttentionTrashConfirmation";
 import { DashboardFilterTabs } from "./DashboardFilterTabs";
 import { InboxPageHeader } from "./InboxPageHeader";
 import { ResizableColumnDivider } from "./ResizableColumnDivider";
-import { useStickyViewportHeight } from "../../hooks/useStickyViewportHeight";
 import type { AttentionCleanupGroup, AttentionDashboardProps, AttentionMessage } from "./attention-dashboard-types";
 import { attentionMessageKey } from "./attention-dashboard-utils";
 
@@ -33,7 +32,6 @@ export function AttentionDashboard({
   const [cleanupView, setCleanupView] = useState<"likely-clutter" | "needs-review">("likely-clutter");
   const [listWidthRatio, setListWidthRatio] = useState(0.3);
   const workModeLayoutRef = useRef<HTMLDivElement>(null);
-  const workspaceHeight = useStickyViewportHeight(workModeLayoutRef);
 
   const categoryMessages = category === "cleanup" && cleanupView === "needs-review"
     ? data?.cleanupReview ?? []
@@ -148,7 +146,6 @@ export function AttentionDashboard({
         ref={workModeLayoutRef}
         style={{
           ...(detailPanel ? { "--attention-list-width": `${listWidthRatio * 100}%` } : {}),
-          ...(workspaceHeight ? { "--attention-workspace-height": `${workspaceHeight}px` } : {}),
         } as CSSProperties}
       >
         <Card className="attention-work-mode-list min-w-0 overflow-visible bg-white/60">

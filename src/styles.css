@@ -217,8 +217,8 @@ select,
     position: sticky;
     top: 4rem;
     z-index: 10;
-    height: var(--attention-workspace-height, calc(100dvh - 4rem));
-    max-height: var(--attention-workspace-height, calc(100dvh - 4rem));
+    height: auto;
+    max-height: calc(100dvh - 4rem);
     min-height: 0;
     overflow: hidden;
   }
@@ -234,7 +234,8 @@ select,
 
   .attention-work-mode-list {
     display: flex;
-    height: 100%;
+    height: auto;
+    max-height: calc(100dvh - 4rem);
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
