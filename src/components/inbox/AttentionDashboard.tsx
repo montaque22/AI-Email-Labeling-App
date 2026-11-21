@@ -1,16 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Gem, Inbox, Layers3, Loader2, SearchCheck, Sparkles } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { cn } from "../../lib/utils";
-import { useAvailableViewportHeight } from "../../hooks/useAvailableViewportHeight";
 import { AttentionCategoryCards, ATTENTION_CATEGORY_CARDS } from "./AttentionCategoryCards";
 import { AttentionCleanupGroups } from "./AttentionCleanupGroups";
 import { AttentionPriorityList } from "./AttentionPriorityList";
 import { AttentionTrashConfirmation } from "./AttentionTrashConfirmation";
 import { DashboardFilterTabs } from "./DashboardFilterTabs";
 import { InboxPageHeader } from "./InboxPageHeader";
+import { ResizableColumnDivider } from "./ResizableColumnDivider";
 import type { AttentionCleanupGroup, AttentionDashboardProps, AttentionMessage } from "./attention-dashboard-types";
 import { attentionMessageKey } from "./attention-dashboard-utils";
 
@@ -30,8 +30,8 @@ export function AttentionDashboard({
   const [pendingTrash, setPendingTrash] = useState<AttentionMessage[] | null>(null);
   const [attentionFilter, setAttentionFilter] = useState<"all" | "quick-wins" | "commitments">("all");
   const [cleanupView, setCleanupView] = useState<"likely-clutter" | "needs-review">("likely-clutter");
+  const [listWidthRatio, setListWidthRatio] = useState(0.3);
   const workModeLayoutRef = useRef<HTMLDivElement>(null);
-  const workModeHeight = useAvailableViewportHeight(workModeLayoutRef, Boolean(detailPanel));
 
   const categoryMessages = category === "cleanup" && cleanupView === "needs-review"
     ? data?.cleanupReview ?? []
@@ -141,11 +141,12 @@ export function AttentionDashboard({
       <AttentionCategoryCards category={category} counts={data?.counts} isLoading={showInitialLoading} onSelect={onSelectCategory} />
 
       <div
-        className={cn("min-w-0", detailPanel && "attention-work-mode-layout grid min-h-0 items-stretch gap-4 overflow-hidden")}
+        className="attention-work-mode-layout min-w-0"
+        data-has-detail={Boolean(detailPanel)}
         ref={workModeLayoutRef}
-        style={workModeHeight ? { height: `${workModeHeight}px` } : undefined}
+        style={detailPanel ? { "--attention-list-width": `${listWidthRatio * 100}%` } as CSSProperties : undefined}
       >
-        <Card className={cn("min-w-0 overflow-visible bg-white/60", detailPanel && "attention-work-mode-list flex h-full min-h-0 flex-col overflow-hidden")}>
+        <Card className="attention-work-mode-list min-w-0 overflow-visible bg-white/60">
           <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-white/70">
             <div>
               <div className="flex items-center gap-2"><CardTitle>{card?.label}</CardTitle><Badge>{data?.counts[category] ?? 0} emails</Badge></div>
@@ -166,7 +167,7 @@ export function AttentionDashboard({
               { count: data?.cleanupCounts?.needsReview ?? 0, icon: SearchCheck, label: "Needs Review", value: "needs-review" },
             ]} value={cleanupView} />
           ) : null}
-          <CardContent className={cn("p-0", detailPanel && "min-h-0 flex-1 overflow-y-auto")}>
+          <CardContent className="attention-work-mode-list-content p-0">
             {showInitialLoading ? <DashboardSkeleton /> : (
               <>
                 <AttentionSelectionHeader
@@ -200,6 +201,13 @@ export function AttentionDashboard({
             )}
           </CardContent>
         </Card>
+        {detailPanel ? (
+          <ResizableColumnDivider
+            containerRef={workModeLayoutRef}
+            onRatioChange={setListWidthRatio}
+            ratio={listWidthRatio}
+          />
+        ) : null}
         {detailPanel}
       </div>
 

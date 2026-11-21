@@ -142,8 +142,9 @@ describe("AttentionDashboard", () => {
     const actions = container.querySelector("[data-attention-row-actions]");
 
     expect(screen.getByTestId("email-workspace")).toBeTruthy();
-    expect(layout?.className).toContain("overflow-hidden");
-    expect(listCard?.className).toContain("h-full");
+    expect(layout?.getAttribute("data-has-detail")).toBe("true");
+    expect(layout?.querySelector('[role="separator"]')).toBeTruthy();
+    expect(listCard?.className).toContain("attention-work-mode-list");
     expect(row?.className).toContain("min-h-[88px]");
     expect(actions?.className).toContain("md:opacity-0");
     expect(actions?.className).toContain("md:group-hover:opacity-100");

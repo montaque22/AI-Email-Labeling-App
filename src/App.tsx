@@ -1913,6 +1913,7 @@ function AuthenticatedLayout({
         <main className={cn(
           "min-h-[calc(100vh-4rem)] min-w-0 overflow-x-clip p-4 sm:p-5 lg:p-8",
           (["inbox", "all-mail", "sent", "drafts", "archive"] as Page[]).includes(activePage) && "max-md:overflow-x-visible max-md:p-0",
+          activePage === "inbox" && "md:pb-0",
         )}>
           {activePage === "overview" && (
             <OverviewPage

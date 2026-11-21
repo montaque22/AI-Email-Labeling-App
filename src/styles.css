@@ -212,15 +212,40 @@ select,
   animation: inbox-ai-helper-out 220ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 768px) {
   .attention-work-mode-layout {
-    grid-template-columns: 300px minmax(0, 1fr);
+    position: sticky;
+    top: 4rem;
+    z-index: 10;
+    height: calc(100dvh - 4rem);
+    max-height: calc(100dvh - 4rem);
+    min-height: 0;
+    overflow: hidden;
   }
-}
 
-@media (min-width: 768px) and (max-width: 1199px) {
-  .attention-work-mode-layout:has(> :nth-child(2)) .attention-work-mode-list {
-    display: none;
+  .attention-work-mode-layout[data-has-detail="true"] {
+    display: grid;
+    grid-template-columns:
+      minmax(300px, calc(var(--attention-list-width, 30%) - 6px))
+      12px
+      minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .attention-work-mode-list {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .attention-work-mode-list-content {
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    scrollbar-gutter: stable;
   }
 }
 
