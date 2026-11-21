@@ -70,7 +70,6 @@ import { LogOutcomePieCard } from "./components/metrics/LogOutcomePieCard";
 import { MetricsTabPill } from "./components/metrics/MetricsTabPill";
 import type { AiUsageSeries, AlarmGranularity, AlarmSimulationPoint, LogAlarm, LogAlarmDraft, LogErrorSeries, LogOutcomeSummary, MetricsTab } from "./components/metrics/types";
 import { CalendarPage } from "./components/calendar/CalendarPage";
-import { TasksPage } from "./components/tasks/TasksPage";
 import { BackgroundTaskDrawer } from "./components/background-tasks/BackgroundTaskDrawer";
 import { PwaUpdatePrompt } from "./components/PwaUpdatePrompt";
 import { WebhookSettingsPage } from "./components/settings/WebhookSettingsPage";
@@ -89,6 +88,7 @@ import { LiquidActionBar } from "./components/inbox/LiquidActionBar";
 import { EmailReaderModeSwitch, EmailReaderWorkspace, type EmailReaderMode } from "./components/inbox/EmailReaderWorkspace";
 import { InterestCompletionActions } from "./components/inbox/InterestCompletionActions";
 import { ReplyDraftArtifactCard } from "./components/inbox/ReplyDraftArtifactCard";
+import { RichTextEmailEditor } from "./components/inbox/RichTextEmailEditor";
 import {
   buildReplyComposerFields,
   createReplyDraftArtifact,
@@ -113,6 +113,7 @@ import { useLocalDevelopmentSession } from "./hooks/useLocalDevelopmentSession";
 import { clearPwaUnreadBadge, refreshPwaUnreadBadge } from "./lib/pwa-badge";
 import { useInboxRealtimeSync, type InboxRealtimeChange } from "./hooks/useInboxRealtimeSync";
 import { getAbsoluteRuntimeUrl, getRuntimeBasePath, getRuntimeUrl } from "./lib/runtime-base";
+import { looksLikeMarkdownEmail, plainTextToEmailHtml } from "./lib/email-content";
 import { cn } from "./lib/utils";
 import { useBodyScrollLock, useIsMobileViewport } from "./hooks/useResponsiveScrollLock";
 import { useVisualViewportHeight } from "./hooks/useVisualViewportHeight";
@@ -125,7 +126,6 @@ type Page =
   | "drafts"
   | "archive"
   | "calendar"
-  | "tasks"
   | "labels"
   | "rules"
   | "metrics"
@@ -434,46 +434,6 @@ const SYSTEM_MCP_TOOLS: AiMcpTool[] = [
     description: "Search Emailable's indexed email database by id, subject, sender, account, label, archive/draft/sent/inbox state, read/unread status, and timestamps. Provider-wide connected-account search is optional.",
     inputSchema: null,
   },
-  {
-    name: "searchTasks",
-    description: "Fuzzy search the user's incomplete Emailable tasks by title.",
-    inputSchema: null,
-  },
-  {
-    name: "createTask",
-    description: "Create a task, or increment an existing task's duplicate count when a sufficiently similar incomplete task already exists.",
-    inputSchema: null,
-  },
-  {
-    name: "getTask",
-    description: "Get a single task by id.",
-    inputSchema: null,
-  },
-  {
-    name: "editTask",
-    description: "Edit user-controlled task fields including title, notes, tags, priority, due date, project, and source email id.",
-    inputSchema: null,
-  },
-  {
-    name: "deleteTask",
-    description: "Delete a task.",
-    inputSchema: null,
-  },
-  {
-    name: "listTasks",
-    description: "List incomplete tasks sorted by Emailable's effective priority score.",
-    inputSchema: null,
-  },
-  {
-    name: "generateNudgeSteps",
-    description: "Generate small next steps for a stuck task.",
-    inputSchema: null,
-  },
-  {
-    name: "simplifyNudgeStep",
-    description: "Rewrite the current nudge step so it is easier to act on.",
-    inputSchema: null,
-  },
 ];
 
 const MCP_SERVER_TOOL_DOCS = [
@@ -554,74 +514,6 @@ const MCP_SERVER_TOOL_DOCS = [
         },
       ],
     },
-  },
-  {
-    path: "searchTasks",
-    title: "Search Tasks",
-    notes: ["Searches incomplete tasks by fuzzy title matching."],
-    payload: { title: "schedule dentist appointment", limit: 3 },
-    response: { tasks: [{ id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", title: "Schedule dentist appointment" }] },
-  },
-  {
-    path: "createTask",
-    title: "Create Task",
-    notes: ["Creates a task or increments duplicate_count when a similar incomplete task already exists."],
-    payload: {
-      title: "Schedule dentist appointment",
-      notes: "Call the office this week.",
-      tags: ["health"],
-      priority: 2,
-      dueDate: "2026-09-18T17:00:00.000Z",
-      project: "Personal",
-      sourceEmailId: "188c1f2d7e1a1234",
-    },
-    response: { task: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", title: "Schedule dentist appointment" }, duplicate: false },
-  },
-  {
-    path: "getTask",
-    title: "Get Task",
-    notes: ["Reads a single task by id."],
-    payload: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee" },
-    response: { task: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", title: "Schedule dentist appointment" } },
-  },
-  {
-    path: "editTask",
-    title: "Edit Task",
-    notes: ["Updates task fields. Only include fields that should change."],
-    payload: {
-      id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee",
-      title: "Schedule dental cleaning",
-      priority: 1,
-    },
-    response: { task: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", title: "Schedule dental cleaning", priority: 1 } },
-  },
-  {
-    path: "deleteTask",
-    title: "Delete Task",
-    notes: ["Deletes a task by id."],
-    payload: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee" },
-    response: { ok: true },
-  },
-  {
-    path: "listTasks",
-    title: "List Tasks",
-    notes: ["Lists incomplete tasks sorted by Emailable's effective priority score."],
-    payload: { limit: 25 },
-    response: { tasks: [{ id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", title: "Schedule dental cleaning" }] },
-  },
-  {
-    path: "generateNudgeSteps",
-    title: "Generate Nudge Steps",
-    notes: ["Generates small next steps for a stuck task."],
-    payload: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee" },
-    response: { task: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", nudgeSteps: ["Find the dentist phone number.", "Call to ask for available times."] } },
-  },
-  {
-    path: "simplifyNudgeStep",
-    title: "Simplify Nudge Step",
-    notes: ["Simplifies the current nudge step for a task."],
-    payload: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee" },
-    response: { task: { id: "0d6a6f02-8b56-4473-b98e-5c36ef16f5ee", currentNudgeStep: "Call the dentist." } },
   },
 ] satisfies Array<{
   path: string;
@@ -823,6 +715,7 @@ type InboxComposeDraft = {
   bcc: string;
   subject: string;
   bodyText: string;
+  bodyHtml: string;
   replyContext?: {
     emailId: string;
     threadId: string;
@@ -994,7 +887,6 @@ const navItems = [
   { id: "drafts" as const, label: "Drafts", icon: FileCheck2 },
   { id: "archive" as const, label: "Archive", icon: Archive },
   { id: "calendar" as const, label: "Calendar", icon: CalendarDays },
-  { id: "tasks" as const, label: "Tasks", icon: ListChecks },
   { id: "labels" as const, label: "Labels", icon: Tag },
   { id: "rules" as const, label: "Rule Review", icon: FileCheck2 },
   { id: "metrics" as const, label: "Metrics", icon: BarChart3 },
@@ -1002,7 +894,7 @@ const navItems = [
   { id: "settings" as const, label: "Settings", icon: Settings },
 ];
 const emailNavItems = navItems.filter((item) => ["overview", "inbox", "all-mail", "sent", "drafts", "archive"].includes(item.id));
-const organizeNavItems = navItems.filter((item) => ["labels", "calendar", "tasks"].includes(item.id));
+const organizeNavItems = navItems.filter((item) => ["labels", "calendar"].includes(item.id));
 const intelligenceNavItems = navItems.filter((item) => ["rules", "metrics", "ai-prompts"].includes(item.id));
 const configurationNavItems = navItems.filter((item) => item.id === "settings");
 
@@ -2040,7 +1932,6 @@ function AuthenticatedLayout({
             />
           )}
           {activePage === "calendar" && <CalendarPage />}
-          {activePage === "tasks" && <TasksPage />}
           {activePage === "labels" && <LabelsPage privacyMode={privacyMode} />}
           {activePage === "rules" && <RuleReviewPage initialEmailId={ruleToOpen} initialPendingFilter={ruleInitialFilter} privacyMode={privacyMode} />}
           {activePage === "metrics" && <MetricsPage />}
@@ -3300,6 +3191,7 @@ function InboxPage({
           bcc: data.message.bcc || "",
           subject: data.message.subject || "",
           bodyText: data.message.bodyText || "",
+          bodyHtml: data.message.bodyHtml || "",
         });
       } else {
         setMessageDetail(data.message);
@@ -5184,6 +5076,7 @@ function InboxAiHelperPanel({
       bcc: nextDraft?.bcc ?? "",
       subject: nextDraft?.subject ?? "",
       bodyText: nextDraft?.bodyText ?? "",
+      bodyHtml: nextDraft?.bodyHtml ?? "",
       threadId: nextDraft?.threadId,
       replyContext: nextDraft?.replyContext ?? null,
     };
@@ -5648,7 +5541,7 @@ function InboxAiHelperPanel({
       try {
         const bodyText = await draftEmailBody(prompt, workflow.draft);
         const suggestedSubject = workflow.draft.subject || inferSubjectFromPrompt(prompt);
-        const nextDraft = { ...workflow.draft, bodyText, subject: suggestedSubject };
+        const nextDraft = { ...workflow.draft, bodyText, bodyHtml: plainTextToEmailHtml(bodyText), subject: suggestedSubject };
         setWorkflow({ draft: nextDraft, step: "body" });
         addMessage({
           draftBody: bodyText,
@@ -5756,6 +5649,7 @@ function InboxAiHelperPanel({
     const nextDraft = openComposeWithDraft({
       ...workflow.draft,
       bodyText: message.draftBody,
+      bodyHtml: plainTextToEmailHtml(message.draftBody),
       subject: message.subjectSuggestion || workflow.draft.subject || "",
     });
     setWorkflow({ draft: nextDraft, step: "body" });
@@ -7573,6 +7467,10 @@ function InboxAttachmentPreviewModal({
 }
 
 function PlainTextEmailBody({ text, onLinkAction }: { text: string; onLinkAction: (link: EmailLinkAction) => void }) {
+  if (looksLikeMarkdownEmail(text)) {
+    return <SanitizedEmailHtml html={renderMarkdownHtml(text)} onLinkAction={onLinkAction} />;
+  }
+
   const parts = splitPlainTextEmailLinks(text);
 
   return (
@@ -8070,6 +7968,7 @@ function InboxComposeModal({
   const [bcc, setBcc] = useState(initial?.bcc ?? "");
   const [subject, setSubject] = useState(initial?.subject ?? "");
   const [bodyText, setBodyText] = useState(initial?.bodyText ?? "");
+  const [bodyHtml, setBodyHtml] = useState(initial?.bodyHtml || plainTextToEmailHtml(initial?.bodyText ?? ""));
   const [attachments, setAttachments] = useState<InboxAttachment[]>([]);
   const [isAiDraftOpen, setIsAiDraftOpen] = useState(false);
   const [isOriginalMessageExpanded, setIsOriginalMessageExpanded] = useState(false);
@@ -8084,7 +7983,6 @@ function InboxComposeModal({
   const [savedMessage, setSavedMessage] = useState("");
   const [linkAction, setLinkAction] = useState<EmailLinkAction | null>(null);
   const [aiDraftViewport, setAiDraftViewport] = useState({ height: 0, offsetTop: 0 });
-  const bodyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const aiInstructionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const replyContext = initial?.replyContext ?? null;
   const isExistingDraft = Boolean(initial?.draftId);
@@ -8093,10 +7991,6 @@ function InboxComposeModal({
   const filteredToolOptions = activeTools
     .filter((tool) => tool.name.toLowerCase().includes(toolPickerQuery.toLowerCase()))
     .slice(0, 8);
-
-  useEffect(() => {
-    resizeBodyTextarea();
-  }, [bodyText, isAiDraftOpen]);
 
   useEffect(() => {
     resizeAiInstructionTextarea();
@@ -8148,16 +8042,6 @@ function InboxComposeModal({
       window.removeEventListener("resize", syncAiDraftViewport);
     };
   }, [isPush, isAiDraftOpen]);
-
-  function resizeBodyTextarea() {
-    const textarea = bodyTextareaRef.current;
-    if (!textarea) {
-      return;
-    }
-
-    textarea.style.height = "auto";
-    textarea.style.height = `${textarea.scrollHeight}px`;
-  }
 
   function resizeAiInstructionTextarea() {
     const textarea = aiInstructionTextareaRef.current;
@@ -8286,6 +8170,7 @@ function InboxComposeModal({
           bcc,
           subject,
           bodyText,
+          bodyHtml,
           attachments,
           replyToEmailId: replyContext?.emailId || "",
           threadId: replyContext?.threadId || initial?.threadId || "",
@@ -8326,6 +8211,7 @@ function InboxComposeModal({
             bcc,
             subject,
             bodyText,
+            bodyHtml,
             attachments,
             replyToEmailId: replyContext?.emailId || "",
             threadId: replyContext?.threadId || initial?.threadId || "",
@@ -8444,6 +8330,7 @@ function InboxComposeModal({
                         return;
                       }
                       setBodyText(message.text);
+                      setBodyHtml(plainTextToEmailHtml(message.text));
                       setIsAiDraftOpen(false);
                     }}
                     title="Apply this draft"
@@ -8607,6 +8494,7 @@ function InboxComposeModal({
                             return;
                           }
                           setBodyText(message.text);
+                          setBodyHtml(plainTextToEmailHtml(message.text));
                           setIsAiDraftOpen(false);
                         }}
                         title="Apply this draft"
@@ -8769,18 +8657,14 @@ function InboxComposeModal({
               placeholder="Subject"
               value={subject}
             />
-            <label className="block">
-              <span className="sr-only">Body</span>
-              <textarea
-                className="min-h-56 w-full resize-none overflow-hidden rounded-lg border-0 bg-white/20 px-3 py-3 text-sm leading-6 text-zinc-800 outline-none placeholder:text-zinc-400"
-                onChange={(event) => setBodyText(event.target.value)}
-                placeholder="Write your message..."
-                ref={bodyTextareaRef}
-                required
-                rows={1}
-                value={bodyText}
-              />
-            </label>
+            <RichTextEmailEditor
+              html={bodyHtml}
+              onChange={(value) => {
+                setBodyHtml(value.html);
+                setBodyText(value.text);
+              }}
+              placeholder="Write your message..."
+            />
           </div>
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-zinc-700">Attachments</span>
@@ -14804,83 +14688,6 @@ function EndpointsPage() {
             }}
           />
           <div className="border-t border-zinc-200 pt-4">
-            <div className="mb-3">
-              <p className="text-sm font-semibold text-zinc-950">Task APIs</p>
-              <p className="text-sm text-zinc-500">Signed-in app endpoints used by the Tasks page and MCP task tools.</p>
-            </div>
-            <div className="space-y-3">
-              <EndpointDoc
-                method="GET"
-                path="/api/tasks"
-                title="List tasks"
-                notes={["Returns incomplete tasks sorted by effective score, with the first three repeated as top3."]}
-                response={{
-                  tasks: [
-                    {
-                      id: "task-id",
-                      title: "Send follow-up",
-                      priority: 1,
-                      dueDate: "2026-09-15T16:00:00.000Z",
-                      effectiveScore: -22,
-                    },
-                  ],
-                  top3: [{ id: "task-id", title: "Send follow-up" }],
-                }}
-              />
-              <EndpointDoc
-                method="POST"
-                path="/api/tasks"
-                title="Create task"
-                payload={{
-                  title: "Send follow-up",
-                  notes: "Include the invoice number.",
-                  tags: ["client", "invoice"],
-                  priority: 1,
-                  dueDate: "2026-09-15T16:00:00.000Z",
-                  project: "Client Ops",
-                  sourceEmailId: "email-provider-id",
-                }}
-                response={{ task: { id: "task-id", title: "Send follow-up", effectiveScore: -22 } }}
-              />
-              <EndpointDoc
-                method="PUT"
-                path="/api/tasks/:id"
-                title="Update task"
-                notes={["Updates user-editable task fields only. Completed tasks cannot be edited."]}
-                payload={{
-                  title: "Send follow-up to client",
-                  notes: "Mention the invoice number and next steps.",
-                  tags: ["client", "invoice"],
-                  priority: 2,
-                  dueDate: "2026-09-16T16:00:00.000Z",
-                  project: "Client Ops",
-                }}
-                response={{ task: { id: "task-id", title: "Send follow-up to client", priority: 2 } }}
-              />
-              <EndpointDoc
-                method="DELETE"
-                path="/api/tasks/:id"
-                title="Delete task"
-                notes={["Deletes the task for the signed-in user."]}
-                response={{ ok: true }}
-              />
-              <EndpointDoc
-                method="POST"
-                path="/api/tasks/:id/complete"
-                title="Complete task"
-                notes={["Marks the task complete and removes it from the incomplete task list."]}
-                response={{ task: { id: "task-id", completedAt: "2026-09-15T18:00:00.000Z" } }}
-              />
-              <EndpointDoc
-                method="POST"
-                path="/api/tasks/:id/defer"
-                title="Defer task"
-                notes={["Increments defer_count. At 3 defers, the task is marked stuck and Emailable generates nudge steps when AI is available."]}
-                response={{ task: { id: "task-id", deferCount: 3, stuck: true, nudge: { steps: ["Open the email and write one sentence."] } } }}
-              />
-            </div>
-          </div>
-          <div className="border-t border-zinc-200 pt-4">
             <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-sm font-semibold text-zinc-950">Emailable AI endpoints</p>
@@ -14942,42 +14749,6 @@ function EndpointsPage() {
                   accountEmail: "user@example.com",
                   emailId: "188c1f2d7e1a1234",
                   added: [{ name: "Invoice", providerLabelId: "Label_123" }],
-                }}
-              />
-              <EndpointDoc
-                method="POST"
-                path="/api/tasks/:id/nudge/generate"
-                statusBadge={<AiEndpointStatusBadge enabled={Boolean(aiConfig?.aiEnabled)} />}
-                title="Generate task nudge steps"
-                notes={[
-                  "Uses the user's active AI provider to create small concrete steps for a stuck task.",
-                  "This is also triggered automatically when a task reaches the defer threshold.",
-                ]}
-                response={{
-                  task: {
-                    id: "task-id",
-                    stuck: true,
-                    nudge: {
-                      steps: ["Open the related email.", "Write one sentence with the next action.", "Send or schedule the follow-up."],
-                      currentStepIndex: 0,
-                    },
-                  },
-                }}
-              />
-              <EndpointDoc
-                method="POST"
-                path="/api/tasks/:id/nudge/simplify"
-                statusBadge={<AiEndpointStatusBadge enabled={Boolean(aiConfig?.aiEnabled)} />}
-                title="Simplify current nudge step"
-                notes={["Uses the user's active AI provider to make the current nudge step easier and more concrete."]}
-                response={{
-                  task: {
-                    id: "task-id",
-                    nudge: {
-                      steps: ["Open the email and write only the greeting."],
-                      currentStepIndex: 0,
-                    },
-                  },
                 }}
               />
             </div>
@@ -16105,6 +15876,14 @@ function renderMarkdownHtml(markdown: string) {
       continue;
     }
 
+    const blockquote = trimmed.match(/^>\s+(.+)$/);
+    if (blockquote) {
+      flushParagraph();
+      flushList();
+      html.push(`<blockquote>${renderInlineMarkdown(blockquote[1])}</blockquote>`);
+      continue;
+    }
+
     const listItem = trimmed.match(/^[-*]\s+(.+)$/);
     if (listItem) {
       flushParagraph();
@@ -16147,15 +15926,23 @@ function renderMarkdownHtml(markdown: string) {
 }
 
 function renderInlineMarkdown(value: string) {
-  return escapeHtml(value)
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/_([^_]+)_/g, "<em>$1</em>")
-    .replace(/\[([^\]]+)]\(([^)\s]+)\)/g, (_match, label, href) => renderMarkdownLink(label, href));
+  const escaped = escapeHtml(value);
+  return escaped.replace(
+    /(`[^`\n]+`|\[[^\]]+]\([^)\s]+\)|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_)/g,
+    (token) => {
+      if (token.startsWith("`")) return `<code>${token.slice(1, -1)}</code>`;
+      if (token.startsWith("[")) {
+        const link = token.match(/^\[([^\]]+)]\(([^)\s]+)\)$/);
+        return link ? renderMarkdownLink(link[1], link[2]) : token;
+      }
+      if (token.startsWith("**") || token.startsWith("__")) return `<strong>${token.slice(2, -2)}</strong>`;
+      return `<em>${token.slice(1, -1)}</em>`;
+    },
+  );
 }
 
 function renderMarkdownLink(label: string, href: string) {
-  const safeHref = /^(https?:\/\/|\/|\.\/|\.\.\/|#)/i.test(href) || /^[a-z0-9][a-z0-9/_-]*$/i.test(href) ? href : "#";
+  const safeHref = /^(https?:\/\/|mailto:|tel:|\/|\.\/|\.\.\/|#)/i.test(href) || /^[a-z0-9][a-z0-9/_-]*$/i.test(href) ? href : "#";
   const external = /^https?:\/\//i.test(safeHref);
   return `<a href="${safeHref}"${external ? ' target="_blank" rel="noreferrer"' : ""}>${label}</a>`;
 }
@@ -16236,7 +16023,6 @@ const pagePaths: Record<Page, string> = {
   drafts: "/drafts",
   archive: "/archive",
   calendar: "/calendar",
-  tasks: "/tasks",
   labels: "/labels",
   rules: "/rule-review",
   metrics: "/metrics",
@@ -16582,10 +16368,6 @@ function getPageTitle(page: Page) {
 
   if (page === "ai-draft-reply") {
     return "Reply Prompt";
-  }
-
-  if (page === "tasks") {
-    return "Tasks";
   }
 
   if (page === "confidence-threshold") {

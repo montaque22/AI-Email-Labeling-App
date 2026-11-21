@@ -19,6 +19,6 @@ describe("extractAgentResearchSources", () => {
   });
 
   it("does not treat unrelated tool URLs as research sources", () => {
-    expect(extractAgentResearchSources([{ toolName: "createTask", result: { url: "https://tasks.example/item/1" } }])).toEqual([]);
+    expect(extractAgentResearchSources([{ toolName: "connected_action", result: { url: "https://actions.example/item/1" } }])).toEqual([]);
   });
 });

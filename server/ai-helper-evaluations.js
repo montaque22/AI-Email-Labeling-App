@@ -21,12 +21,12 @@ export const AI_HELPER_GENERALIZATION_EVALUATIONS = [
   },
   {
     category: "multi-step-action",
-    request: "Find the final proposal, create a task for the review deadline, and prepare a reply acknowledging it.",
-    expected: { requiredCapabilities: ["find_email", "createTask", "prepare_reply_draft"], mutationAllowed: true },
+    request: "Find the final proposal and prepare a reply acknowledging its review deadline.",
+    expected: { requiredCapabilities: ["find_email", "prepare_reply_draft"], mutationAllowed: true },
   },
   {
     category: "resolvable-ambiguity",
-    request: "Use the deadline in this email to create the follow-up task.",
+    request: "Use the deadline in this email to prepare a follow-up reply.",
     expected: { mayUseActiveEmail: true, shouldInvestigateBeforeClarifying: true, mutationAllowed: true },
   },
   {

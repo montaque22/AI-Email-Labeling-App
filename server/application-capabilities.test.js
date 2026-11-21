@@ -28,7 +28,7 @@ describe("application capability manifest", () => {
       labels: [{ name: "Reference", description: "Keep for later." }],
       toolCatalog: [
         { name: "query_attention_dashboard", source: "emailable" },
-        { name: "imaginary_tool", source: "emailable" },
+        { name: "createTask", source: "emailable" },
       ],
     });
 

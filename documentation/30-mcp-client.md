@@ -35,7 +35,7 @@ Examples include:
 - Looking up an order before drafting a customer reply.
 - Checking a CRM for customer details while deciding how to label an email.
 - Searching an external knowledge base before composing an answer.
-- Creating a task when an email requires follow-up.
+- Creating a calendar event when an email requires scheduled follow-up.
 - Triggering a Home Assistant action when an email matches an important condition.
 
 Selected tools are added to supported AI requests made by Emailable, including AI-assisted email drafting and custom prompt automations that run after labeling. The AI model can decide to call an available tool when the request and prompt indicate that the tool is useful.
@@ -95,7 +95,7 @@ Example connection:
   "bearerToken": "your-server-token",
   "selectedTools": [
     "light_turn_on",
-    "create_task"
+    "calendar_get_events"
   ]
 }
 ```

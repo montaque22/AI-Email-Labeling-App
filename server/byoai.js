@@ -110,7 +110,7 @@ const AI_EMAIL_ACTION_PLAN_SCHEMA = {
     toolName: { type: "string", description: "The exact MCP tool name to run after user confirmation." },
     title: { type: "string", description: "Short title for the proposed action." },
     summary: { type: "string", description: "Human-readable summary of what will happen." },
-    confirmLabel: { type: "string", description: "Short action button label, such as Create task, Create event, or Turn on light." },
+    confirmLabel: { type: "string", description: "Short action button label, such as Create event, Add contact, or Turn on light." },
     argumentsJson: { type: "string", description: "A valid JSON object string containing arguments to pass directly to the selected MCP tool." },
     needsMoreInfo: { type: "boolean", description: "True if the AI cannot safely prepare the tool call yet." },
     question: { type: "string", description: "A concise follow-up question when needsMoreInfo is true." },
@@ -309,127 +309,6 @@ const SYSTEM_MCP_TOOLS = [
         scopeSummary: { type: "string", description: "Concise faithful description of the full requested scope." },
       },
       required: ["action", "scopeSummary"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "searchTasks",
-    description: "Fuzzy search the user's incomplete Emailable tasks by title.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string", description: "Task title or natural language title to fuzzy search." },
-        limit: { type: "number", minimum: 1, maximum: 5 },
-      },
-      required: ["title"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "createTask",
-    description: "Create a task, or increment an existing task's duplicate count when a sufficiently similar incomplete task already exists. When the task is based on an email, include sourceEmailId so Emailable can link the task back to that email.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string", minLength: 1, maxLength: 160 },
-        notes: { type: "string", maxLength: 4000 },
-        tags: { type: "array", maxItems: 12, items: { type: "string", maxLength: 40 } },
-        priority: { type: "number", enum: [1, 2, 3], description: "1 is highest priority, 3 is lowest priority." },
-        dueDate: { type: "string", description: "Optional ISO due date." },
-        project: { type: "string", maxLength: 80 },
-        sourceEmailId: { type: "string", maxLength: 255 },
-      },
-      required: ["title"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "getTask",
-    description: "Get a single task by id.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", format: "uuid" },
-      },
-      required: ["id"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "editTask",
-    description: "Edit user-controlled task fields including title, notes, tags, priority, due date, project, and source email id.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", format: "uuid" },
-        title: { type: "string", minLength: 1, maxLength: 160 },
-        notes: { type: "string", maxLength: 4000 },
-        tags: { type: "array", maxItems: 12, items: { type: "string", maxLength: 40 } },
-        priority: { type: "number", enum: [1, 2, 3], description: "1 is highest priority, 3 is lowest priority." },
-        dueDate: { type: "string", description: "Optional ISO due date." },
-        project: { type: "string", maxLength: 80 },
-        sourceEmailId: { type: "string", maxLength: 255 },
-      },
-      required: ["id"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "deleteTask",
-    description: "Delete a task.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", format: "uuid" },
-      },
-      required: ["id"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "completeTask",
-    description: "Close or complete an open task.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", format: "uuid" },
-      },
-      required: ["id"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "listTasks",
-    description: "List incomplete tasks sorted by Emailable's effective priority score.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: { type: "number", minimum: 1, maximum: 200 },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "generateNudgeSteps",
-    description: "Generate small next steps for a stuck task.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", format: "uuid" },
-      },
-      required: ["id"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "simplifyNudgeStep",
-    description: "Rewrite the current nudge step so it is easier to act on.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: { type: "string", format: "uuid" },
-      },
-      required: ["id"],
       additionalProperties: false,
     },
   },
@@ -882,7 +761,6 @@ export function registerByoAiRoutes(app) {
       }
       res.write(`${JSON.stringify({
         affectedEmails: result.affectedEmails,
-        affectedTasks: result.affectedTasks,
         artifact: result.artifact,
         proposedBulkAction: result.proposedBulkAction,
         sources: result.sources,
@@ -1706,11 +1584,7 @@ async function generateAiHelperChat(userId, request, options = {}) {
       onRunDiagnostics: (diagnostics) => { providerDiagnostics = diagnostics; },
       onToolEvent: options.onExecutionEvent,
       onToolResult: (result) => toolResults.push(result),
-      toolExecutionContext: {
-        defaultTaskSourceEmailId: resolvedEmailContext?.emailId || "",
-        runId,
-        userId,
-      },
+      toolExecutionContext: { runId, userId },
     });
 
     const candidateMessage = cleanAiTextResponse(aiResponse);
@@ -1723,7 +1597,6 @@ async function generateAiHelperChat(userId, request, options = {}) {
       toolResults,
     });
     const affectedEmails = extractAffectedEmailsFromAiHelperToolResults(toolResults);
-    const affectedTasks = extractAffectedTasksFromAiHelperToolResults(toolResults);
     const proposedBulkAction = extractProposedBulkActionFromAiHelperToolResults(toolResults);
     const artifact = extractPreparedReplyDraftFromAiHelperToolResults(toolResults);
     const sources = extractAgentResearchSources(toolResults);
@@ -1731,10 +1604,7 @@ async function generateAiHelperChat(userId, request, options = {}) {
       ...previousHistory,
       { role: "user", text: request.prompt },
       { role: "assistant", text: message },
-    ], {
-      affectedEmails: affectedEmails.length > 0 ? affectedEmails : memory.affectedEmails,
-      affectedTasks: affectedTasks.length > 0 ? affectedTasks : memory.affectedTasks,
-    });
+    ], { affectedEmails: affectedEmails.length > 0 ? affectedEmails : memory.affectedEmails });
     await logSystemEvent(userId, {
       category: "ai",
       eventName: "ai_agent.run_completed",
@@ -1754,7 +1624,6 @@ async function generateAiHelperChat(userId, request, options = {}) {
     return {
       message,
       affectedEmails: affectedEmails.length > 0 ? affectedEmails : [],
-      affectedTasks: affectedTasks.length > 0 ? affectedTasks : [],
       artifact,
       proposedBulkAction,
       sources,
@@ -1956,7 +1825,7 @@ async function suggestEmailActions(userId, request) {
       "Return at least one action when tools are listed.",
       "Return one useful action for every listed tool.",
       "Do not invent tools. Every action must use an exact clientId and toolName from the catalog.",
-      "Labels should be short button text, such as Create task, Create event, Add CRM note, or Send alert.",
+      "Labels should be short button text, such as Create event, Add CRM note, or Send alert.",
       "Prompts should be specific instructions for preparing a tool call from the current email.",
       "Tooltips should explain the action in simple language.",
     ].join("\n"),
@@ -2125,7 +1994,7 @@ async function planEmailAction(userId, request) {
       "Use only the exact toolClientId and toolName from the available tool catalog.",
       preferredTool ? `You MUST use this selected tool: toolClientId=${preferredTool.client.id}, toolName=${preferredTool.tool.name}.` : "Choose the best matching tool from the catalog.",
       "Do not invent facts, dates, addresses, amounts, or commitments. If required tool fields are missing, set needsMoreInfo to true and ask one concise follow-up question.",
-      "The confirmLabel should be short and specific, such as Create task, Create event, Add contact, or Turn on light.",
+      "The confirmLabel should be short and specific, such as Create event, Add contact, or Turn on light.",
       "Return MCP tool arguments in argumentsJson as a valid JSON object string. Do not return arguments as a nested object.",
     ].join("\n"),
     userPrompt: [
@@ -2223,7 +2092,7 @@ async function summarizeEmailActionResult(userId, { request, toolName, toolArgum
       "You summarize the result of a completed MCP tool call for an Emailable user.",
       "Return only useful, user-facing information as markdown.",
       "Do not dump raw JSON, stack traces, metadata, etags, internal ids, or irrelevant provider fields.",
-      "If the result contains calendar events, tasks, notes, messages, or links, summarize the important names, dates, times, statuses, and links.",
+      "If the result contains calendar events, notes, messages, or links, summarize the important names, dates, times, statuses, and links.",
       "If the result is empty but the action appears successful, say that the action completed successfully.",
       "Keep it concise and readable.",
     ].join("\n"),
@@ -2409,21 +2278,18 @@ function getAiHelperSessionMemory(userId, sessionId) {
   const memory = aiHelperMemory.get(key);
   if (!memory || Date.now() - memory.updatedAt > AI_HELPER_MEMORY_TTL_MS) {
     aiHelperMemory.delete(key);
-    return { affectedEmails: [], affectedTasks: [], messages: [] };
+    return { affectedEmails: [], messages: [] };
   }
   return {
     affectedEmails: Array.isArray(memory.affectedEmails) ? memory.affectedEmails : [],
-    affectedTasks: Array.isArray(memory.affectedTasks) ? memory.affectedTasks : [],
     messages: Array.isArray(memory.messages) ? memory.messages : [],
   };
 }
 
 function updateAiHelperSessionMemory(userId, sessionId, messages, affectedContext = {}) {
   const affectedEmails = Array.isArray(affectedContext) ? affectedContext : affectedContext.affectedEmails;
-  const affectedTasks = Array.isArray(affectedContext?.affectedTasks) ? affectedContext.affectedTasks : [];
   aiHelperMemory.set(getAiHelperMemoryKey(userId, sessionId), {
     affectedEmails: Array.isArray(affectedEmails) ? affectedEmails.slice(0, 50) : [],
-    affectedTasks: affectedTasks.slice(0, 50),
     messages: Array.isArray(messages)
       ? messages
           .filter((message) => message && (message.role === "assistant" || message.role === "user") && typeof message.text === "string")
@@ -2496,69 +2362,6 @@ function extractAffectedEmailsFromAiHelperToolResults(toolResults = []) {
     }
   }
   return affected.slice(0, 50);
-}
-
-function extractAffectedTasksFromAiHelperToolResults(toolResults = []) {
-  const affected = [];
-  const seen = new Set();
-  for (const entry of toolResults) {
-    if (!entry?.toolName || !/task/i.test(entry.toolName)) {
-      continue;
-    }
-    const result = parseToolResultPayload(entry.result);
-    const candidates = collectTaskCandidates(result);
-    for (const task of candidates) {
-      const id = String(task?.id || "").trim();
-      const title = String(task?.title || "").trim();
-      if (!id || !title || seen.has(id)) {
-        continue;
-      }
-      seen.add(id);
-      affected.push({
-        id,
-        title,
-        notes: String(task.notes || ""),
-        tags: Array.isArray(task.tags) ? task.tags.filter((tag) => typeof tag === "string") : [],
-        priority: Number(task.priority || 0),
-        dueDate: task.dueDate || null,
-        project: String(task.project || ""),
-        deferCount: Number(task.deferCount || 0),
-        duplicateCount: Number(task.duplicateCount || 0),
-        sourceEmailId: String(task.sourceEmailId || ""),
-        stuck: Boolean(task.stuck),
-        completedAt: task.completedAt || null,
-      });
-    }
-  }
-  return affected.slice(0, 50);
-}
-
-function collectTaskCandidates(value) {
-  if (!value || typeof value !== "object") {
-    return [];
-  }
-  const candidates = [];
-  const pushTask = (task) => {
-    if (task && typeof task === "object" && typeof task.id === "string" && typeof task.title === "string") {
-      candidates.push(task);
-    }
-  };
-  pushTask(value.task);
-  pushTask(value.createdTask);
-  pushTask(value.updatedTask);
-  if (Array.isArray(value.tasks)) {
-    value.tasks.forEach(pushTask);
-  }
-  if (Array.isArray(value.top3)) {
-    value.top3.forEach(pushTask);
-  }
-  if (Array.isArray(value.results)) {
-    value.results.forEach(pushTask);
-  }
-  if (value.result && typeof value.result === "object") {
-    collectTaskCandidates(value.result).forEach(pushTask);
-  }
-  return candidates;
 }
 
 function parseToolResultPayload(value) {
@@ -2858,20 +2661,11 @@ function buildSdkTools(clients, onToolResult, executionContext = {}, onToolEvent
   return tools;
 }
 
-function applySystemToolExecutionDefaults(toolName, input, executionContext = {}) {
+function applySystemToolExecutionDefaults(_toolName, input, _executionContext = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return input;
   }
-  if (toolName !== "createTask") {
-    return input;
-  }
-  if (typeof input.sourceEmailId === "string" && input.sourceEmailId.trim()) {
-    return input;
-  }
-  const sourceEmailId = typeof executionContext.defaultTaskSourceEmailId === "string"
-    ? executionContext.defaultTaskSourceEmailId.trim()
-    : "";
-  return sourceEmailId ? { ...input, sourceEmailId } : input;
+  return input;
 }
 
 

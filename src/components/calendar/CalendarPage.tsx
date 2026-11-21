@@ -207,7 +207,7 @@ export function CalendarPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-5">
+    <div className="flex w-full min-w-0 flex-col gap-5">
       <CalendarSubscriptionToolbar
         isLoading={isLoadingSubscriptions || isLoadingEvents}
         onOpenSubscribe={() => {

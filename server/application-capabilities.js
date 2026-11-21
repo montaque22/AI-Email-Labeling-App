@@ -71,8 +71,6 @@ const APPLICATION_TOOL_NAMES = new Set([
   "get_email_content",
   "find_email",
   "query_email_rules",
-  "listTasks",
-  "searchTasks",
 ]);
 
 export async function getApplicationCapabilityContext(userId, toolCatalog = []) {

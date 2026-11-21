@@ -96,7 +96,7 @@ The detail view shows:
 - Body.
 - Attachments when available.
 
-The detail view avoids raw provider metadata, raw MIME, JSON, headers, and provider IDs. HTML messages are safely rendered, and plain text messages are shown cleanly when HTML is not available.
+The detail view avoids raw provider metadata, raw MIME, JSON, headers, and provider IDs. HTML messages are safely rendered, and plain text messages are shown cleanly when HTML is not available. When a plain-text message contains clear Markdown structure, such as headings, links, or a multi-item list, Emailable renders that structure as formatted content. Detection is intentionally conservative so normal punctuation is not mistaken for Markdown.
 
 In the detail view, the date is shown as the actual date and time. In the list view, recent messages use friendlier relative dates, such as **Yesterday**, **2 days ago**, or **3 weeks ago**.
 
@@ -171,10 +171,12 @@ The compose view includes:
 - CC.
 - BCC.
 - Subject.
-- Body.
+- A rich-text body editor with bold, italic, underline, bulleted list, numbered list, and clear-formatting controls.
 - Attachments list when supported.
 
 When replying to an email, Emailable keeps the original email available so you can reference the message while drafting. Replies are sent through the connected account when the provider supports sending.
+
+Formatted messages are sent as HTML with a plain-text alternative for recipients or mail clients that do not display HTML. The same formatted content is retained when a supported provider saves the message as a draft.
 
 If BYOAI is active, the compose and reply experience can include an AI Draft flow. It uses Emailable's internal reply-writing guidance and the current email context, when replying, to suggest a response. You can apply a suggestion to the message body before sending.
 
@@ -217,7 +219,7 @@ AI Draft returns suggested message text. You can apply the suggestion to the ema
 
 AI Actions let Emailable use your selected custom MCP tools against the email you are viewing.
 
-This is useful when an email should trigger an outside action, such as creating a calendar event, creating a task, adding a CRM note, sending a notification, or calling a home automation tool.
+This is useful when an email should trigger an outside action, such as creating a calendar event, adding a CRM note, sending a notification, or calling a home automation tool.
 
 When you open AI Actions, Emailable looks at your active custom MCP tools and asks AI to create available actions from those real tools. The actions are not hard-coded. They are based on the tools you enabled in BYOAI.
 
@@ -244,7 +246,7 @@ Important caveats:
 
 Commitments help you turn an email into a clear obligation.
 
-Use a commitment when an email represents something you need to close out, such as following up with someone, buying an item, measuring something, sending a file, or completing a task.
+Use a commitment when an email represents something you need to close out, such as following up with someone, buying an item, measuring something, or sending a file.
 
 When you add a commitment, Emailable stores:
 

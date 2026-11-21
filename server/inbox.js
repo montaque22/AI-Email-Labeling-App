@@ -46,6 +46,7 @@ import { completeBackgroundTask, createBackgroundTask, failBackgroundTask, updat
 import { runDetachedTask } from "./detached-tasks.js";
 import { drainProviderDeleteQueues } from "./provider-delete-queue.js";
 import { publishInboxChange } from "./inbox-realtime.js";
+import { buildComposeBodyMimeLines, sanitizeComposeHtml } from "./email-compose-content.js";
 import crypto from "node:crypto";
 import nodemailer from "nodemailer";
 
@@ -811,7 +812,7 @@ async function createInboxDraft(userId, compose) {
     to: splitAddressList(compose.to),
     from: account.email,
     subject: compose.subject,
-    body: { text: compose.bodyText, html: "" },
+    body: { text: compose.bodyText, html: compose.bodyHtml },
     accountEmail: account.email,
     draftId: draft?.id ?? null,
     provider: account.provider,
@@ -911,7 +912,7 @@ async function sendInboxEmail(userId, compose) {
     to: splitAddressList(compose.to),
     from: account.email,
     subject: compose.subject,
-    body: { text: compose.bodyText, html: "" },
+    body: { text: compose.bodyText, html: compose.bodyHtml },
     accountEmail: account.email,
     messageId: sent?.id ?? null,
     threadId: sent?.threadId ?? null,
@@ -1798,6 +1799,7 @@ async function sendMicrosoftComposeMessage(accessToken, account, compose) {
 	      bcc: splitAddressList(compose.bcc),
 	      subject: compose.subject,
 	      text: compose.bodyText,
+	      html: compose.bodyHtml || undefined,
 	      attachments: normalizeComposeAttachments(compose.attachments).map((attachment) => ({
 	        filename: attachment.filename,
 	        contentType: attachment.type,
@@ -2020,6 +2022,7 @@ function parseComposeInput(body) {
     bcc: typeof body?.bcc === "string" ? body.bcc.trim() : "",
     subject: typeof body?.subject === "string" ? body.subject.trim() : "",
     bodyText: typeof body?.bodyText === "string" ? body.bodyText : "",
+    bodyHtml: typeof body?.bodyHtml === "string" ? sanitizeComposeHtml(body.bodyHtml) : "",
     replyToEmailId: typeof body?.replyToEmailId === "string" ? body.replyToEmailId.trim() : "",
     forwardFromEmailId: typeof body?.forwardFromEmailId === "string" ? body.forwardFromEmailId.trim() : "",
     threadId: typeof body?.threadId === "string" ? body.threadId.trim() : "",
@@ -2041,7 +2044,7 @@ function parseComposeInput(body) {
   if (!compose.to) {
     return { ok: false, error: "To is required" };
   }
-  if (!compose.bodyText.trim()) {
+  if (!compose.bodyText.trim() && !compose.bodyHtml.trim()) {
     return { ok: false, error: "Body is required" };
   }
 
@@ -2234,6 +2237,7 @@ function buildGmailComposeMessage(from, compose, original = null) {
     references ? `References: ${references}` : null,
     "MIME-Version: 1.0",
   ].filter((line) => line !== null);
+  const bodyLines = buildComposeBodyMimeLines(compose);
 
   if (attachments.length > 0) {
     const boundary = `emailable-${crypto.randomUUID()}`;
@@ -2242,10 +2246,7 @@ function buildGmailComposeMessage(from, compose, original = null) {
       `Content-Type: multipart/mixed; boundary="${boundary}"`,
       "",
       `--${boundary}`,
-      "Content-Type: text/plain; charset=UTF-8",
-      "Content-Transfer-Encoding: 8bit",
-      "",
-      compose.bodyText || "",
+      ...bodyLines,
       ...attachments.flatMap((attachment) => [
         `--${boundary}`,
         `Content-Type: ${attachment.type}; name="${escapeMimeHeader(attachment.filename)}"`,
@@ -2263,10 +2264,7 @@ function buildGmailComposeMessage(from, compose, original = null) {
 
   const lines = [
     ...baseHeaders,
-    "Content-Type: text/plain; charset=UTF-8",
-    "Content-Transfer-Encoding: 8bit",
-    "",
-    compose.bodyText,
+    ...bodyLines,
   ];
 
   return encodeGmailRawMessage(lines.join("\r\n"));

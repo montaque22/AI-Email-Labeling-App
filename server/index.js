@@ -24,7 +24,6 @@ import { ensurePushNotificationTables, registerPushNotificationRoutes } from "./
 import { registerInboxRealtimeRoutes } from "./inbox-realtime.js";
 import { ensureSettingsTable, registerSettingsRoutes } from "./settings.js";
 import { ensureSystemLogsTable, startSystemLogRetentionWorker } from "./system-logs.js";
-import { ensureTasksTable, registerTaskRoutes, startTaskMidnightWorker } from "./tasks.js";
 import { resolveHomeAssistantIngressUser } from "./session.js";
 import { ensureHomeAssistantWebhookDestinationsTable } from "./webhooks.js";
 
@@ -199,7 +198,6 @@ registerMcpRoutes(app);
 registerPollingRoutes(app);
 registerPushNotificationRoutes(app);
 registerCalendarSubscriptionRoutes(app);
-registerTaskRoutes(app);
 
 app.use(express.static(distDir, { index: false }));
 
@@ -285,7 +283,6 @@ async function startServer() {
     await ensurePollingSettings();
     await ensurePushNotificationTables();
     await ensureCalendarSubscriptionTables();
-    await ensureTasksTable();
   } catch (error) {
     console.error("Failed to initialize database tables:", error);
   }
@@ -305,7 +302,6 @@ async function startServer() {
     console.log(`Server listening on port ${port}`);
     startPollingWorker();
     startSystemLogRetentionWorker();
-    startTaskMidnightWorker();
   });
 }
 

@@ -117,7 +117,7 @@ Under **Artificial Intelligence > Prompts**, you can create your own system mess
 Use custom prompts when you want Emailable to do something with the email after classification, such as:
 
 - Create a calendar event from a scheduling email.
-- Add a task when an email has an action item.
+- Add a calendar event when an email has a scheduled action.
 - Notify another system when an email receives a particular label.
 - Ask an MCP tool to enrich or route the email using the newly assigned label.
 

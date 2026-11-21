@@ -194,14 +194,14 @@ function CalendarCell({ day, events, onSelectEvent, visibleMonth }: { day: Calen
   const hiddenEventCount = Math.max(events.length - visibleEvents.length, 0);
 
   return (
-    <div className={cn("min-h-24 border-r border-t border-white/60 p-2 text-sm last:border-r-0", day.date.getMonth() !== visibleMonth && "bg-white/20 text-zinc-400")}>
+    <div className={cn("min-h-24 min-w-0 overflow-hidden border-r border-t border-white/60 p-2 text-sm last:border-r-0", day.date.getMonth() !== visibleMonth && "bg-white/20 text-zinc-400")}>
       <div className="flex items-center justify-between">
         <span className={cn("flex h-8 w-8 items-center justify-center rounded-full font-medium", day.isToday ? "bg-blue-600 text-white shadow-sm" : day.isCurrentMonth ? "text-zinc-950" : "text-zinc-400")}>
           {day.dayNumber}
         </span>
       </div>
       {visibleEvents.length ? (
-        <div className="mt-2 space-y-1">
+        <div className="mt-2 min-w-0 space-y-1 overflow-hidden">
           {visibleEvents.map((event) => (
             <EventPill event={event} key={event.id} onSelectEvent={onSelectEvent} />
           ))}
@@ -239,9 +239,9 @@ function EventList({ emptyLabel, events, onSelectEvent }: { emptyLabel?: string;
 
 function EventPill({ event, onSelectEvent }: { event: CalendarEvent; onSelectEvent: CalendarEventSelectHandler }) {
   return (
-    <button className="flex min-w-0 cursor-pointer items-center gap-1 rounded-md bg-white/55 px-1.5 py-1 text-left text-[11px] shadow-sm transition hover:bg-white/80" onClick={() => onSelectEvent(event)} title={`${event.title} · ${event.subscriptionName}`} type="button">
+    <button className="flex w-full min-w-0 max-w-full cursor-pointer items-center gap-1 overflow-hidden rounded-md bg-white/55 px-1.5 py-1 text-left text-[11px] shadow-sm transition hover:bg-white/80" onClick={() => onSelectEvent(event)} title={`${event.title} · ${event.subscriptionName}`} type="button">
       <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: event.color }} />
-      <span className="truncate">{event.allDay ? event.title : `${formatEventTime(event)} ${event.title}`}</span>
+      <span className="min-w-0 flex-1 truncate">{event.allDay ? event.title : `${formatEventTime(event)} ${event.title}`}</span>
     </button>
   );
 }
