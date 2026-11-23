@@ -219,16 +219,16 @@ select,
   }
 
   .attention-work-mode-layout {
-    position: sticky;
-    top: 4rem;
     z-index: 10;
     height: auto;
-    max-height: calc(100dvh - 4rem);
     min-height: 0;
     overflow: visible;
   }
 
   .attention-work-mode-layout[data-has-detail="true"] {
+    position: sticky;
+    top: 4rem;
+    max-height: calc(100dvh - 4rem);
     display: grid;
     height: 100%;
     grid-template-columns:
@@ -256,7 +256,6 @@ select,
   .attention-work-mode-list-content {
     min-height: 0;
     flex: 1;
-    overflow-y: auto;
     overscroll-behavior-y: contain;
     scrollbar-gutter: stable;
   }
