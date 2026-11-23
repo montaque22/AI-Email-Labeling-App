@@ -252,6 +252,10 @@ select,
     max-height: 100%;
     overflow: hidden;
   }
+  .attention-work-mode-layout[data-has-detail="true"]
+  .attention-work-mode-list-content {
+    overflow-y: auto;
+  }
 
   .attention-work-mode-list-content {
     min-height: 0;
