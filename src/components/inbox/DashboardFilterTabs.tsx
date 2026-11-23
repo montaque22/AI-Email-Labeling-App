@@ -36,7 +36,7 @@ export function DashboardFilterTabs({ ariaLabel, compact = false, onChange, opti
       aria-label={ariaLabel}
       className={cn(
         "flex gap-1 border-b border-white/70 bg-white/25 py-2",
-        compact ? "overflow-hidden px-2" : "overflow-x-auto px-4",
+        compact ? "overflow-visible px-2" : "overflow-visible px-4",
       )}
       role="tablist"
     >
